@@ -15,17 +15,23 @@ Do this:
    file — if one exists, list the conflicts and ask before replacing.
 3. Copy `${CLAUDE_PLUGIN_ROOT}/assets/workflows/*.yml` → `./.github/workflows/`
    (create the directory if needed; same no-overwrite rule).
-4. Do **not** commit. Leave the new files for the user to review.
-5. Verify the tools run: `python .specdev/tools/validate_spec.py` and
+4. **Determine the deploy target:** run `python .specdev/tools/detect_deploy.py`.
+   It writes `.specdev/deploy.profile.json`. Show the user the detected target,
+   rollback strategy, and any `REPLACE_ME` params or placeholder URLs, and ask
+   them to confirm/edit before relying on auto-deploy. If the target is `manual`,
+   help them either set a concrete `target` or add `.specdev/deploy/deploy.sh`.
+5. Do **not** commit. Leave the new files for the user to review.
+6. Verify the tools run: `python .specdev/tools/validate_spec.py` and
    `python .specdev/tools/gen_traceability.py` should execute (Gate 1 will fail
-   on the placeholder spec — that's expected).
+   on the placeholder spec — that's expected). Also
+   `python .specdev/tools/deploy.py url --env staging` should print the URL.
 
 Then print this post-install checklist:
 
-- Replace every `TODO:` in `.github/workflows/` with your stack's build / test /
-  deploy commands.
-- **Fill the `rollback` job in `deploy.yml`** — with automatic prod it is the
-  only safety net.
+- Replace the build/test `TODO:`s in `.github/workflows/` with your stack's
+  commands (deploy/rollback/health are already wired to the profile).
+- Fill real URLs and any `REPLACE_ME` params in `.specdev/deploy.profile.json`,
+  and add the platform-CLI install/auth step noted in `deploy.yml`.
 - Branch protection on `main`: require the `post-dev-qa` checks + PR review.
 - Require `spec-validate` on `spec/**` branches.
 - Create `staging` and `production` Environments (no required reviewer on

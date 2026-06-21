@@ -150,7 +150,7 @@ def main() -> int:
     out = root / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Wrote {out} — {len(reqs)} requirements, {len(gaps)} gap(s).")
+    print(f"Wrote {out} - {len(reqs)} requirements, {len(gaps)} gap(s).")
     return 0
 
 

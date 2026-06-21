@@ -44,11 +44,17 @@ jobs:
       url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (flyctl, kubectl, vercel, ...)
       - id: deploy
         name: Deploy to staging
         run: |
-          echo "TODO: deploy ${{ needs.build.outputs.tag }} to staging"
-          echo "url=https://staging.example.com" >> "$GITHUB_OUTPUT"
+          python .specdev/tools/deploy.py deploy --env staging --tag "${{ needs.build.outputs.tag }}"
+          echo "url=$(python .specdev/tools/deploy.py url --env staging)" >> "$GITHUB_OUTPUT"
 
   qa-staging:
     needs: [build, deploy-staging]
@@ -66,11 +72,17 @@ jobs:
       url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (flyctl, kubectl, vercel, ...)
       - id: deploy
         name: Promote to production (automatic)
         run: |
-          echo "TODO: deploy ${{ needs.build.outputs.tag }} to prod"
-          echo "url=https://example.com" >> "$GITHUB_OUTPUT"
+          python .specdev/tools/deploy.py deploy --env production --tag "${{ needs.build.outputs.tag }}"
+          echo "url=$(python .specdev/tools/deploy.py url --env production)" >> "$GITHUB_OUTPUT"
 
   qa-prod:
     needs: [build, deploy-prod]
@@ -88,8 +100,18 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v4
-      - name: Roll back to previous good release
-        run: echo "TODO: redeploy previous good tag for the affected environment"
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (same as the deploy jobs)
+      - name: Roll back production (only if prod got the bad release)
+        if: needs.deploy-prod.result == 'success'
+        run: python .specdev/tools/deploy.py rollback --env production
+      - name: Roll back staging (only if staging QA failed)
+        if: needs.qa-staging.result == 'failure'
+        run: python .specdev/tools/deploy.py rollback --env staging
       - name: Open incident issue
         uses: actions/github-script@v7
         with:

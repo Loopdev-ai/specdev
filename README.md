@@ -65,11 +65,24 @@ IMPL PR  ──gate2: post-dev-qa (required checks)──merge─▶
 | `post-deploy-qa.yml` | called by deploy | staging promotion gate + prod verification |
 | `traceability.yml` | after deploy | regenerate + commit the matrix |
 
+## Deploy determination (built in)
+
+Deploy, rollback, and health are **determined by a profile, not hard-coded**.
+`detect_deploy.py` inspects the repo for platform signatures (fly.toml,
+vercel.json, k8s/Helm manifests, serverless.yml, SAM, a `.specdev/deploy/`
+script, …) and writes `.specdev/deploy.profile.json`. `deploy.py` reads that
+profile and runs the right commands, so the workflows stay generic. **Rollback
+is target-aware:** native where the platform supports it (Fly/Vercel/Helm/k8s),
+otherwise redeploy the previous git release tag — stateless, no per-repo TODO.
+Unknown targets are written as `manual` and fail loudly rather than guessing.
+
 ## After `/specdev:init` — required wiring
 
-1. Replace every `TODO:` in `.github/workflows/` with your stack's commands.
-2. **Fill the `rollback` job in `deploy.yml`** — with automatic prod it's the
-   only safety net.
+1. Replace the **build/test** `TODO:`s in `.github/workflows/` (deploy/rollback/
+   health are already wired to the profile).
+2. Review `.specdev/deploy.profile.json`: set real env URLs, fix any
+   `REPLACE_ME` params, and add the platform-CLI install/auth step noted in
+   `deploy.yml`. A wrong profile is the one thing that defeats auto-prod safety.
 3. Branch-protect `main` (require `post-dev-qa` checks + review); require
    `spec-validate` on `spec/**`.
 4. Create `staging` and `production` Environments (no reviewer on production).

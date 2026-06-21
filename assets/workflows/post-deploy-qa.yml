@@ -37,7 +37,8 @@ jobs:
       - name: Critical-path E2E
         run: echo "TODO: e2e against ${{ inputs.target_url }}"   # e.g. npx playwright test
 
-      - name: Synthetic / health checks
-        run: |
-          echo "TODO: health probe ${{ inputs.target_url }}/health"
-          # curl --fail --retry 5 --retry-delay 5 "${{ inputs.target_url }}/health"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Synthetic / health check (uses profile health_path)
+        run: python .specdev/tools/deploy.py health --url "${{ inputs.target_url }}"

@@ -52,6 +52,11 @@ deployment, QA, and traceability are automatic.
    release, deploys staging, then runs `post-deploy-qa.yml` against staging.
    **Staging QA is the promotion gate** (prod is fully automatic, no human
    gate): pass → auto-promote to prod → prod QA; fail → rollback + incident.
+   Deploy/rollback/health are **determined by the profile**, not hard-coded:
+   `detect_deploy.py` writes `.specdev/deploy.profile.json`, and `deploy.py`
+   executes it. Rollback is target-aware (native where supported, else redeploy
+   the previous git release tag). If the profile is `manual` or has `REPLACE_ME`
+   params, resolve it before relying on auto-prod.
 9. **Traceability is automatic.** `traceability.yml` regenerates the matrix and
    commits it beside `BUILD.md`. Never hand-edit `.specdev/traceability.md`.
 
@@ -99,8 +104,9 @@ through `component-builder` so its detail stays out of this thread.
   the only thing between a merge and production.
 - Keep `FEAT-###` / `REQ-###` IDs stable for the life of the feature; the whole
   matrix is keyed on them.
-- The `rollback` job in `deploy.yml` ships with a `TODO:` — confirm it actually
-  redeploys the previous tag for the target before relying on auto-prod.
+- Rollback is built in (profile-driven), but confirm `.specdev/deploy.profile.json`
+  is correct — a wrong target or placeholder URL is the one thing that defeats
+  auto-prod safety. Run `detect_deploy.py` and review it during `/specdev:init`.
 
 ## Helper commands
 
