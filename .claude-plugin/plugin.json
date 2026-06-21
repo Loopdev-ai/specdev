@@ -1,0 +1,16 @@
+{
+  "name": "specdev",
+  "version": "0.1.0",
+  "description": "Spec-driven delivery pipeline: GitHub PR gates, fully-automatic deployment, post-dev and post-deploy QA, and a generated REQ->ADR->test->commit->release traceability matrix. Pairs arckit-style spec/architecture artifacts with a superpowers-style brainstorm->plan->TDD build.",
+  "author": {
+    "name": "NeffSec",
+    "email": "2791047+alaneff@users.noreply.github.com"
+  },
+  "keywords": [
+    "spec-driven-development",
+    "ai-sdlc",
+    "ci-cd",
+    "traceability",
+    "github-actions"
+  ]
+}

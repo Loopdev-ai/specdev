@@ -1,0 +1,43 @@
+name: post-deploy-qa
+
+# Reusable QA suite run against a live environment. Called by deploy.yml for
+# both staging (the promotion gate) and prod (release verification). A failure
+# here fails the calling job; for staging that skips prod promotion and trips
+# rollback.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      target_url:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        type: string
+      target_url:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Smoke tests
+        run: echo "TODO: smoke tests against ${{ inputs.target_url }} (${{ inputs.environment }})"
+
+      - name: Critical-path E2E
+        run: echo "TODO: e2e against ${{ inputs.target_url }}"   # e.g. npx playwright test
+
+      - name: Synthetic / health checks
+        run: |
+          echo "TODO: health probe ${{ inputs.target_url }}/health"
+          # curl --fail --retry 5 --retry-delay 5 "${{ inputs.target_url }}/health"

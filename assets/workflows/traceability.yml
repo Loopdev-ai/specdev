@@ -1,0 +1,36 @@
+name: traceability
+
+# Regenerates the REQ -> ADR -> test -> commit -> PR -> release -> QA matrix
+# after a successful deploy and commits it beside BUILD.md. The [skip ci] commit
+# plus deploy.yml's paths-ignore on traceability.md prevent a deploy loop.
+on:
+  workflow_run:
+    workflows: ["deploy"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  matrix:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Generate matrix
+        env:
+          RELEASE_TAG: ${{ github.event.workflow_run.head_sha }}
+        run: python .specdev/tools/gen_traceability.py
+      - name: Commit matrix
+        run: |
+          git config user.name "specdev-bot"
+          git config user.email "bot@specdev.local"
+          git add .specdev/traceability.md
+          git diff --cached --quiet || git commit -m "chore(traceability): update matrix [skip ci]"
+          git push

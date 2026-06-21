@@ -1,0 +1,47 @@
+name: post-dev-qa
+
+# Gate 2 — runs on the Implementation PR. With fully-automatic prod, these
+# checks are most of what stands between a merge and production: keep them
+# strict. Mark every job below as a required status check in branch protection.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # --- toolchain -------------------------------------------------------
+      # TODO: set up your stack, e.g.
+      #   - uses: actions/setup-node@v4   with: { node-version: '20' }
+      #   - uses: actions/setup-python@v5 with: { python-version: '3.12' }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Lint
+        run: echo "TODO: project lint command"            # e.g. npm run lint
+
+      - name: Unit + integration tests
+        run: echo "TODO: project test command"            # e.g. npm test -- --coverage
+
+      - name: Coverage gate
+        run: echo "TODO: fail if coverage below threshold" # e.g. enforce >= 80%
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dependency / SAST scan
+        run: echo "TODO: SAST + dependency audit"          # e.g. npm audit --audit-level=high
+
+      - name: Traceability — every requirement has a test
+        run: python .specdev/tools/gen_traceability.py --check-gaps

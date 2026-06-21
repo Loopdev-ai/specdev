@@ -1,0 +1,24 @@
+name: spec-validate
+
+# Gate 1 — validates the spec/architecture artifacts on the Spec PR.
+# Make this a required status check on branches matching spec/**.
+on:
+  pull_request:
+    paths:
+      - '.specdev/spec.md'
+      - '.specdev/adr/**'
+      - '.specdev/components.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate spec artifacts (Gate 1)
+        run: python .specdev/tools/validate_spec.py --strict

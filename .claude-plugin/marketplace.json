@@ -1,0 +1,14 @@
+{
+  "name": "neffsec-specdev",
+  "owner": {
+    "name": "NeffSec",
+    "email": "2791047+alaneff@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "specdev",
+      "source": ".",
+      "description": "Spec-driven delivery pipeline with PR gates, auto-deploy, two-phase QA, and a traceability matrix."
+    }
+  ]
+}
