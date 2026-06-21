@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read   # gitleaks-action lists PR commits via the API
 
 jobs:
   qa:
