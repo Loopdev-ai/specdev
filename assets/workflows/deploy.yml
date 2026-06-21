@@ -13,7 +13,22 @@ permissions:
   contents: write   # tag releases
 
 jobs:
+  # Verification gate: refuse to deploy unless every destination fact in
+  # deploy.profile.json is resolved (discovered or documented) and well-formed.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Verify staging deploy facts
+        run: python .specdev/tools/deploy.py preflight --env staging
+      - name: Verify production deploy facts
+        run: python .specdev/tools/deploy.py preflight --env production
+
   build:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}

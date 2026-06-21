@@ -66,8 +66,7 @@ def detect(root: Path):
         return "helm", sig, params
 
     if sig := first(root, "kustomization.yaml", "k8s", "kubernetes", "manifests"):
-        params.update(app="REPLACE_ME", namespace="default",
-                      image="REPLACE_ME", registry="REPLACE_ME")
+        params.update(scan_k8s(root, sig))
         return "kubernetes", sig, params
 
     if sig := first(root, ".specdev/deploy/deploy.sh"):
@@ -82,6 +81,33 @@ def detect(root: Path):
     return "manual", None, params
 
 
+def scan_k8s(root: Path, sig: str) -> dict:
+    """Offline discovery: pull deployment name, namespace, and image straight
+    out of the Kubernetes manifests so they aren't left as REPLACE_ME."""
+    base = root / sig
+    files = list(base.rglob("*.y*ml")) if base.is_dir() else [base]
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for doc in re.split(r"^---\s*$", text, flags=re.M):
+            if not re.search(r"kind:\s*Deployment", doc):
+                continue
+            name = re.search(r"name:\s*([\w.-]+)", doc)
+            ns = re.search(r"namespace:\s*([\w.-]+)", doc)
+            img = re.search(r"image:\s*[\"']?([^\s\"']+)", doc)
+            out = {"app": name.group(1) if name else "REPLACE_ME",
+                   "namespace": ns.group(1) if ns else "default",
+                   "image": "REPLACE_ME"}
+            if img:
+                ref = img.group(1)
+                head, sep, tail = ref.rpartition(":")
+                out["image"] = head if sep and "/" not in tail else ref
+            return out
+    return {"app": "REPLACE_ME", "namespace": "default", "image": "REPLACE_ME"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -93,6 +119,21 @@ def main() -> int:
         "redeploy-previous-tag" if target in {"netlify", "serverless", "sam", "script"} else "manual")
     confidence = "low" if (target in {"manual", "script"} or "REPLACE_ME" in params.values()) else "high"
 
+    environments = {
+        "staging": {"url": "https://staging.example.com"},
+        "production": {"url": "https://example.com"},
+    }
+    # Offline URL discovery where the platform domain is deterministic.
+    if target == "fly" and params.get("app", "REPLACE_ME") != "REPLACE_ME":
+        environments["production"]["url"] = f"https://{params['app']}.fly.dev"
+
+    # Provenance: record where each fact came from so unresolved ones are visible
+    # and resolved ones are documented (preflight stamps 'verified').
+    provenance = {
+        k: {"source": "discovered" if v != "REPLACE_ME" else "missing", "verified": False}
+        for k, v in params.items()
+    }
+
     profile = {
         "target": target,
         "detected_from": detected_from,
@@ -100,20 +141,32 @@ def main() -> int:
         "rollback": rollback,
         "health_path": "/health",
         "params": params,
-        "environments": {
-            "staging": {"url": "https://staging.example.com"},
-            "production": {"url": "https://example.com"},
-        },
+        "provenance": provenance,
+        "environments": environments,
     }
 
-    # Preserve anything the user already edited.
+    # Preserve anything the user already edited, then re-derive provenance from
+    # the merged facts (user-supplied values count as 'declared').
     out = root / PROFILE_REL
     if out.exists():
         old = json.loads(out.read_text(encoding="utf-8"))
         profile["environments"] = old.get("environments", profile["environments"])
-        merged = {**profile["params"], **old.get("params", {})}
+        old_params = old.get("params", {})
+        merged = {**profile["params"], **old_params}
         profile["params"] = merged
         profile["health_path"] = old.get("health_path", profile["health_path"])
+        old_prov = old.get("provenance", {})
+        profile["provenance"] = {
+            k: {
+                "source": "missing" if v == "REPLACE_ME"
+                          else ("declared" if k in old_params and old_params[k] == v
+                                else "discovered"),
+                "verified": old_prov.get(k, {}).get("verified", False),
+            }
+            for k, v in merged.items()
+        }
+        if "verified" in old:
+            profile["verified"] = old["verified"]
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")

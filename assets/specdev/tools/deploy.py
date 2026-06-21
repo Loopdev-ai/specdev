@@ -15,11 +15,32 @@ Usage:
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROFILE = Path(".specdev/deploy.profile.json")
+
+# Destination facts each target must have resolved before it may auto-deploy.
+REQUIRED = {
+    "fly": ["app"],
+    "vercel": [],
+    "netlify": ["app"],
+    "kubernetes": ["app", "namespace", "image"],
+    "helm": ["release", "chart", "namespace"],
+    "serverless": [],
+    "sam": [],
+    "script": [],
+    "manual": [],
+}
+
+PLACEHOLDER_RE = re.compile(r"REPLACE_ME|example\.com|[<>]", re.I)
+
+
+def is_placeholder(v) -> bool:
+    return (not v) or bool(PLACEHOLDER_RE.search(str(v)))
 
 RECIPES = {
     "fly": {
@@ -44,7 +65,7 @@ RECIPES = {
         "native_rollback": "helm rollback {release} --namespace {namespace}",
     },
     "kubernetes": {
-        "deploy": "kubectl -n {namespace} set image deployment/{app} {app}={registry}/{image}:{tag} && kubectl -n {namespace} rollout status deployment/{app}",
+        "deploy": "kubectl -n {namespace} set image deployment/{app} {app}={image}:{tag} && kubectl -n {namespace} rollout status deployment/{app}",
         "native_rollback": "kubectl -n {namespace} rollout undo deployment/{app}",
     },
     "script": {
@@ -131,14 +152,81 @@ def do_health(profile, url, dry):
     print(f"Health check passed: {target}")
 
 
+PROBES = {
+    "fly": "flyctl status --app {app}",
+    "kubernetes": "kubectl -n {namespace} get deployment {app}",
+    "helm": "helm status {release} --namespace {namespace}",
+    "vercel": "vercel projects ls",
+    "netlify": "netlify status",
+}
+
+
+def run_probe(profile, env, dry) -> bool | None:
+    """Best-effort liveness check. Returns True/False, or None if no probe or
+    the platform CLI/credentials are unavailable (never fatal)."""
+    tmpl = PROBES.get(profile["target"])
+    if not tmpl:
+        return None
+    cmd = tmpl.format(**ctx(profile, env))
+    print(f"$ {cmd}")
+    if dry:
+        return None
+    try:
+        subprocess.run(cmd, shell=True, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return None  # CLI/creds absent — unverified, not failed
+
+
+def do_preflight(profile, env, probe, dry) -> int:
+    """Verification gate: refuse to deploy until every destination fact is
+    resolved (discovered or documented) and well-formed."""
+    target = profile["target"]
+    problems = []
+
+    if target == "manual":
+        problems.append("target is 'manual' — set a concrete target or add .specdev/deploy/deploy.sh")
+    for p in REQUIRED.get(target, []):
+        v = profile.get("params", {}).get(p, "")
+        if is_placeholder(v):
+            problems.append(f"params.{p} is unresolved ({v or 'missing'})")
+    url = profile.get("environments", {}).get(env, {}).get("url", "")
+    if is_placeholder(url) or not str(url).startswith("https://"):
+        problems.append(f"environments.{env}.url is unresolved ({url or 'missing'})")
+
+    if problems:
+        print(f"PREFLIGHT FAILED for {env} (target={target}):")
+        for p in problems:
+            print(f"  - {p}")
+        print("Resolve each in .specdev/deploy.profile.json - discover it (re-run "
+              "detect_deploy.py) or document it by hand. Auto-deploy is blocked "
+              "until this is green.")
+        return 1
+
+    probed = run_probe(profile, env, dry) if probe else None
+    state = "verified via probe" if probed else (
+        "probe unavailable (CLI/creds absent)" if probe else "config-verified")
+    if not dry:
+        profile.setdefault("verified", {})[env] = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "probe": bool(probed),
+        }
+        PROFILE.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
+    print(f"PREFLIGHT OK for {env} (target={target}; {state}).")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("deploy", "rollback", "health", "url"):
+    for name in ("deploy", "rollback", "health", "url", "preflight"):
         p = sub.add_parser(name)
         p.add_argument("--env")
         p.add_argument("--tag", default="")
         p.add_argument("--url", default="")
+        p.add_argument("--probe", action="store_true",
+                       help="preflight: also attempt a live platform probe")
         p.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args()
@@ -152,6 +240,8 @@ def main() -> int:
         do_health(profile, args.url, args.dry_run)
     elif args.cmd == "url":
         print(profile.get("environments", {}).get(args.env, {}).get("url", ""))
+    elif args.cmd == "preflight":
+        return do_preflight(profile, args.env, args.probe, args.dry_run)
     return 0
 
 

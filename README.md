@@ -76,6 +76,19 @@ is target-aware:** native where the platform supports it (Fly/Vercel/Helm/k8s),
 otherwise redeploy the previous git release tag — stateless, no per-repo TODO.
 Unknown targets are written as `manual` and fail loudly rather than guessing.
 
+**Destination facts are discovered, verified, or documented — never silent
+stubs:**
+
+- **Discover** — `detect_deploy.py` pulls facts offline where possible (k8s
+  deployment name/namespace/image from manifests, the Fly app + `*.fly.dev`
+  URL) and records each in `provenance` as `discovered`/`declared`/`missing`.
+- **Verify** — `deploy.py preflight --env <env>` fails if any required fact or
+  env URL is still a placeholder; the `preflight` job in `deploy.yml` gates the
+  build, so **a merge cannot deploy with an unresolved spec**. `--probe` adds a
+  best-effort live platform check. Passing stamps a `verified` timestamp.
+- **Document** — anything not auto-discoverable is captured as the build happens
+  in `BUILD.md` → *Deployment Facts*, with its source, alongside the profile.
+
 ## After `/specdev:init` — required wiring
 
 1. Replace the **build/test** `TODO:`s in `.github/workflows/` (deploy/rollback/

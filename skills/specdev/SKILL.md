@@ -55,8 +55,17 @@ deployment, QA, and traceability are automatic.
    Deploy/rollback/health are **determined by the profile**, not hard-coded:
    `detect_deploy.py` writes `.specdev/deploy.profile.json`, and `deploy.py`
    executes it. Rollback is target-aware (native where supported, else redeploy
-   the previous git release tag). If the profile is `manual` or has `REPLACE_ME`
-   params, resolve it before relying on auto-prod.
+   the previous git release tag).
+
+   **Resolve & verify deployment facts (do this during the build, not at the
+   end):** run `detect_deploy.py` — it discovers what it can offline (e.g. k8s
+   deployment name/namespace/image from manifests, the Fly app + URL) and marks
+   the rest `missing`. For each `missing`/`REPLACE_ME` fact and each placeholder
+   URL, either discover it (platform CLI) or **ask the user and document it** in
+   the profile and in `BUILD.md` → *Deployment Facts* as it becomes known. Then
+   run `deploy.py preflight --env staging` and `--env production` until green.
+   The `preflight` job in `deploy.yml` enforces this — a merge cannot deploy
+   with an unresolved spec, so resolve it before opening the Impl PR.
 9. **Traceability is automatic.** `traceability.yml` regenerates the matrix and
    commits it beside `BUILD.md`. Never hand-edit `.specdev/traceability.md`.
 
