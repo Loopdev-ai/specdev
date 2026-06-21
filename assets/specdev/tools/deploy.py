@@ -21,6 +21,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 PROFILE = Path(".specdev/deploy.profile.json")
 
 # Destination facts each target must have resolved before it may auto-deploy.
@@ -29,6 +35,7 @@ REQUIRED = {
     "vercel": [],
     "netlify": ["app"],
     "kubernetes": ["app", "namespace", "image"],
+    "cloudrun": ["app", "image", "region", "project"],
     "helm": ["release", "chart", "namespace"],
     "serverless": [],
     "sam": [],
@@ -68,6 +75,9 @@ RECIPES = {
         "deploy": "kubectl -n {namespace} set image deployment/{app} {app}={image}:{tag} && kubectl -n {namespace} rollout status deployment/{app}",
         "native_rollback": "kubectl -n {namespace} rollout undo deployment/{app}",
     },
+    "cloudrun": {
+        "deploy": "gcloud run deploy {app} --image {image}:{tag} --region {region} --project {project} --quiet",
+    },
     "script": {
         "deploy": "bash .specdev/deploy/deploy.sh {env} {tag}",
         "native_rollback": "bash .specdev/deploy/rollback.sh {env}",
@@ -76,7 +86,7 @@ RECIPES = {
 }
 
 CTX_KEYS = ("app", "tag", "env", "url", "prod_flag", "health_path",
-            "chart", "namespace", "release", "image", "registry")
+            "chart", "namespace", "release", "image", "registry", "region", "project")
 
 
 def load_profile() -> dict:

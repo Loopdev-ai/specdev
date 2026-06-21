@@ -32,6 +32,18 @@ deployment, QA, and traceability are automatic.
    `spec/<feature>` branch.
 4. **Architecture.** Record decisions as `.specdev/adr/ADR-###.md` with
    `Relates to: REQ-###`. Skip only if the change fits existing architecture.
+   **The deployment platform is one of these decisions, not a detection result:**
+   - *New product:* there is nothing to detect. Choose the platform using
+     `.specdev/deploy-platforms.md` — bias to the simplest option that meets the
+     spec's real needs (do not default to Kubernetes). Record it in
+     `adr/ADR-deployment-platform.md`, then set `deploy.profile.json` `target` +
+     `params` and `"locked": true` so detection won't override the decision.
+     Scaffold whatever platform config the choice needs (Dockerfile, fly.toml,
+     manifests, …) so build/deploy have inputs.
+   - *Existing product:* `detect_deploy.py` reads the current target; only write
+     a platform ADR if you're deliberately migrating.
+   - Any platform without a built-in recipe uses the `script` target
+     (`.specdev/deploy/deploy.sh`) — the kit is never tied to a fixed list.
 5. **Open the Spec PR.** `spec-validate.yml` runs `validate_spec.py` as a
    required check. Get it green, get human approval, merge. This locks the
    contract — do not renumber REQs afterward.

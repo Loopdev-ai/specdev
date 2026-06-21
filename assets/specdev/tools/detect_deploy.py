@@ -15,7 +15,14 @@ Usage:
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
+
+try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 PROFILE_REL = ".specdev/deploy.profile.json"
 
@@ -113,10 +120,23 @@ def main() -> int:
     ap.add_argument("--root", default=".")
     args = ap.parse_args()
     root = Path(args.root)
+    out = root / PROFILE_REL
+    old = json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
 
-    target, detected_from, params = detect(root)
+    # A target chosen by architecture decision (ADR) is locked: detection must
+    # not overwrite it. We still refresh discoverable params for that target.
+    if old and old.get("locked"):
+        target = old["target"]
+        detected_from = old.get("detected_from") or "decided (ADR)"
+        params = dict(old.get("params", {}))
+        if target == "kubernetes" and (sig := first(root, "kustomization.yaml", "k8s", "kubernetes", "manifests")):
+            params = {**scan_k8s(root, sig), **{k: v for k, v in params.items() if v != "REPLACE_ME"}}
+    else:
+        target, detected_from, params = detect(root)
+
     rollback = "native" if target in NATIVE_ROLLBACK else (
-        "redeploy-previous-tag" if target in {"netlify", "serverless", "sam", "script"} else "manual")
+        "redeploy-previous-tag"
+        if target in {"netlify", "serverless", "sam", "script", "cloudrun"} else "manual")
     confidence = "low" if (target in {"manual", "script"} or "REPLACE_ME" in params.values()) else "high"
 
     environments = {
@@ -143,23 +163,24 @@ def main() -> int:
         "params": params,
         "provenance": provenance,
         "environments": environments,
+        "locked": bool(old and old.get("locked")),
     }
 
     # Preserve anything the user already edited, then re-derive provenance from
-    # the merged facts (user-supplied values count as 'declared').
-    out = root / PROFILE_REL
-    if out.exists():
-        old = json.loads(out.read_text(encoding="utf-8"))
+    # the merged facts.
+    if old:
         profile["environments"] = old.get("environments", profile["environments"])
         old_params = old.get("params", {})
         merged = {**profile["params"], **old_params}
         profile["params"] = merged
         profile["health_path"] = old.get("health_path", profile["health_path"])
         old_prov = old.get("provenance", {})
+        locked = profile["locked"]
         profile["provenance"] = {
             k: {
                 "source": "missing" if v == "REPLACE_ME"
-                          else ("declared" if k in old_params and old_params[k] == v
+                          else ("decided" if locked
+                                else "declared" if k in old_params and old_params[k] == v
                                 else "discovered"),
                 "verified": old_prov.get(k, {}).get("verified", False),
             }

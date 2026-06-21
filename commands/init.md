@@ -16,10 +16,13 @@ Do this:
 3. Copy `${CLAUDE_PLUGIN_ROOT}/assets/workflows/*.yml` → `./.github/workflows/`
    (create the directory if needed; same no-overwrite rule).
 4. **Determine the deploy target:** run `python .specdev/tools/detect_deploy.py`.
-   It writes `.specdev/deploy.profile.json`. Show the user the detected target,
-   rollback strategy, and any `REPLACE_ME` params or placeholder URLs, and ask
-   them to confirm/edit before relying on auto-deploy. If the target is `manual`,
-   help them either set a concrete `target` or add `.specdev/deploy/deploy.sh`.
+   It writes `.specdev/deploy.profile.json`. For an **existing** repo it detects
+   the current platform; show the target, rollback strategy, and any
+   `REPLACE_ME`/placeholder values to confirm. For a **new** product nothing is
+   detected (target `manual`) — that is expected: the platform is an architecture
+   decision. Point the user to `.specdev/deploy-platforms.md` and
+   `adr/ADR-deployment-platform.md`, help them pick the simplest fit (not
+   Kubernetes by default), then set `target` + `params` + `"locked": true`.
 5. Do **not** commit. Leave the new files for the user to review.
 6. Verify the tools run: `python .specdev/tools/validate_spec.py` and
    `python .specdev/tools/gen_traceability.py` should execute (Gate 1 will fail

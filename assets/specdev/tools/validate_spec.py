@@ -68,14 +68,20 @@ def main() -> int:
         if not bullets:
             errors.append("'## Out of Scope' has no concrete entries")
 
-    # ADRs
+    # ADRs (skip unfilled templates — Status still the literal placeholder line)
     adr_dir = root / ".specdev" / "adr"
-    adrs = sorted(adr_dir.glob("ADR-*.md")) if adr_dir.exists() else []
-    if not adrs:
-        warnings.append("no ADRs in .specdev/adr/ (ok for changes within existing architecture)")
-    for adr in adrs:
-        if not re.search(r"\*\*Status:\*\*\s*accepted", adr.read_text(encoding="utf-8"), re.I):
+    template_status = re.compile(r"\*\*Status:\*\*\s*proposed \| accepted \| superseded")
+    real_adrs = []
+    for adr in (sorted(adr_dir.glob("ADR-*.md")) if adr_dir.exists() else []):
+        t = adr.read_text(encoding="utf-8")
+        if template_status.search(t):
+            continue  # unedited template, not an actual decision
+        real_adrs.append(adr)
+        if not re.search(r"\*\*Status:\*\*\s*accepted", t, re.I):
             warnings.append(f"{adr.name} is not 'accepted'")
+    adrs = real_adrs
+    if not adrs:
+        warnings.append("no accepted ADRs in .specdev/adr/ (ok for changes within existing architecture)")
 
     # Relative links resolve
     for label, target in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", text):

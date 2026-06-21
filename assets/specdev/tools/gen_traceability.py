@@ -20,6 +20,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 TEST_GLOBS = ("**/*test*.*", "**/*spec*.*", "**/test_*.*", "**/*_test.*")
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".specdev"}
 

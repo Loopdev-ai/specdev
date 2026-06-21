@@ -76,6 +76,14 @@ is target-aware:** native where the platform supports it (Fly/Vercel/Helm/k8s),
 otherwise redeploy the previous git release tag — stateless, no per-repo TODO.
 Unknown targets are written as `manual` and fail loudly rather than guessing.
 
+**The platform is a decision, not a default.** Detection is only for *existing*
+infra. For a **new** product there's nothing to detect — choose the platform as
+an architecture decision (`deploy-platforms.md` + `ADR-deployment-platform.md`),
+biased to the simplest fit (the kit never defaults to Kubernetes), then set
+`target` + `"locked": true` so detection won't override it. Any platform without
+a built-in recipe runs through the **`script`** target
+(`.specdev/deploy/deploy.sh`), so you're never tied to a fixed list.
+
 **Destination facts are discovered, verified, or documented — never silent
 stubs:**
 
