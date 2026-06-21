@@ -40,7 +40,7 @@ jobs:
         name: Compute release tag
         run: echo "tag=v$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - name: Build artifact
-        run: echo "TODO: build command -> dist/"          # e.g. npm run build
+        run: 'echo "TODO: build command -> dist/"'          # e.g. npm run build
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ steps.meta.outputs.tag }}

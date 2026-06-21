@@ -6,6 +6,9 @@ name: post-dev-qa
 on:
   pull_request:
     branches: [main]
+    # Spec-only PRs (Gate 1) carry no code/tests yet — don't run Gate 2 on them.
+    paths-ignore:
+      - '.specdev/**'
 
 permissions:
   contents: read
@@ -27,13 +30,13 @@ jobs:
           python-version: '3.x'
 
       - name: Lint
-        run: echo "TODO: project lint command"            # e.g. npm run lint
+        run: 'echo "TODO: project lint command"'            # e.g. npm run lint
 
       - name: Unit + integration tests
-        run: echo "TODO: project test command"            # e.g. npm test -- --coverage
+        run: 'echo "TODO: project test command"'            # e.g. npm test -- --coverage
 
       - name: Coverage gate
-        run: echo "TODO: fail if coverage below threshold" # e.g. enforce >= 80%
+        run: 'echo "TODO: fail if coverage below threshold"' # e.g. enforce >= 80%
 
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
@@ -41,7 +44,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Dependency / SAST scan
-        run: echo "TODO: SAST + dependency audit"          # e.g. npm audit --audit-level=high
+        run: 'echo "TODO: SAST + dependency audit"'          # e.g. npm audit --audit-level=high
 
       - name: Traceability — every requirement has a test
         run: python .specdev/tools/gen_traceability.py --check-gaps

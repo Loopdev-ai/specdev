@@ -32,10 +32,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Smoke tests
-        run: echo "TODO: smoke tests against ${{ inputs.target_url }} (${{ inputs.environment }})"
+        run: 'echo "TODO: smoke tests against ${{ inputs.target_url }} (${{ inputs.environment }})"'
 
       - name: Critical-path E2E
-        run: echo "TODO: e2e against ${{ inputs.target_url }}"   # e.g. npx playwright test
+        run: 'echo "TODO: e2e against ${{ inputs.target_url }}"'   # e.g. npx playwright test
 
       - uses: actions/setup-python@v5
         with:
