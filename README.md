@@ -35,7 +35,8 @@ gated flow or when a repo contains `.specdev/`.
 | Agent `spec-explorer` | reverse-maps an existing codebase for extensions (read-only) |
 | Agent `qa-verifier` | local Gate-2 dry run; returns only actionable failures |
 | Assets `.specdev/` | spec, ADR, component-map, BUILD, traceability templates + Python tools |
-| Assets workflows | the 5 GitHub Actions below |
+| Assets `.specdev/compliance/` | optional control-framework layer (ISO 27001/42001, SOC 2, NIST 800-53) — catalogs, crosswalk, SoA/risk/DPIA templates, `gen_compliance.py` |
+| Assets workflows | the GitHub Actions below |
 
 ## Context & parallelism
 
@@ -120,6 +121,24 @@ stubs:**
 3. Branch-protect `main` (require `post-dev-qa` checks + review); require
    `spec-validate` on `spec/**`.
 4. Create `staging` and `production` Environments (no reviewer on production).
+
+## Compliance (control frameworks)
+
+An optional layer maps your build to control frameworks — **ISO/IEC 27001 &
+42001, SOC 2 Type II, NIST 800-53** — as a second traceability axis:
+`CONTROL → evidence (REQ / ADR / test / commit / config / gate)`. It lives
+entirely in files under `.specdev/compliance/` (catalogs, a cross-framework
+crosswalk, SoA/risk-register/SSP/DPIA/AI-risk templates) plus one tool,
+`gen_compliance.py` — nothing in the skill.
+
+Controls earn evidence the same way requirements do: an ADR line
+`Satisfies controls: A.8.24, CC6.1`, a commit trailer `Controls: A.8.24`, a REQ
+`Controls:` tag, or a test naming the control are all discovered automatically.
+`gen_compliance.py --check-gaps` (wired in `compliance.yml`) fails if any
+*applicable* control lacks evidence or a documented exclusion; for SOC 2 Type II
+it also flags evidence older than the configured freshness window. NIST 800-53
+imports the official **OSCAL** catalog rather than bundling 1000+ controls. See
+[assets/specdev/compliance/README.md](assets/specdev/compliance/README.md).
 
 ## Traceability convention
 

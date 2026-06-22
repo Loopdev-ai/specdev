@@ -31,6 +31,13 @@ Do this:
    on the placeholder spec — that's expected). Also
    `python .specdev/tools/deploy.py url --env staging` should print the URL.
 
+If the user wants control-framework compliance (ISO 27001/42001, SOC 2, NIST
+800-53), point them at `.specdev/compliance/` (installed in step 2): set the
+in-scope `frameworks` in `compliance.config.json`, run
+`python .specdev/tools/gen_compliance.py --scaffold` to seed
+`control-mapping.json`, and mark `compliance.yml` a required check. It's inert
+until configured, so leave it alone if compliance isn't in scope.
+
 Then print this post-install checklist:
 
 - Replace the build/test `TODO:`s in `.github/workflows/` with your stack's

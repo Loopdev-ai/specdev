@@ -1,0 +1,49 @@
+{
+  "framework": "NIST SP 800-53 Rev. 5",
+  "id": "nist-800-53r5",
+  "kind": "control-catalog",
+  "requires_soa": false,
+  "source": "NIST 800-53 is U.S. Government work (public domain) and is published in machine-readable OSCAL. Rather than transcribe 1000+ controls, import the official catalog. This file ships the 20 control FAMILIES and baseline metadata; gen_compliance.py expands controls from an OSCAL catalog when one is present.",
+  "oscal_import": {
+    "enabled": false,
+    "catalog_path": ".specdev/compliance/frameworks/oscal/NIST_SP-800-53_rev5_catalog.json",
+    "baseline_path": ".specdev/compliance/frameworks/oscal/NIST_SP-800-53_rev5_MODERATE-baseline_profile.json",
+    "download": "https://github.com/usnistgov/oscal-content (releases/ -> nist.gov/SP800-53/rev5/json)",
+    "note": "Set enabled=true and drop the OSCAL JSON files at the paths above. gen_compliance.py reads catalog 'controls[].id/title' and the chosen baseline profile to scope controls. Until then only families are listed."
+  },
+  "baselines": ["low", "moderate", "high"],
+  "themes": {
+    "AC": "Access Control",
+    "AT": "Awareness and Training",
+    "AU": "Audit and Accountability",
+    "CA": "Assessment, Authorization, and Monitoring",
+    "CM": "Configuration Management",
+    "CP": "Contingency Planning",
+    "IA": "Identification and Authentication",
+    "IR": "Incident Response",
+    "MA": "Maintenance",
+    "MP": "Media Protection",
+    "PE": "Physical and Environmental Protection",
+    "PL": "Planning",
+    "PM": "Program Management",
+    "PS": "Personnel Security",
+    "PT": "PII Processing and Transparency",
+    "RA": "Risk Assessment",
+    "SA": "System and Services Acquisition",
+    "SC": "System and Communications Protection",
+    "SI": "System and Information Integrity",
+    "SR": "Supply Chain Risk Management"
+  },
+  "controls": [
+    {"id": "AC", "title": "Access Control (family — expand via OSCAL)", "theme": "AC", "is_family": true},
+    {"id": "AU", "title": "Audit and Accountability (family — expand via OSCAL)", "theme": "AU", "is_family": true},
+    {"id": "CM", "title": "Configuration Management (family — expand via OSCAL)", "theme": "CM", "is_family": true},
+    {"id": "CP", "title": "Contingency Planning (family — expand via OSCAL)", "theme": "CP", "is_family": true},
+    {"id": "IA", "title": "Identification and Authentication (family — expand via OSCAL)", "theme": "IA", "is_family": true},
+    {"id": "IR", "title": "Incident Response (family — expand via OSCAL)", "theme": "IR", "is_family": true},
+    {"id": "RA", "title": "Risk Assessment (family — expand via OSCAL)", "theme": "RA", "is_family": true},
+    {"id": "SA", "title": "System and Services Acquisition (family — expand via OSCAL)", "theme": "SA", "is_family": true},
+    {"id": "SC", "title": "System and Communications Protection (family — expand via OSCAL)", "theme": "SC", "is_family": true},
+    {"id": "SI", "title": "System and Information Integrity (family — expand via OSCAL)", "theme": "SI", "is_family": true}
+  ]
+}

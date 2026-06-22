@@ -1,0 +1,77 @@
+{
+  "note": "Equivalence groups across frameworks. Evidence mapped to ANY member control can be claimed (with review) against the others — implement once, attest many. These mappings are approximate planning aids, NOT audit assertions; an assessor still judges sufficiency per framework.",
+  "groups": [
+    {
+      "topic": "Cryptography (in transit and at rest)",
+      "iso27001-2022": ["A.8.24"],
+      "soc2-tsc-2017": ["CC6.1", "CC6.7"],
+      "nist-800-53r5": ["SC-8", "SC-13", "SC-28"]
+    },
+    {
+      "topic": "Secure authentication / MFA",
+      "iso27001-2022": ["A.5.17", "A.8.5"],
+      "soc2-tsc-2017": ["CC6.1"],
+      "nist-800-53r5": ["IA-2", "IA-5"]
+    },
+    {
+      "topic": "Access control / least privilege / RBAC",
+      "iso27001-2022": ["A.5.15", "A.5.18", "A.8.2", "A.8.3"],
+      "soc2-tsc-2017": ["CC6.1", "CC6.2", "CC6.3"],
+      "nist-800-53r5": ["AC-2", "AC-3", "AC-6"]
+    },
+    {
+      "topic": "Logging and monitoring",
+      "iso27001-2022": ["A.8.15", "A.8.16"],
+      "soc2-tsc-2017": ["CC7.1", "CC7.2"],
+      "nist-800-53r5": ["AU-2", "AU-3", "AU-6", "SI-4"]
+    },
+    {
+      "topic": "Vulnerability and dependency management",
+      "iso27001-2022": ["A.8.8"],
+      "soc2-tsc-2017": ["CC7.1"],
+      "nist-800-53r5": ["RA-5", "SI-2"]
+    },
+    {
+      "topic": "Secure development lifecycle / secure coding / testing",
+      "iso27001-2022": ["A.8.25", "A.8.26", "A.8.28", "A.8.29"],
+      "soc2-tsc-2017": ["CC8.1"],
+      "nist-800-53r5": ["SA-3", "SA-11", "SA-15"]
+    },
+    {
+      "topic": "Change management / environment separation",
+      "iso27001-2022": ["A.8.31", "A.8.32"],
+      "soc2-tsc-2017": ["CC8.1"],
+      "nist-800-53r5": ["CM-2", "CM-3", "CM-4"]
+    },
+    {
+      "topic": "Boundary protection / network security (incl. SSRF egress controls)",
+      "iso27001-2022": ["A.8.20", "A.8.21", "A.8.22", "A.8.23"],
+      "soc2-tsc-2017": ["CC6.6"],
+      "nist-800-53r5": ["SC-7"]
+    },
+    {
+      "topic": "Backup and recovery / availability",
+      "iso27001-2022": ["A.8.13", "A.8.14", "A.5.30"],
+      "soc2-tsc-2017": ["A1.2", "A1.3"],
+      "nist-800-53r5": ["CP-9", "CP-10"]
+    },
+    {
+      "topic": "Incident management",
+      "iso27001-2022": ["A.5.24", "A.5.25", "A.5.26", "A.5.27"],
+      "soc2-tsc-2017": ["CC7.3", "CC7.4", "CC7.5"],
+      "nist-800-53r5": ["IR-4", "IR-5", "IR-6"]
+    },
+    {
+      "topic": "Privacy / PII protection",
+      "iso27001-2022": ["A.5.34"],
+      "soc2-tsc-2017": ["P4.1", "C1.1"],
+      "nist-800-53r5": ["PT-1", "PT-2"]
+    },
+    {
+      "topic": "Secrets / no hardcoded credentials",
+      "iso27001-2022": ["A.5.17", "A.8.24"],
+      "soc2-tsc-2017": ["CC6.1"],
+      "nist-800-53r5": ["IA-5"]
+    }
+  ]
+}

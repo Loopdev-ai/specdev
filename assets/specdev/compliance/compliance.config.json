@@ -1,0 +1,11 @@
+{
+  "system_name": "REPLACE_ME",
+  "_help": "Which frameworks are in scope for this product. gen_compliance.py loads the matching frameworks/<id>.json catalogs. Keep this list to what you actually attest to.",
+  "frameworks": ["iso27001-2022"],
+  "nist_baseline": "moderate",
+  "is_ai_system": false,
+  "evidence_freshness_days": 365,
+  "_freshness_help": "SOC 2 Type II only: a control whose newest evidence timestamp is older than this many days is flagged 'stale' (operating-effectiveness gap).",
+  "fail_on_planned": false,
+  "_planned_help": "If true, --check-gaps fails on any applicable control still in 'planned'. Start false (design phase), flip true before an audit window."
+}

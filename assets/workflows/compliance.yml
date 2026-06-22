@@ -1,0 +1,43 @@
+name: compliance
+
+# Control-coverage gate. Runs alongside post-dev-qa on the Implementation PR:
+# every APPLICABLE control in the in-scope frameworks must have evidence or a
+# documented exclusion, or this fails. Mark it a required status check once you
+# have started mapping controls (it is a no-op until compliance/ is populated).
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '.specdev/specs/**'
+
+permissions:
+  contents: read
+
+jobs:
+  controls:
+    runs-on: ubuntu-latest
+    # Skip cleanly in repos that haven't adopted the compliance layer yet.
+    if: ${{ hashFiles('.specdev/compliance/compliance.config.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # commit 'Controls:' trailers are evidence
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Control coverage — every applicable control has evidence
+        run: python .specdev/tools/gen_compliance.py --check-gaps
+
+      - name: Regenerate matrix + SoA (artifact)
+        if: always()
+        run: python .specdev/tools/gen_compliance.py || true
+
+      - name: Upload compliance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance
+          path: .specdev/compliance/*.md
+          if-no-files-found: ignore

@@ -35,6 +35,7 @@ test can assert (the matrix flags any REQ with no linked test).
 - **Current behavior:** <for extensions; "n/a — new" otherwise>
 - **Acceptance:** <observable, testable pass condition>
 - **Priority:** must | should | could
+- **Controls:** <optional — control IDs this requirement helps satisfy, e.g. A.8.5, CC6.1>
 
 ### REQ-002 — <short title>
 
@@ -42,6 +43,7 @@ test can assert (the matrix flags any REQ with no linked test).
 - **Current behavior:**
 - **Acceptance:**
 - **Priority:**
+- **Controls:**
 
 ## Out of Scope
 

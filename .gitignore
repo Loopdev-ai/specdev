@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local dev mirror: junctions that expose the plugin's skills/agents/commands
+# under .claude/ so they load as project-level config in this repo. They point
+# back at the canonical skills/, agents/, commands/ dirs — don't double-track.
+.claude/skills/
+.claude/agents/
+.claude/commands/

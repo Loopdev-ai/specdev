@@ -1,0 +1,11 @@
+{
+  "_help": "The artifact you maintain. Key = control ID from a framework catalog. Run `gen_compliance.py --scaffold` to add a stub for every in-scope control, then fill these fields. 'evidence' may also be discovered automatically from ADR 'Satisfies controls:' lines, commit 'Controls:' trailers, REQ 'Controls:' lines, and test files. status: implemented | partial | planned | not-applicable. Set applicable:false ONLY with a justification.",
+  "_example": {
+    "applicable": true,
+    "status": "implemented",
+    "evidence": ["REQ-009", "ADR-004", "test:tests/test_req009_crypto.py", "code:app/crypto.py", "gate:secret-scan"],
+    "owner": "security",
+    "reviewed": "2026-06-21",
+    "justification": ""
+  }
+}
