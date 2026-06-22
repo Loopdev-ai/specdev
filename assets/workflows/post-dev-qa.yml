@@ -36,8 +36,12 @@ jobs:
       - name: Unit + integration tests
         run: 'echo "TODO: project test command"'            # e.g. npm test -- --coverage
 
+      # NOTE: line coverage is a floor, not a correctness proof — a high number
+      # with weak assertions still passes. Prefer branch coverage, and treat the
+      # traceability gap check below (every REQ has a test) as the real
+      # requirement-coverage gate.
       - name: Coverage gate
-        run: 'echo "TODO: fail if coverage below threshold"' # e.g. enforce >= 80%
+        run: 'echo "TODO: fail if branch coverage below threshold"' # e.g. enforce >= 80%
 
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
@@ -47,5 +51,8 @@ jobs:
       - name: Dependency / SAST scan
         run: 'echo "TODO: SAST + dependency audit"'          # e.g. npm audit --audit-level=high
 
+      # Cumulative across the whole product: checks spec.md + every archived
+      # specs/*.md (+ product-requirements.md), so a regression that drops a
+      # shipped feature's test fails here too, not just the current feature's.
       - name: Traceability — every requirement has a test
         run: python .specdev/tools/gen_traceability.py --check-gaps

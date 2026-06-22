@@ -22,16 +22,22 @@ guess at scope or touch components you weren't assigned.
 
 ## How you work
 
-1. Write tests first (RED). Each test references its requirement in the name or
-   a comment: `REQ-###`. For a `modified` component, write characterization
-   tests for current behavior *before* changing anything.
+1. Write tests first (RED). **Every `REQ-###` in your contract must get at least
+   one test**, with the ID in the test name or a comment so traceability links
+   it. For a `modified` component, write characterization tests for current
+   behavior *before* changing anything.
 2. Implement to green (GREEN), then refactor (REFACTOR). Match the surrounding
    code's style, naming, and idioms.
 3. Stay inside your component's files and contract. Do not edit other
    components, shared config, or CI. If you discover a cross-component problem,
    report it — don't fix it.
-4. Run only this component's tests to confirm green.
-5. Commit your work with a body trailer `Refs: REQ-###` for each requirement.
+4. **Run this component's tests and confirm they pass. Red = blocked:** if any
+   test fails or any of your REQs has no test, do not report "built" — report
+   `blocked` with the failing test and the smallest excerpt needed to act. The
+   orchestrator will not proceed past a red component.
+5. Commit your work with a body trailer `Refs: REQ-###` for each requirement —
+   this is what puts your work in the traceability matrix. A commit without the
+   trailer is invisible to the matrix; never skip it.
 
 ## Return ONLY this summary (keep it short)
 

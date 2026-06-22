@@ -10,12 +10,18 @@ otherwise).
 
 Do this:
 
-1. Pick the next `FEAT-###` by scanning existing specs/branches for the highest
-   used number; if none, start at `FEAT-001`.
+1. Pick the next `FEAT-###` by scanning `.specdev/spec.md`, `.specdev/specs/*.md`,
+   and branches for the highest used number; if none, start at `FEAT-001`.
 2. Create and switch to a branch `spec/<kebab-name>` from the default branch.
-3. If `.specdev/spec.md` is still the unfilled template, draft it in place;
-   otherwise copy the template to `.specdev/specs/<FEAT-###>-<name>.md` and work
-   there (tell the user which layout you chose and stay consistent).
+3. **Spec lifecycle (one active feature in `spec.md`):** `.specdev/spec.md` always
+   holds the *active* feature; finished features live in `.specdev/specs/`.
+   - If `.specdev/spec.md` is the unfilled template, draft the new feature there.
+   - If it holds a *previous, completed* feature, first archive it to
+     `.specdev/specs/<FEAT-###>-<name>.md` (if not already archived), then draft
+     the new feature in `.specdev/spec.md`.
+   Keep `spec.md` as the single working spec — do not draft a new feature into a
+   `specs/` file directly. Traceability stays whole because
+   `gen_traceability.py` scans `spec.md` + every archived `specs/*.md` together.
 4. **Brainstorm before writing.** Ask the user the minimum questions needed to
    fill: users, problem, mode (new vs. extend), and the first requirements. For
    an extension, also capture current behavior per requirement.

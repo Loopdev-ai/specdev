@@ -47,16 +47,27 @@ deployment, QA, and traceability are automatic.
 5. **Open the Spec PR.** `spec-validate.yml` runs `validate_spec.py` as a
    required check. Get it green, get human approval, merge. This locks the
    contract — do not renumber REQs afterward.
-6. **Build on `feat/<feature>`** off the merged spec — as a coordinator, not a
-   builder (see *Context discipline* and *Parallel dispatch protocol* below):
+6. **Build on `feat/<feature>`** off the merged spec — run **`/specdev:build`**,
+   which drives the loop below. You act as a coordinator, not a builder (see
+   *Context discipline* and *Parallel dispatch protocol*):
    - Scaffold to match `components.md`; log files in `.specdev/BUILD.md`.
-   - Build components in dependency waves via the **`component-builder`** agent
-     (parallel within a wave). You do not write component code yourself.
-   - Each builder enforces TDD and `Refs: REQ-###` trailers; you only hand it
-     its component row + spec section + acceptance criteria, then record its
-     summary in `BUILD.md`.
-   - After integration, dispatch the **`qa-verifier`** agent for a local Gate-2
-     dry run before opening the PR.
+   - **MANDATORY: you MUST NOT write component code in the main thread.** Every
+     component is built by a **`component-builder`** subagent. The coordinator
+     holds only the spec, the component DAG, and returned summaries. Building
+     inline is a process violation — it both fills the context window and
+     collapses QA independence.
+   - Build in dependency waves (parallel within a wave). You hand each builder
+     its component row + spec section + acceptance criteria; it enforces TDD and
+     `Refs: REQ-###` trailers and returns a summary you record in `BUILD.md`.
+   - **Per-wave QA gate (MANDATORY): after EACH wave, dispatch the
+     `qa-verifier` agent — do not proceed until it returns green.** QA happens
+     every wave, not only before the PR. A red wave goes back to a builder.
+   - **Per-wave traceability gate: after each wave, the qa-verifier's
+     `gen_traceability.py --check-gaps` must pass** — every `REQ-###` built that
+     wave has a linked test before the next wave starts.
+   - **Starting a build authorizes subagent dispatch.** This workflow spawns
+     subagents by design; the harness default ("don't spawn unless asked") does
+     not apply once the user has invoked the SpecDev build — dispatch them.
 7. **Open the Implementation PR (Gate 2).** `post-dev-qa.yml` runs tests,
    security scan, coverage, and `gen_traceability.py --check-gaps` (fails if any
    REQ has no test). These are required status checks. Get review + green, merge.
@@ -107,13 +118,17 @@ Turn `components.md` into a build schedule:
 2. **Wave** = all components whose dependencies are already built. Launch the
    whole wave at once: multiple `component-builder` agents in a single message
    (independent calls run in parallel).
-3. Wait for the wave, record each summary in `BUILD.md`, then form the next wave
-   from newly-unblocked components. Repeat until done.
+3. Wait for the wave, record each summary in `BUILD.md`, then **dispatch
+   `qa-verifier` over the wave's integrated result and require green** before
+   forming the next wave from newly-unblocked components. Repeat until done.
 4. Each builder gets a minimal contract — its component row, its `REQ-###`
    sections, its acceptance tests — and nothing about sibling components.
 5. If a builder reports a cross-component conflict, resolve the contract in
    `components.md` before launching the dependent wave.
-6. After the final wave, run `qa-verifier` once over the integrated result.
+6. A wave is **not done** until `qa-verifier` is green and `--check-gaps` passes
+   for the REQs built in it. A red verdict goes back to a `component-builder`;
+   never start the next wave on red. Run `qa-verifier` once more over the final
+   integrated result as the pre-PR dry run.
 
 Sequential or trivial single-component work can skip waves, but still goes
 through `component-builder` so its detail stays out of this thread.
@@ -133,6 +148,8 @@ through `component-builder` so its detail stays out of this thread.
 
 - `/specdev:init` — install the kit into the current repo.
 - `/specdev:new-feature <name>` — start a `spec/<name>` branch + draft spec.
+- `/specdev:build <FEAT-###>` — coordinator build loop: dependency-wave
+  `component-builder` dispatch + per-wave `qa-verifier` + per-wave traceability.
 
 ## Tools (run locally to preview gate results)
 

@@ -24,6 +24,17 @@ _See [adr/](adr/). Chosen: <ADR-### title>._
 |------|---------|
 |      |         |
 
+### Wave ledger
+
+_Filled by `/specdev:build`. One row per component per wave; a wave is done only
+when every row is built and its `qa-verifier` verdict is green. This is the
+resume point after a compact — a fresh session continues from the first
+unfinished wave._
+
+| Wave | Component | REQs covered | Tests (pass/fail) | qa-verifier | Commit |
+|------|-----------|--------------|-------------------|-------------|--------|
+| 1    |           |              |                   | green/red   |        |
+
 ### Open Items
 
 - [ ]

@@ -5,6 +5,12 @@ Links REQ -> ADR -> tests -> commits -> PR -> release tag -> QA runs into a
 single markdown table committed beside BUILD.md. Pure stdlib; degrades
 gracefully when run outside CI or outside a git repo.
 
+REQ IDs are collected cumulatively across the whole product, not just the
+feature in the active spec: a durable `product-requirements.md` catalog (if
+present), every archived feature spec under `.specdev/specs/*.md`, and the
+active `.specdev/spec.md` are all unioned. So `--check-gaps` keeps verifying
+shipped features even after their spec is archived.
+
 Usage:
     python .specdev/tools/gen_traceability.py [--root .] [--out PATH]
     python .specdev/tools/gen_traceability.py --check-gaps   # CI gate, no write
@@ -42,6 +48,43 @@ def parse_reqs(text: str) -> dict[str, str]:
     for rid, rest in re.findall(r"^###\s+(REQ-\d+)\b[ \t—-]*(.*)$", text, re.M):
         out[rid] = rest.strip()
     return out
+
+
+def spec_sources(root: Path) -> list[Path]:
+    """Every file that may declare REQ IDs, oldest-to-newest precedence.
+
+    Traceability is cumulative across the whole product, not just the feature
+    currently in `spec.md`. We union REQs from a durable catalog
+    (`product-requirements.md`), every archived feature spec (`specs/*.md`), and
+    the active `spec.md`, so archiving a finished feature never drops its REQs
+    from the matrix or the gap check.
+    """
+    sd = root / ".specdev"
+    sources: list[Path] = []
+    catalog = sd / "product-requirements.md"
+    if catalog.exists():
+        sources.append(catalog)
+    specs_dir = sd / "specs"
+    if specs_dir.exists():
+        sources.extend(sorted(specs_dir.glob("*.md")))
+    active = sd / "spec.md"
+    if active.exists():
+        sources.append(active)
+    return sources
+
+
+def collect_reqs(sources: list[Path]) -> dict[str, str]:
+    reqs: dict[str, str] = {}
+    for f in sources:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for rid, title in parse_reqs(text).items():
+            # First sighting wins, but let a later file supply a missing title.
+            if rid not in reqs or (not reqs[rid] and title):
+                reqs[rid] = title
+    return reqs
 
 
 def parse_adrs(adr_dir: Path) -> dict[str, set[str]]:
@@ -104,13 +147,18 @@ def main() -> int:
     args = ap.parse_args()
 
     root = Path(args.root)
-    spec = root / ".specdev" / "spec.md"
-    if not spec.exists():
-        print(f"ERROR: {spec} not found", file=sys.stderr)
+    sources = spec_sources(root)
+    if not sources:
+        sd = root / ".specdev"
+        print(f"ERROR: no REQ sources under {sd} "
+              f"(need spec.md, specs/*.md, or product-requirements.md)",
+              file=sys.stderr)
         return 1
-    text = spec.read_text(encoding="utf-8")
 
-    reqs = parse_reqs(text)
+    reqs = collect_reqs(sources)
+    # Feature header reflects the active feature in spec.md (if any).
+    active = root / ".specdev" / "spec.md"
+    text = active.read_text(encoding="utf-8") if active.exists() else ""
     adr_by_req = parse_adrs(root / ".specdev" / "adr")
     tests_by_req = find_tests(root)
     commits_by_req = find_commits()
