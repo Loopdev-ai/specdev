@@ -15,6 +15,8 @@ Do this:
    file — if one exists, list the conflicts and ask before replacing.
 3. Copy `${CLAUDE_PLUGIN_ROOT}/assets/workflows/*.yml` → `./.github/workflows/`
    (create the directory if needed; same no-overwrite rule).
+3b. Copy `${CLAUDE_PLUGIN_ROOT}/assets/gitleaks.toml` → `./.gitleaks.toml` (same
+   no-overwrite rule) so the secret-scan gate allowlists test fixtures.
 4. **Determine the deploy target:** run `python .specdev/tools/detect_deploy.py`.
    It writes `.specdev/deploy.profile.json`. For an **existing** repo it detects
    the current platform; show the target, rollback strategy, and any

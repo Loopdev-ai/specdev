@@ -1,0 +1,12 @@
+# Starter gitleaks config scaffolded by SpecDev (copied to a product's
+# .gitleaks.toml). Extends the default ruleset and allowlists test fixtures,
+# which legitimately contain fake/sample credentials. Tune per project.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures use fake/sample credentials by design"
+paths = [
+  '''tests/.*''',
+  '''.*/tests/.*''',
+]
