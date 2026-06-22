@@ -98,6 +98,8 @@ def load_profile() -> dict:
 def ctx(profile: dict, env: str = "", tag: str = "") -> dict:
     c = {k: "" for k in CTX_KEYS}
     c.update(profile.get("params", {}))
+    # Per-environment param overrides (e.g. a distinct app/namespace per env).
+    c.update(profile.get("environments", {}).get(env, {}).get("params", {}))
     c["env"], c["tag"] = env, tag
     c["health_path"] = profile.get("health_path", "/health")
     c["url"] = profile.get("environments", {}).get(env, {}).get("url", "")
