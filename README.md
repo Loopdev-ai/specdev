@@ -8,7 +8,7 @@ phases**, and a generated **traceability matrix**.
 ## Install
 
 ```
-/plugin marketplace add alaneff/specdev      # or your git remote URL
+/plugin marketplace add alaneff/specdev      # or a local clone path
 /plugin install specdev@neffsec-specdev
 ```
 
