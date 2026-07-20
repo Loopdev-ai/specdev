@@ -67,9 +67,20 @@ full test output, or code surveys into this thread.
    `BUILD.md` → *Deployment Facts*, then `deploy.py preflight --env staging` and
    `--env production` until green (the `preflight` job blocks the merge
    otherwise).
-3. Update `BUILD.md` status to `qa`, then tell the user the build is green and
+3. **Org-ADR compliance loop (when `.specdev/org.json` is configured) — the
+   PR is held until this is green.** Dispatch the **`adr-checker`** agent. It
+   fetches the org ADR index, verifies every ADR applicable to this repo's
+   classification, and writes `.specdev/adr/org-compliance.json`.
+   - **Red** → for each named violation dispatch a `component-builder` with
+     the violation as its contract (or amend the spec/local ADRs if the fix is
+     a documented deviation), then re-run `qa-verifier`, then re-run
+     `adr-checker`. Repeat **automatically — do not ask the user between
+     iterations** — until green.
+   - **Green** → record the verdict in the `BUILD.md` ledger and continue.
+4. Update `BUILD.md` status to `qa`, then tell the user the build is green and
    the next step is to push `feat/<feature>` and open the Implementation PR
-   (Gate 2). Do **not** open the PR automatically.
+   (Gate 2). Do **not** open the PR automatically, and never announce PR
+   readiness while `qa-verifier` or `adr-checker` is red.
 
 ## Guardrails
 
@@ -79,3 +90,5 @@ full test output, or code surveys into this thread.
   source files here, you're doing a builder's job. Send a subagent instead.
 - Treat `BUILD.md` as the source of truth: a fresh session can resume the build
   from the wave ledger without re-reading this conversation.
+- Only the `adr-checker` agent writes `.specdev/adr/org-compliance.json`; the
+  coordinator never edits it and never reads org ADR bodies into this thread.

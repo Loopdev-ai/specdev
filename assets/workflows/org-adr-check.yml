@@ -1,0 +1,33 @@
+name: org-adr-check
+
+# Deterministic org-ADR governance gate. Verifies that every org ADR applicable
+# to this repo's classification (per .specdev/org.json) has a current, justified
+# entry in .specdev/adr/org-compliance.json — the manifest the adr-checker agent
+# writes during the build. Runs on every PR (Spec PRs and Implementation PRs
+# alike) so a change cannot merge while an applicable org ADR is unverified or
+# its verification is stale. Mark this a required status check once org.json is
+# configured; it skips cleanly before then.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Skip cleanly in repos that haven't adopted org governance.
+    if: ${{ hashFiles('.specdev/org.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Org ADR compliance — applicable ADRs verified and current
+        env:
+          # For a PRIVATE governance repo the default GITHUB_TOKEN cannot read
+          # across repos — create a read-only PAT, save it as the
+          # GOVERNANCE_TOKEN secret, and it will be picked up here.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOVERNANCE_TOKEN: ${{ secrets.GOVERNANCE_TOKEN }}
+        run: python .specdev/tools/check_org_adrs.py

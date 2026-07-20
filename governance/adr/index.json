@@ -1,0 +1,48 @@
+{
+  "axes": {
+    "maturity": {
+      "ordered": true,
+      "values": {
+        "poc": {
+          "rank": 0,
+          "description": "Proof of concept / spike. Disposable code; minimal governance."
+        },
+        "dev": {
+          "rank": 1,
+          "description": "Active development, not yet serving production traffic or real data."
+        },
+        "prod": {
+          "rank": 2,
+          "description": "Production: serves real users or handles real data. Full governance applies."
+        }
+      }
+    },
+    "audience": {
+      "ordered": false,
+      "values": {
+        "internal": {
+          "description": "Used by our own teams only; no external exposure."
+        },
+        "customer": {
+          "description": "Customer-facing, or stores/processes customer data."
+        }
+      }
+    }
+  },
+  "adrs": [
+    {
+      "id": "ADR-0001",
+      "title": "Every repo declares a classification and links to the repo of record",
+      "status": "accepted",
+      "applies_to": [
+        "all"
+      ],
+      "scopes": [
+        "governance"
+      ],
+      "summary": "Each SpecDev-managed repo declares its classification (one value per axis, e.g. maturity poc/dev/prod and audience internal/customer) in .specdev/org.json and enables the org-adr-check gate; org ADRs bind repos by classification.",
+      "file": "ADR-0001-repo-classification.md",
+      "sha256": "9670ebd1d0917fa4eeec0c5b937d332a2f21ec8ffcc2babe07b0cb56f034b973"
+    }
+  ]
+}

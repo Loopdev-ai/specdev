@@ -1,0 +1,28 @@
+name: adr-index
+
+# Governance gate for THIS repo (the org's architectural repo of record).
+# Validates org ADR frontmatter and fails if governance/adr/index.json or
+# INDEX.md is stale, so a bad or unindexed org ADR can never merge.
+# Mark this a required status check on main.
+on:
+  pull_request:
+    paths:
+      - 'governance/**'
+  push:
+    branches: [main]
+    paths:
+      - 'governance/**'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate org ADR frontmatter + index freshness
+        run: python governance/tools/gen_adr_index.py --check

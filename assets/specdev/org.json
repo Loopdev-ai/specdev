@@ -1,0 +1,10 @@
+{
+  "$comment": "Link to the org's architectural repo of record (the SpecDev governance repo). Filled by /specdev:init. All org-ADR tooling (check_org_adrs.py, org-adr-check.yml, the adr-checker agent) is inert while values are REPLACE_ME. 'classification' declares one value per axis of the governance repo's classification.json (init rewrites the keys to match the org's axes; the two below are the seeded defaults) and scopes which org ADRs bind this repo. A bare string is accepted when the org scheme defines a single axis. Pin 'ref' to a tag to upgrade governance deliberately; leave 'main' to track it.",
+  "governance_repo": "REPLACE_ME_OWNER/REPLACE_ME_REPO",
+  "ref": "main",
+  "path": "governance/adr",
+  "classification": {
+    "maturity": "REPLACE_ME (poc | dev | prod)",
+    "audience": "REPLACE_ME (internal | customer)"
+  }
+}

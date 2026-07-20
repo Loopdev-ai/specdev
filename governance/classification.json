@@ -1,0 +1,20 @@
+{
+  "$comment": "Org repo classification scheme, multi-axis. Each axis names one dimension of a repo's identity; every repo declares one value per axis in .specdev/org.json (e.g. {\"maturity\": \"prod\", \"audience\": \"internal\"}). Ordered axes give values a rank so an org ADR can target '<value>+' (that rank and above). Value names must be unique ACROSS axes so ADR 'applies_to' entries can name them bare ('prod', 'customer & dev+'). Extensible: add axes or values as needed. Read by governance/tools/gen_adr_index.py, embedded into governance/adr/index.json, and consumed from there by every product repo's check_org_adrs.py.",
+  "axes": {
+    "maturity": {
+      "ordered": true,
+      "values": {
+        "poc": { "rank": 0, "description": "Proof of concept / spike. Disposable code; minimal governance." },
+        "dev": { "rank": 1, "description": "Active development, not yet serving production traffic or real data." },
+        "prod": { "rank": 2, "description": "Production: serves real users or handles real data. Full governance applies." }
+      }
+    },
+    "audience": {
+      "ordered": false,
+      "values": {
+        "internal": { "description": "Used by our own teams only; no external exposure." },
+        "customer": { "description": "Customer-facing, or stores/processes customer data." }
+      }
+    }
+  }
+}

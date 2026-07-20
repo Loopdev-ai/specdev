@@ -17,6 +17,39 @@ Do this:
    (create the directory if needed; same no-overwrite rule).
 3b. Copy `${CLAUDE_PLUGIN_ROOT}/assets/gitleaks.toml` → `./.gitleaks.toml` (same
    no-overwrite rule) so the secret-scan gate allowlists test fixtures.
+3c. **Link to the org's architectural repo of record.** Ask the user for:
+   - the governance repo (`owner/name` — the org's SpecDev repo holding
+     `governance/adr/`), and the `ref` to track (`main`, or a tag to pin);
+   - this repo's **classification** — fetch
+     `governance/classification.json` from that repo and ask for **one value
+     per axis** (e.g. seeded axes: `maturity` = poc | dev | prod, `audience` =
+     internal | customer; orgs may define others — fall back to those seeds if
+     the file is unreachable). This is a decision, not a detection: it
+     determines which org ADRs bind this repo. Write it as an object, e.g.
+     `{"maturity": "prod", "audience": "internal"}`, rewriting the template's
+     axis keys to match the org's actual axes.
+   Fill `.specdev/org.json` with the answers. If the org has no governance
+   repo, leave the `REPLACE_ME` values — every org-ADR tool and gate is inert
+   until it is configured.
+3d. **Point Claude at the source of truth (only if 3c was configured).**
+   Append this block to the repo's `CLAUDE.md` (create the file if absent; if
+   the markers already exist, replace the block — idempotent):
+
+   ```markdown
+   <!-- specdev:org-adr-governance -->
+   ## Org architecture governance
+   This repo is classified **<axis: value, one per axis — e.g. maturity:
+   prod, audience: internal>** and is governed by the org ADRs in
+   `<owner/name>` (ref `<ref>`, path `governance/adr/`) — the architectural
+   repo of record. Before making or documenting any
+   architectural decision, and before opening any Spec or Implementation PR,
+   dispatch the specdev `adr-checker` agent to verify the work against the
+   applicable org ADRs. Never open a PR while it reports violations; fix
+   automatically (builder → QA → re-check) and only stop for a genuine
+   conflict that needs a human decision. Deviations require a local ADR plus
+   a justified `superseded-by-local` entry — never silence.
+   <!-- /specdev:org-adr-governance -->
+   ```
 4. **Determine the deploy target:** run `python .specdev/tools/detect_deploy.py`.
    It writes `.specdev/deploy.profile.json`. For an **existing** repo it detects
    the current platform; show the target, rollback strategy, and any
@@ -46,6 +79,9 @@ Then print this post-install checklist:
   and add the platform-CLI install/auth step noted in `deploy.yml`.
 - Branch protection on `main`: require the `post-dev-qa` checks + PR review.
 - Require `spec-validate` on `spec/**` branches.
+- If org governance was configured (3c): mark `org-adr-check` a required
+  status check; if the governance repo is private, add a read-only PAT as the
+  `GOVERNANCE_TOKEN` secret (the workflow already reads it).
 - Create `staging` and `production` Environments (no required reviewer on
   production — promotion is automatic).
 
