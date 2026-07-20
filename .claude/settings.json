@@ -1,9 +1,9 @@
 {
   "enabledPlugins": {
-    "specdev@neffsec-specdev": true
+    "specdev@loopdev-specdev": true
   },
   "extraKnownMarketplaces": {
-    "neffsec-specdev": {
+    "loopdev-specdev": {
       "source": {
         "source": "github",
         "repo": "Loopdev-ai/specdev"

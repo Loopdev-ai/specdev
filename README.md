@@ -9,7 +9,7 @@ phases**, and a generated **traceability matrix**.
 
 ```
 /plugin marketplace add Loopdev-ai/specdev   # or a local clone path
-/plugin install specdev@neffsec-specdev
+/plugin install specdev@loopdev-specdev
 ```
 
 Then, inside any repo you want to put on the pipeline:
