@@ -44,9 +44,20 @@ deployment, QA, and traceability are automatic.
      a platform ADR if you're deliberately migrating.
    - Any platform without a built-in recipe uses the `script` target
      (`.specdev/deploy/deploy.sh`) — the kit is never tied to a fixed list.
-5. **Open the Spec PR.** `spec-validate.yml` runs `validate_spec.py` as a
-   required check. Get it green, get human approval, merge. This locks the
-   contract — do not renumber REQs afterward.
+
+   **Org governance check (if `.specdev/org.json` is configured):** dispatch
+   the **`adr-checker`** agent now — org ADRs from the architectural repo of
+   record that apply to this repo's classification constrain these decisions.
+   Resolve a conflict by changing the design, or by a *justified* deviation: a
+   local ADR documenting it plus a `superseded-by-local` manifest entry. Never
+   proceed silently past a violation, and never read org ADR bodies into this
+   thread — that is the checker's job.
+5. **Open the Spec PR.** Before opening it, the **`adr-checker`** agent must
+   be green (when org governance is configured) — a spec that contradicts an
+   applicable org ADR is fixed *before* review, not during. Then
+   `spec-validate.yml` runs `validate_spec.py` and `org-adr-check.yml` runs
+   `check_org_adrs.py` as required checks. Get them green, get human approval,
+   merge. This locks the contract — do not renumber REQs afterward.
 6. **Build on `feat/<feature>`** off the merged spec — run **`/specdev:build`**,
    which drives the loop below. You act as a coordinator, not a builder (see
    *Context discipline* and *Parallel dispatch protocol*):
@@ -68,9 +79,17 @@ deployment, QA, and traceability are automatic.
    - **Starting a build authorizes subagent dispatch.** This workflow spawns
      subagents by design; the harness default ("don't spawn unless asked") does
      not apply once the user has invoked the SpecDev build — dispatch them.
-7. **Open the Implementation PR (Gate 2).** `post-dev-qa.yml` runs tests,
-   security scan, coverage, and `gen_traceability.py --check-gaps` (fails if any
-   REQ has no test). These are required status checks. Get review + green, merge.
+7. **Open the Implementation PR (Gate 2) — only after the org-ADR loop is
+   green.** With org governance configured, run this fully automatic loop
+   first (no user prompts between iterations): dispatch **`adr-checker`** →
+   on red, dispatch a `component-builder` to fix each named violation (or
+   amend the local ADRs for a justified deviation) → re-run `qa-verifier` →
+   re-run `adr-checker` — repeat until green. **Do not open the PR while the
+   checker reports violations.** Then `post-dev-qa.yml` runs tests, security
+   scan, coverage, and `gen_traceability.py --check-gaps` (fails if any REQ
+   has no test), and `org-adr-check.yml` deterministically re-proves the
+   manifest against the org index. These are required status checks. Get
+   review + green, merge.
 8. **Merge is the deploy trigger.** `deploy.yml` builds, tags an immutable
    release, deploys staging, then runs `post-deploy-qa.yml` against staging.
    **Staging QA is the promotion gate** (prod is fully automatic, no human
@@ -101,7 +120,8 @@ never fills the context window:
   status. Never hold full source files, full test output, or full code surveys.
 - **Offload all heavy work to subagents** whose context is discarded — reverse-
   mapping (`spec-explorer`), component builds (`component-builder`), QA
-  (`qa-verifier`). Only their short summaries return to you.
+  (`qa-verifier`), org-ADR verification (`adr-checker`). Only their short
+  summaries return to you.
 - **Checkpoint to disk after every phase.** Write decisions, the build log, and
   open items into `.specdev/BUILD.md` so the conversation can be safely
   summarized/compacted without losing the thread. Treat `BUILD.md` as the
@@ -140,6 +160,11 @@ through `component-builder` so its detail stays out of this thread.
   the only thing between a merge and production.
 - Keep `FEAT-###` / `REQ-###` IDs stable for the life of the feature; the whole
   matrix is keyed on them.
+- Never open a Spec or Implementation PR while `adr-checker` reports org-ADR
+  violations. The fix loop (builder → QA → re-check) runs automatically; the
+  PR itself is the only human gate. Never hand-edit
+  `.specdev/adr/org-compliance.json` — only the checker writes it, and the
+  `org-adr-check` CI gate will catch a forged or stale entry by content hash.
 - Rollback is built in (profile-driven), but confirm `.specdev/deploy.profile.json`
   is correct — a wrong target or placeholder URL is the one thing that defeats
   auto-prod safety. Run `detect_deploy.py` and review it during `/specdev:init`.
@@ -157,4 +182,5 @@ through `component-builder` so its detail stays out of this thread.
 python .specdev/tools/validate_spec.py --strict      # Gate 1 check
 python .specdev/tools/gen_traceability.py            # write the matrix
 python .specdev/tools/gen_traceability.py --check-gaps  # Gate 2 test-coverage check
+python .specdev/tools/check_org_adrs.py              # org-ADR gate (inert until org.json is configured)
 ```

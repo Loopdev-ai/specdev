@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "specdev@loopdev-specdev": true
+  },
+  "extraKnownMarketplaces": {
+    "loopdev-specdev": {
+      "source": {
+        "source": "github",
+        "repo": "Loopdev-ai/specdev"
+      }
+    }
+  }
+}
