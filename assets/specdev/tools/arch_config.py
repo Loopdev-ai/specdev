@@ -281,6 +281,39 @@ def cmd_list_envs(root, args):
         print(env)
 
 
+def cmd_edit(root, args):
+    doc = load(root)
+    env_obj = get_env(doc, args.env)
+    rec = find_record(env_obj, args.category, args.name)
+    if not rec:
+        die(f"'{args.name}' not found in [{args.env}].{args.category} (use add)")
+    _apply_fields(rec, args)
+    _validate_and_save(root, doc)
+    print(f"edited [{args.env}].{args.category}[{args.name}]")
+
+
+def cmd_delete(root, args):
+    doc = load(root)
+    env_obj = get_env(doc, args.env)
+    rec = find_record(env_obj, args.category, args.name)
+    if not rec:
+        die(f"'{args.name}' not found in [{args.env}].{args.category}")
+    env_obj[args.category].remove(rec)
+    _validate_and_save(root, doc)
+    print(f"deleted [{args.env}].{args.category}[{args.name}]")
+
+
+def cmd_validate(root, args):
+    errs = validate_doc(load(root))
+    for e in errs:
+        print(f"ERROR: {e}")
+    if errs:
+        print(f"\narch-config INVALID: {len(errs)} error(s)")
+        return 1
+    print("arch-config valid.")
+    return 0
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description="SpecDev architecture / runtime hosting config store")
     ap.add_argument("--root", default=".")
@@ -316,6 +349,7 @@ DISPATCH = {
     "add-env": cmd_add_env, "list-envs": cmd_list_envs,
     # "edit", "delete", "validate" added in Task 5
 }
+DISPATCH.update({"edit": cmd_edit, "delete": cmd_delete, "validate": cmd_validate})
 
 
 def main(argv=None):

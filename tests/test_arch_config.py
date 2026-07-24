@@ -296,3 +296,61 @@ def test_same_name_different_env_independent(tmp_path):
     doc = ac.load(tmp_path)
     assert doc["environments"]["production"]["app_servers"][0]["hostname"] == "production-web"
     assert doc["environments"]["staging"]["app_servers"][0]["hostname"] == "staging-web"
+
+
+def _seed_with_kv(tmp_path):
+    write_seed(tmp_path)
+    ac.main(["--root", str(tmp_path), "add", "--env", "production", "--category", "app_servers",
+             "--name", "web", "--set", "hostname=h1"])
+
+
+def test_edit_updates_field(tmp_path):
+    _seed_with_kv(tmp_path)
+    rc = ac.main(["--root", str(tmp_path), "edit", "--env", "production", "--category", "app_servers",
+                  "--name", "web", "--set", "hostname=h2"])
+    assert rc == 0
+    assert ac.load(tmp_path)["environments"]["production"]["app_servers"][0]["hostname"] == "h2"
+
+
+def test_edit_missing_record_exits(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "edit", "--env", "production", "--category", "app_servers",
+                 "--name", "ghost", "--set", "hostname=h"])
+
+
+def test_edit_no_default_clears_flag(tmp_path):
+    write_seed(tmp_path)
+    ac.main(["--root", str(tmp_path), "add", "--env", "production", "--category", "key_vaults",
+             "--name", "kv", "--set", "cloud=azure", "--set", "vault_uri=https://x", "--default"])
+    ac.main(["--root", str(tmp_path), "edit", "--env", "production", "--category", "key_vaults",
+             "--name", "kv", "--no-default"])
+    assert "default" not in ac.load(tmp_path)["environments"]["production"]["key_vaults"][0]
+
+
+def test_delete_removes_record(tmp_path):
+    _seed_with_kv(tmp_path)
+    rc = ac.main(["--root", str(tmp_path), "delete", "--env", "production", "--category", "app_servers",
+                  "--name", "web"])
+    assert rc == 0
+    assert ac.load(tmp_path)["environments"]["production"]["app_servers"] == []
+
+
+def test_delete_missing_exits(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "delete", "--env", "production", "--category", "app_servers",
+                 "--name", "ghost"])
+
+
+def test_validate_command_passes_on_seed(tmp_path):
+    write_seed(tmp_path)
+    assert ac.main(["--root", str(tmp_path), "validate"]) == 0
+
+
+def test_validate_command_fails_on_bad_doc(tmp_path):
+    write_seed(tmp_path)
+    doc = ac.load(tmp_path)
+    doc["environments"]["production"]["key_vaults"].append({"name": "kv"})  # missing required
+    ac.save(tmp_path, doc)
+    assert ac.main(["--root", str(tmp_path), "validate"]) == 1
