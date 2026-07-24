@@ -1,26 +1,38 @@
+import importlib.util
 import json
-import sys
 from pathlib import Path
+
 import pytest
 
-# Add the tools directory to sys.path
-sys.path.insert(0, str(Path(__file__).parents[1] / "assets" / "specdev" / "tools"))
-import arch_config as ac
-
-MOD_PATH = Path(__file__)
+ROOT = Path(__file__).resolve().parents[1]
+MOD_PATH = ROOT / "assets" / "specdev" / "tools" / "arch_config.py"
+SEED_PATH = ROOT / "assets" / "specdev" / "architecture-config.json"
 
 
-def write_seed(tmp_path):
-    """Helper to write seed datastore to tmp_path/.specdev/architecture-config.json"""
-    config_dir = tmp_path / ".specdev"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    seed = {
+def load_mod():
+    spec = importlib.util.spec_from_file_location("arch_config", MOD_PATH)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+ac = load_mod()
+
+
+def seed_doc():
+    return {
         "schema_version": ac.SCHEMA_VERSION,
         "environments": {
-            "production": {cat: [] for cat in ac.CATEGORIES}
-        }
+            "production": {cat: [] for cat in ac.CATEGORIES},
+        },
     }
-    (config_dir / "architecture-config.json").write_text(json.dumps(seed, indent=2))
+
+
+def write_seed(root):
+    (root / ".specdev").mkdir(parents=True, exist_ok=True)
+    (root / ".specdev" / "architecture-config.json").write_text(
+        json.dumps(seed_doc(), indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def test_categories_are_the_ten_expected():
@@ -32,9 +44,7 @@ def test_categories_are_the_ten_expected():
 
 
 def test_seed_file_matches_schema_shape():
-    seed = json.loads(
-        (MOD_PATH.parents[1] / "assets" / "specdev" / "architecture-config.json").read_text()
-    )
+    seed = json.loads(SEED_PATH.read_text())
     assert seed["schema_version"] == ac.SCHEMA_VERSION
     assert set(seed["environments"]["production"]) == set(ac.CATEGORIES)
 
