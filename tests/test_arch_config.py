@@ -137,3 +137,73 @@ def test_defaults_in_different_envs_are_independent():
             {"name": "kv", "cloud": "azure", "vault_uri": "https://x", "default": True}
         ]
     assert ac.validate_doc(d) == []
+
+
+def _kv(name="core-kv", default=False):
+    r = {"name": name, "cloud": "azure", "vault_uri": f"https://{name}.vault.azure.net"}
+    if default:
+        r["default"] = True
+    return r
+
+
+def test_secret_ref_key_vault_resolves():
+    d = seed_doc()
+    p = d["environments"]["production"]
+    p["key_vaults"].append(_kv())
+    p["databases"].append({
+        "name": "db", "engine": "postgres", "host": "h", "port": 5432, "database": "app",
+        "secret_ref": {"provider": "key_vault", "vault": "core-kv", "secret_name": "db-pw"},
+    })
+    assert ac.validate_doc(d) == []
+
+
+def test_secret_ref_dangling_vault_fails():
+    d = seed_doc()
+    d["environments"]["production"]["databases"].append({
+        "name": "db", "engine": "postgres", "host": "h", "port": 5432, "database": "app",
+        "secret_ref": {"provider": "key_vault", "vault": "ghost", "secret_name": "x"},
+    })
+    assert any("no matching key_vaults record" in e for e in ac.validate_doc(d))
+
+
+def test_secret_ref_env_requires_env_var():
+    d = seed_doc()
+    d["environments"]["production"]["databases"].append({
+        "name": "db", "engine": "postgres", "host": "h", "port": 5432, "database": "app",
+        "secret_ref": {"provider": "env"},
+    })
+    assert any("env_var" in e for e in ac.validate_doc(d))
+
+
+def test_secret_ref_unknown_provider_fails():
+    d = seed_doc()
+    d["environments"]["production"]["databases"].append({
+        "name": "db", "engine": "postgres", "host": "h", "port": 5432, "database": "app",
+        "secret_ref": {"provider": "smoke-signal", "x": "y"},
+    })
+    assert any("provider" in e for e in ac.validate_doc(d))
+
+
+def test_secret_ref_must_be_object_not_string():
+    d = seed_doc()
+    d["environments"]["production"]["databases"].append({
+        "name": "db", "engine": "postgres", "host": "h", "port": 5432, "database": "app",
+        "secret_ref": "hunter2",
+    })
+    assert any("must be a secret_ref object" in e for e in ac.validate_doc(d))
+
+
+def test_leak_guard_flags_literal_secret_in_plain_field():
+    d = seed_doc()
+    d["environments"]["production"]["databases"].append({
+        "name": "db", "engine": "postgres", "host": "Password=hunter2", "port": 5432, "database": "app",
+    })
+    assert any("literal secret" in e for e in ac.validate_doc(d))
+
+
+def test_leak_guard_flags_private_key():
+    d = seed_doc()
+    d["environments"]["production"]["app_servers"].append({
+        "name": "s", "hostname": "-----BEGIN RSA PRIVATE KEY-----",
+    })
+    assert any("literal secret" in e for e in ac.validate_doc(d))

@@ -152,4 +152,34 @@ def validate_doc(doc):
 
 
 def _secret_errors(rec, spec, label, vault_names):
-    return []  # replaced in Task 3
+    errs = []
+    for sf in spec["secret"]:
+        if sf in rec:
+            errs.extend(_validate_secret_ref(rec[sf], f"{label}.{sf}", vault_names))
+    # leak guard: no literal secrets in plain string fields
+    for f, v in rec.items():
+        if f in spec["secret"] or not isinstance(v, str):
+            continue
+        if any(pat.search(v) for pat in LEAK_PATTERNS):
+            errs.append(f"{label}.{f} looks like a literal secret; use a secret_ref")
+    return errs
+
+
+def _validate_secret_ref(ref, label, vault_names):
+    if not isinstance(ref, dict):
+        return [f"{label} must be a secret_ref object (never a literal secret)"]
+    errs = []
+    provider = ref.get("provider")
+    if provider not in SECRET_PROVIDERS:
+        return [f"{label} secret_ref.provider must be one of {sorted(SECRET_PROVIDERS)}"]
+    required = SECRET_PROVIDERS[provider]
+    allowed = {"provider", *required}
+    for k in required:
+        if not ref.get(k):
+            errs.append(f"{label} secret_ref missing '{k}' for provider '{provider}'")
+    for k in ref:
+        if k not in allowed:
+            errs.append(f"{label} secret_ref unknown key '{k}'")
+    if provider == "key_vault" and ref.get("vault") and ref["vault"] not in vault_names:
+        errs.append(f"{label} secret_ref.vault '{ref['vault']}' has no matching key_vaults record in this environment")
+    return errs
