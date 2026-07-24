@@ -35,6 +35,7 @@ gated flow or when a repo contains `.specdev/`.
 | Agent `spec-explorer` | reverse-maps an existing codebase for extensions (read-only) |
 | Agent `qa-verifier` | local Gate-2 dry run; returns only actionable failures |
 | Agent `adr-checker` | verifies the repo against applicable org ADRs; writes the compliance manifest; gates every PR |
+| Skill `arch-config` | capture/edit/delete a product's runtime hosting config (10 categories) as per-environment, reference-only records in `.specdev/architecture-config.json` |
 | `governance/` (this repo) | the org's **architectural repo of record**: tier-scoped org ADRs, classification scheme, generated index |
 | Assets `.specdev/` | spec, ADR, component-map, BUILD, traceability templates + Python tools |
 | Assets `.specdev/compliance/` | optional control-framework layer (ISO 27001/42001, SOC 2, NIST 800-53) — catalogs, crosswalk, SoA/risk/DPIA templates, `gen_compliance.py` |
@@ -209,7 +210,9 @@ agents/
   spec-explorer.md       read-only reverse-map for extensions
   qa-verifier.md         local Gate-2 dry run
   adr-checker.md         org-ADR verification; gates every PR
-skills/specdev/SKILL.md  the workflow driver (strict coordinator)
+skills/
+  specdev/SKILL.md       the workflow driver (strict coordinator)
+  arch-config/SKILL.md   runtime hosting config capture/edit/delete
 governance/
   classification.json    multi-axis classification scheme (maturity, audience; extensible)
   adr/                   org ADRs (repo of record) + generated index.json/INDEX.md
@@ -217,6 +220,6 @@ governance/
 .github/workflows/
   adr-index.yml          this repo's gate: valid frontmatter, fresh index
 assets/
-  specdev/               → copied to .specdev/ in target repos (incl. org.json)
+  specdev/               → copied to .specdev/ in target repos (incl. org.json, architecture-config.json seed, tools/arch_config.py)
   workflows/             → copied to .github/workflows/ in target repos
 ```

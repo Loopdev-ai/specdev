@@ -38,9 +38,12 @@ Test file `tests/test_arch_config.py` grows alongside. Shared test preamble (add
 import importlib.util
 import json
 from pathlib import Path
+
 import pytest
 
-MOD_PATH = Path(__file__).resolve().parents[1] / "assets" / "specdev" / "tools" / "arch_config.py"
+ROOT = Path(__file__).resolve().parents[1]
+MOD_PATH = ROOT / "assets" / "specdev" / "tools" / "arch_config.py"
+SEED_PATH = ROOT / "assets" / "specdev" / "architecture-config.json"
 
 
 def load_mod():
@@ -55,7 +58,7 @@ ac = load_mod()
 
 def seed_doc():
     return {
-        "schema_version": 1,
+        "schema_version": ac.SCHEMA_VERSION,
         "environments": {
             "production": {cat: [] for cat in ac.CATEGORIES},
         },
@@ -68,6 +71,9 @@ def write_seed(root):
         json.dumps(seed_doc(), indent=2) + "\n", encoding="utf-8"
     )
 ```
+
+> **Note (test scaffolding):** `test_seed_file_matches_schema_shape` reads the
+> seed via `SEED_PATH` (above), not a `MOD_PATH.parents[...]` derivation.
 
 ---
 
