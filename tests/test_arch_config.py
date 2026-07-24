@@ -381,3 +381,73 @@ def test_malformed_set_exits_cleanly(tmp_path):
     with pytest.raises(SystemExit):
         ac.main(["--root", str(tmp_path), "add", "--env", "production",
                  "--category", "app_servers", "--name", "s", "--set", "noequalssign"])
+
+
+# --- M-B: leak guard catches bare (keyword-less) long secret blobs ---
+
+def test_leak_guard_flags_bare_base64_blob():
+    # An access key / connection secret pasted with no keyword= prefix.
+    blob = "dGhpc2lzYVZlcnlMb25nQmFzZTY0RW5jb2RlZFNlY3JldEtleTEyMzQ1Njc4OTA="
+    d = _doc_with("key_vaults", {
+        "name": "kv", "cloud": "azure", "vault_uri": "https://x", "description": blob,
+    })
+    assert any("literal secret" in e for e in ac.validate_doc(d))
+
+
+def test_leak_guard_flags_bare_hex_blob():
+    d = _doc_with("app_servers", {"name": "s", "hostname": "h", "role": "a" * 64})
+    assert any("literal secret" in e for e in ac.validate_doc(d))
+
+
+def test_leak_guard_allows_realistic_values():
+    # GUIDs, HTTPS vault/base URLs, and storage account names must NOT trip the guard.
+    d = seed_doc()
+    p = d["environments"]["production"]
+    p["cloud_tenants"].append({
+        "name": "t", "cloud": "azure",
+        "tenant_id": "12345678-1234-1234-1234-123456789012",
+        "account_id": "87654321-4321-4321-4321-210987654321",
+        "default_region": "eastus",
+    })
+    p["key_vaults"].append({
+        "name": "kv", "cloud": "azure",
+        "vault_uri": "https://mycompany-core-kv.vault.azure.net/",
+    })
+    p["api_endpoints"].append({
+        "name": "api", "base_url": "https://api.mycompany.example.com/v2/resources",
+        "auth_type": "oauth",
+    })
+    p["storage_accounts"].append({
+        "name": "st", "cloud": "azure",
+        "account_name": "mycompanyprodstorage01", "kind": "blob",
+    })
+    assert ac.validate_doc(d) == []
+
+
+# --- M-C: unknown --category is rejected on every command that names one ---
+
+def test_get_unknown_category_exits(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "get", "--env", "production",
+                 "--category", "bogus", "--name", "x"])
+
+
+def test_edit_unknown_category_exits(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "edit", "--env", "production",
+                 "--category", "bogus", "--name", "x", "--set", "a=b"])
+
+
+def test_delete_unknown_category_exits(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "delete", "--env", "production",
+                 "--category", "bogus", "--name", "x"])
+
+
+def test_list_unknown_category_exits(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "list", "--category", "bogus"])
