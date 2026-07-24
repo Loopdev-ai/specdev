@@ -84,5 +84,8 @@ Then print this post-install checklist:
   `GOVERNANCE_TOKEN` secret (the workflow already reads it).
 - Create `staging` and `production` Environments (no required reviewer on
   production — promotion is automatic).
+- Architecture/runtime hosting config: capture values with the `arch-config`
+  skill (writes `.specdev/architecture-config.json`); make `arch-config-validate`
+  a required status check if you use it.
 
 Finish by summarizing what was installed and what the user must configure.

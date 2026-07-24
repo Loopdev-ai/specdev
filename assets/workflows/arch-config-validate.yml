@@ -1,0 +1,17 @@
+name: arch-config-validate
+on:
+  pull_request:
+    paths: [".specdev/architecture-config.json"]
+  push:
+    branches: [main]
+    paths: [".specdev/architecture-config.json"]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Validate architecture-config.json
+        run: python .specdev/tools/arch_config.py validate
