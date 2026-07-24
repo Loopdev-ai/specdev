@@ -207,3 +207,92 @@ def test_leak_guard_flags_private_key():
         "name": "s", "hostname": "-----BEGIN RSA PRIVATE KEY-----",
     })
     assert any("literal secret" in e for e in ac.validate_doc(d))
+
+
+def test_add_then_get_round_trip(tmp_path):
+    write_seed(tmp_path)
+    rc = ac.main([
+        "--root", str(tmp_path), "add", "--env", "production", "--category", "key_vaults",
+        "--name", "core-kv", "--set", "cloud=azure", "--set", "vault_uri=https://core.vault.azure.net",
+        "--default",
+    ])
+    assert rc == 0
+    doc = ac.load(tmp_path)
+    rec = doc["environments"]["production"]["key_vaults"][0]
+    assert rec["name"] == "core-kv" and rec["default"] is True
+
+
+def test_add_coerces_port_to_int(tmp_path):
+    write_seed(tmp_path)
+    ac.main([
+        "--root", str(tmp_path), "add", "--env", "production", "--category", "databases",
+        "--name", "db", "--set", "engine=postgres", "--set", "host=h",
+        "--set", "port=5432", "--set", "database=app",
+    ])
+    assert ac.load(tmp_path)["environments"]["production"]["databases"][0]["port"] == 5432
+
+
+def test_add_with_secret_ref(tmp_path):
+    write_seed(tmp_path)
+    ac.main([
+        "--root", str(tmp_path), "add", "--env", "production", "--category", "key_vaults",
+        "--name", "core-kv", "--set", "cloud=azure", "--set", "vault_uri=https://x",
+    ])
+    rc = ac.main([
+        "--root", str(tmp_path), "add", "--env", "production", "--category", "databases",
+        "--name", "db", "--set", "engine=postgres", "--set", "host=h", "--set", "port=5432",
+        "--set", "database=app",
+        "--secret-ref", "provider=key_vault,vault=core-kv,secret_name=db-pw",
+    ])
+    assert rc == 0
+    ref = ac.load(tmp_path)["environments"]["production"]["databases"][0]["secret_ref"]
+    assert ref == {"provider": "key_vault", "vault": "core-kv", "secret_name": "db-pw"}
+
+
+def test_add_duplicate_name_exits(tmp_path):
+    write_seed(tmp_path)
+    args = ["--root", str(tmp_path), "add", "--env", "production", "--category", "app_servers",
+            "--name", "s", "--set", "hostname=h"]
+    ac.main(args)
+    with pytest.raises(SystemExit):
+        ac.main(args)
+
+
+def test_add_invalid_record_aborts_write(tmp_path):
+    write_seed(tmp_path)
+    before = ac.config_path(tmp_path).read_text()
+    with pytest.raises(SystemExit):
+        ac.main([  # dangling vault ref -> validation fails -> no write
+            "--root", str(tmp_path), "add", "--env", "production", "--category", "databases",
+            "--name", "db", "--set", "engine=postgres", "--set", "host=h", "--set", "port=5432",
+            "--set", "database=app", "--secret-ref", "provider=key_vault,vault=ghost,secret_name=x",
+        ])
+    assert ac.config_path(tmp_path).read_text() == before  # unchanged
+
+
+def test_add_env_and_list_envs(tmp_path, capsys):
+    write_seed(tmp_path)
+    ac.main(["--root", str(tmp_path), "add-env", "--env", "staging"])
+    assert set(ac.load(tmp_path)["environments"]) == {"production", "staging"}
+    ac.main(["--root", str(tmp_path), "list-envs"])
+    out = capsys.readouterr().out
+    assert "staging" in out and "production" in out
+
+
+def test_list_shows_default_flag(tmp_path, capsys):
+    write_seed(tmp_path)
+    ac.main(["--root", str(tmp_path), "add", "--env", "production", "--category", "key_vaults",
+             "--name", "core-kv", "--set", "cloud=azure", "--set", "vault_uri=https://x", "--default"])
+    ac.main(["--root", str(tmp_path), "list", "--category", "key_vaults"])
+    assert "*default" in capsys.readouterr().out
+
+
+def test_same_name_different_env_independent(tmp_path):
+    write_seed(tmp_path)
+    ac.main(["--root", str(tmp_path), "add-env", "--env", "staging"])
+    for env in ("production", "staging"):
+        ac.main(["--root", str(tmp_path), "add", "--env", env, "--category", "app_servers",
+                 "--name", "web", "--set", f"hostname={env}-web"])
+    doc = ac.load(tmp_path)
+    assert doc["environments"]["production"]["app_servers"][0]["hostname"] == "production-web"
+    assert doc["environments"]["staging"]["app_servers"][0]["hostname"] == "staging-web"
