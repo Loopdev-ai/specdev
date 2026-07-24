@@ -92,3 +92,64 @@ def find_record(env_obj, category, name):
 def die(msg):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def validate_doc(doc):
+    errors = []
+    if doc.get("schema_version") != SCHEMA_VERSION:
+        errors.append(f"schema_version must be {SCHEMA_VERSION}")
+    envs = doc.get("environments")
+    if not isinstance(envs, dict):
+        errors.append("'environments' must be an object")
+        return errors
+    for env_name, env_obj in envs.items():
+        if not isinstance(env_obj, dict):
+            errors.append(f"[{env_name}] must be an object")
+            continue
+        for cat in env_obj:
+            if cat not in CATEGORIES:
+                errors.append(f"[{env_name}] unknown category '{cat}'")
+        vault_names = {
+            r["name"]
+            for r in (env_obj.get("key_vaults") or [])
+            if isinstance(r, dict) and r.get("name")
+        }
+        for cat, spec in CATEGORIES.items():
+            records = env_obj.get(cat, [])
+            if not isinstance(records, list):
+                errors.append(f"[{env_name}].{cat} must be a list")
+                continue
+            seen = set()
+            default_count = 0
+            for rec in records:
+                if not isinstance(rec, dict):
+                    errors.append(f"[{env_name}].{cat} record must be an object")
+                    continue
+                name = rec.get("name")
+                label = f"[{env_name}].{cat}[{name!r}]"
+                if not name or not isinstance(name, str):
+                    errors.append(f"{label} missing string 'name'")
+                elif name in seen:
+                    errors.append(f"{label} duplicate name")
+                else:
+                    seen.add(name)
+                for f in spec["required"]:
+                    if f not in rec or rec[f] in (None, ""):
+                        errors.append(f"{label} missing required field '{f}'")
+                allowed = allowed_fields(cat)
+                for f in rec:
+                    if f not in allowed:
+                        errors.append(f"{label} unknown field '{f}'")
+                if "default" in rec and not isinstance(rec["default"], bool):
+                    errors.append(f"{label} 'default' must be boolean")
+                elif rec.get("default") is True:
+                    default_count += 1
+                # --- secret + leak rules added in Task 3 ---
+                errors.extend(_secret_errors(rec, spec, label, vault_names))
+            if default_count > 1:
+                errors.append(f"[{env_name}].{cat} has {default_count} records marked default (max 1)")
+    return errors
+
+
+def _secret_errors(rec, spec, label, vault_names):
+    return []  # replaced in Task 3

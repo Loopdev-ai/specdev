@@ -72,3 +72,68 @@ def test_find_record(tmp_path):
     env_obj = {"key_vaults": [{"name": "kv"}]}
     assert ac.find_record(env_obj, "key_vaults", "kv")["name"] == "kv"
     assert ac.find_record(env_obj, "key_vaults", "nope") is None
+
+
+def _doc_with(category, record):
+    d = seed_doc()
+    d["environments"]["production"][category].append(record)
+    return d
+
+
+def test_valid_seed_passes():
+    assert ac.validate_doc(seed_doc()) == []
+
+
+def test_wrong_schema_version_fails():
+    d = seed_doc()
+    d["schema_version"] = 2
+    assert any("schema_version" in e for e in ac.validate_doc(d))
+
+
+def test_environments_must_be_object():
+    assert any("environments" in e for e in ac.validate_doc({"schema_version": 1, "environments": []}))
+
+
+def test_unknown_category_fails():
+    d = seed_doc()
+    d["environments"]["production"]["bogus"] = []
+    assert any("unknown category" in e for e in ac.validate_doc(d))
+
+
+def test_missing_required_field_fails():
+    d = _doc_with("key_vaults", {"name": "kv"})  # missing cloud, vault_uri
+    errs = ac.validate_doc(d)
+    assert any("cloud" in e for e in errs)
+    assert any("vault_uri" in e for e in errs)
+
+
+def test_unknown_field_fails():
+    d = _doc_with("key_vaults", {"name": "kv", "cloud": "azure", "vault_uri": "https://x", "wat": 1})
+    assert any("unknown field 'wat'" in e for e in ac.validate_doc(d))
+
+
+def test_duplicate_name_fails():
+    d = seed_doc()
+    d["environments"]["production"]["app_servers"] = [
+        {"name": "a", "hostname": "h1"}, {"name": "a", "hostname": "h2"},
+    ]
+    assert any("duplicate name" in e for e in ac.validate_doc(d))
+
+
+def test_two_defaults_in_category_fail():
+    d = seed_doc()
+    d["environments"]["production"]["key_vaults"] = [
+        {"name": "kv1", "cloud": "azure", "vault_uri": "https://1", "default": True},
+        {"name": "kv2", "cloud": "azure", "vault_uri": "https://2", "default": True},
+    ]
+    assert any("default" in e for e in ac.validate_doc(d))
+
+
+def test_defaults_in_different_envs_are_independent():
+    d = seed_doc()
+    d["environments"]["staging"] = {cat: [] for cat in ac.CATEGORIES}
+    for env in ("production", "staging"):
+        d["environments"][env]["key_vaults"] = [
+            {"name": "kv", "cloud": "azure", "vault_uri": "https://x", "default": True}
+        ]
+    assert ac.validate_doc(d) == []
