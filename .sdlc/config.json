@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "version": "0.0.1",
+  "monorepo": false,
+  "package_manager": "bun",
+  "commands": {
+    "test": "pytest",
+    "lint": "python -m py_compile governance/tools/gen_adr_index.py assets/specdev/tools/check_org_adrs.py assets/specdev/tools/deploy.py assets/specdev/tools/detect_deploy.py assets/specdev/tools/gen_compliance.py assets/specdev/tools/gen_traceability.py assets/specdev/tools/validate_spec.py"
+  },
+  "patterns": {
+    "main_branch": "main"
+  },
+  "prd_dir": "docs/product",
+  "roadmap_path": "docs/product/roadmap.md"
+}
