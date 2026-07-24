@@ -48,6 +48,14 @@ SECRET_PROVIDERS = {
 LEAK_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)\b(password|pwd|accountkey|apikey|api_key|client_secret)\s*=\s*\S+"),
+    # A bare high-entropy blob (access key, connection secret, JWT segment) pasted
+    # with no keyword= prefix. 40+ base64-ish chars covers hex too (hex ⊂ base64).
+    # '/' is deliberately excluded from the run so URL/ARM-resource-id paths (which
+    # are '/'-joined) don't false-positive; a real base64 secret containing '/' still
+    # trips because its remaining runs exceed 40. Realistic config values (GUIDs,
+    # https URLs, ≤24-char storage names) stay under this length because '.', '-',
+    # '/', and ':' break the run.
+    re.compile(r"(?<![A-Za-z0-9+])[A-Za-z0-9+]{40,}={0,2}(?![A-Za-z0-9+])"),
 ]
 
 
@@ -233,9 +241,13 @@ def _apply_fields(rec, args):
         rec.pop("default", None)
 
 
+def _require_category(category):
+    if category not in CATEGORIES:
+        die(f"unknown category '{category}' (valid: {', '.join(CATEGORIES)})")
+
+
 def cmd_add(root, args):
-    if args.category not in CATEGORIES:
-        die(f"unknown category '{args.category}'")
+    _require_category(args.category)
     doc = load(root)
     env_obj = get_env(doc, args.env)
     env_obj.setdefault(args.category, [])
@@ -249,6 +261,7 @@ def cmd_add(root, args):
 
 
 def cmd_get(root, args):
+    _require_category(args.category)
     doc = load(root)
     env_obj = get_env(doc, args.env)
     rec = find_record(env_obj, args.category, args.name)
@@ -258,6 +271,8 @@ def cmd_get(root, args):
 
 
 def cmd_list(root, args):
+    if args.category:
+        _require_category(args.category)
     doc = load(root)
     envs = doc.get("environments", {})
     for env in ([args.env] if args.env else list(envs)):
@@ -285,6 +300,7 @@ def cmd_list_envs(root, args):
 
 
 def cmd_edit(root, args):
+    _require_category(args.category)
     doc = load(root)
     env_obj = get_env(doc, args.env)
     rec = find_record(env_obj, args.category, args.name)
@@ -296,6 +312,7 @@ def cmd_edit(root, args):
 
 
 def cmd_delete(root, args):
+    _require_category(args.category)
     doc = load(root)
     env_obj = get_env(doc, args.env)
     rec = find_record(env_obj, args.category, args.name)
