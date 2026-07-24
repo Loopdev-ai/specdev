@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "environments": {
+    "production": {
+      "cloud_tenants": [],
+      "network_ranges": [],
+      "databases": [],
+      "app_servers": [],
+      "service_endpoints": [],
+      "api_endpoints": [],
+      "service_accounts": [],
+      "app_registrations": [],
+      "key_vaults": [],
+      "storage_accounts": []
+    }
+  }
+}
