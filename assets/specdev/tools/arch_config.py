@@ -64,7 +64,10 @@ def load(root):
     p = config_path(root)
     if not p.exists():
         raise FileNotFoundError(f"{p} not found (run /specdev:init to scaffold it)")
-    return json.loads(p.read_text(encoding="utf-8"))
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise ValueError(f"{p} must contain a JSON object")
+    return doc
 
 
 def save(root, doc):

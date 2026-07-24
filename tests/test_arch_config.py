@@ -354,3 +354,30 @@ def test_validate_command_fails_on_bad_doc(tmp_path):
     doc["environments"]["production"]["key_vaults"].append({"name": "kv"})  # missing required
     ac.save(tmp_path, doc)
     assert ac.main(["--root", str(tmp_path), "validate"]) == 1
+
+
+def test_secret_ref_vault_scoped_per_environment():
+    # A vault catalogued only in staging must NOT satisfy a production ref.
+    d = seed_doc()
+    d["environments"]["staging"] = {cat: [] for cat in ac.CATEGORIES}
+    d["environments"]["staging"]["key_vaults"].append(_kv())  # core-kv only in staging
+    d["environments"]["production"]["databases"].append({
+        "name": "db", "engine": "postgres", "host": "h", "port": 5432, "database": "app",
+        "secret_ref": {"provider": "key_vault", "vault": "core-kv", "secret_name": "x"},
+    })
+    assert any("no matching key_vaults record" in e for e in ac.validate_doc(d))
+
+
+def test_non_object_json_exits_cleanly(tmp_path):
+    # A file that is valid JSON but not an object must die cleanly, not traceback.
+    (tmp_path / ".specdev").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".specdev" / "architecture-config.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "validate"])
+
+
+def test_malformed_set_exits_cleanly(tmp_path):
+    write_seed(tmp_path)
+    with pytest.raises(SystemExit):
+        ac.main(["--root", str(tmp_path), "add", "--env", "production",
+                 "--category", "app_servers", "--name", "s", "--set", "noequalssign"])
