@@ -49,10 +49,13 @@ LEAK_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)\b(password|pwd|accountkey|apikey|api_key|client_secret)\s*=\s*\S+"),
     # A bare high-entropy blob (access key, connection secret, JWT segment) pasted
-    # with no keyword= prefix. 40+ base64 chars covers hex too (hex ⊂ base64).
-    # Realistic config values (GUIDs, https URLs, ≤24-char storage names) stay under
-    # this run length because '.', '-', and ':' break the run.
-    re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/])"),
+    # with no keyword= prefix. 40+ base64-ish chars covers hex too (hex ⊂ base64).
+    # '/' is deliberately excluded from the run so URL/ARM-resource-id paths (which
+    # are '/'-joined) don't false-positive; a real base64 secret containing '/' still
+    # trips because its remaining runs exceed 40. Realistic config values (GUIDs,
+    # https URLs, ≤24-char storage names) stay under this length because '.', '-',
+    # '/', and ':' break the run.
+    re.compile(r"(?<![A-Za-z0-9+])[A-Za-z0-9+]{40,}={0,2}(?![A-Za-z0-9+])"),
 ]
 
 

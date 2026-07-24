@@ -421,6 +421,13 @@ def test_leak_guard_allows_realistic_values():
         "name": "st", "cloud": "azure",
         "account_name": "mycompanyprodstorage01", "kind": "blob",
     })
+    p["app_registrations"].append({
+        "name": "app", "cloud": "azure",
+        "client_id": "abcdef01-2345-6789-abcd-ef0123456789",
+        "tenant_id": "12345678-1234-1234-1234-123456789012",
+        # Slash-joined ARM resource id must not read as a bare secret blob.
+        "target_resource": "/subscriptions/aaaabbbbccccddddeeeeffff00001111/resourceGroups/rg/providers/Microsoft.KeyVault/vaults/kv",
+    })
     assert ac.validate_doc(d) == []
 
 
