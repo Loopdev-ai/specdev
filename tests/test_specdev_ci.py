@@ -147,3 +147,12 @@ def test_all_workflows_parse_if_yaml_available():
         path = WF_DIR / name
         if path.exists():
             yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_deploy_poc_is_reusable_and_poc_only():
+    t = wf_text("deploy-poc.yml")
+    assert "workflow_call:" in t
+    assert "--env ${{ inputs.environment }}" in t or "--env poc" in t
+    assert "post-deploy-qa.yml" in t
+    # No production promotion in the poc path.
+    assert "environment: production" not in t
