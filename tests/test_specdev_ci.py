@@ -122,3 +122,28 @@ def test_detect_deploy_seeds_poc_environment(tmp_path):
     assert profile["environments"]["poc"]["url"].startswith("https://")
     # staging/production still present and untouched.
     assert set(profile["environments"]) >= {"staging", "production", "poc"}
+
+
+# ---- workflows -----------------------------------------------------------
+
+WF_DIR = ROOT / "assets" / "workflows"
+
+
+def wf_text(name):
+    return (WF_DIR / name).read_text(encoding="utf-8")
+
+
+def test_deploy_yml_has_poc_gate():
+    t = wf_text("deploy.yml")
+    assert "run_manifest.py mode" in t
+    assert "gate:" in t
+    # preflight only runs when not a poc merge
+    assert "needs.gate.outputs.mode != 'poc'" in t
+
+
+def test_all_workflows_parse_if_yaml_available():
+    yaml = pytest.importorskip("yaml")
+    for name in ["deploy.yml", "deploy-poc.yml", "specdev-build.yml"]:
+        path = WF_DIR / name
+        if path.exists():
+            yaml.safe_load(path.read_text(encoding="utf-8"))

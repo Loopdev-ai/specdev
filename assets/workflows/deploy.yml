@@ -13,9 +13,26 @@ permissions:
   contents: write   # tag releases
 
 jobs:
+  # Mode guard: a poc merge deploys its own isolated environment via the build
+  # workflow's deploy-poc call, so the standard staging->prod chain must NOT run
+  # for it. 'prod' (and no-manifest) fall through to the normal chain.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.m.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - id: m
+        run: echo "mode=$(python .specdev/tools/run_manifest.py mode)" >> "$GITHUB_OUTPUT"
+
   # Verification gate: refuse to deploy unless every destination fact in
   # deploy.profile.json is resolved (discovered or documented) and well-formed.
   preflight:
+    needs: gate
+    if: needs.gate.outputs.mode != 'poc'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
