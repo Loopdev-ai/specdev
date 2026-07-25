@@ -1,0 +1,123 @@
+name: specdev-build
+
+# Hands-off SpecDev build in CI. Started locally in Claude Code, handed off here:
+#   - prod: merging the Spec PR (spec/** -> main) fires this; the runner builds
+#     and opens the Implementation PR, then STOPS (a human merges -> deploy.yml).
+#   - poc:  pushing a poc/** branch fires this; the runner specs + builds, opens
+#     the Implementation PR, self-merges, then deploys the isolated poc env.
+# Context stays bounded by the specdev skill's coordinator discipline; state is
+# checkpointed to .specdev/BUILD.md so a run can resume across job boundaries.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    branches: ['poc/**']
+  workflow_dispatch:
+    inputs:
+      feat:
+        description: 'FEAT-### to build (resume/manual)'
+        required: true
+        type: string
+      mode:
+        description: 'prod or poc'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      mode: ${{ steps.decide.outputs.mode }}
+      feat: ${{ steps.decide.outputs.feat }}
+      runner: ${{ steps.cfg.outputs.runner }}
+      timeout: ${{ steps.cfg.outputs.timeout }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        name: Decide whether and how to run
+        run: |
+          event="${{ github.event_name }}"
+          run=false; mode=""; feat=""
+          if [ "$event" = "workflow_dispatch" ]; then
+            run=true; mode="${{ inputs.mode }}"; feat="${{ inputs.feat }}"
+          elif [ "$event" = "push" ]; then
+            run=true; mode="poc"
+          elif [ "$event" = "pull_request" ]; then
+            if [ "${{ github.event.pull_request.merged }}" = "true" ] && \
+               [ "${{ startsWith(github.event.pull_request.head.ref, 'spec/') }}" = "true" ]; then
+              run=true; mode="prod"
+            fi
+          fi
+          if [ -z "$feat" ] && [ -f .specdev/spec.md ]; then
+            feat=$(grep -oE 'FEAT-[0-9]+' .specdev/spec.md | head -1 || true)
+          fi
+          {
+            echo "run=$run"
+            echo "mode=$mode"
+            echo "feat=$feat"
+          } >> "$GITHUB_OUTPUT"
+      - id: cfg
+        name: Read .specdev/ci.json
+        run: |
+          echo "runner=$(python .specdev/tools/run_manifest.py ci --get runner)" >> "$GITHUB_OUTPUT"
+          echo "timeout=$(python .specdev/tools/run_manifest.py ci --get max_session_minutes)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    if: needs.setup.outputs.run == 'true'
+    runs-on: ${{ needs.setup.outputs.runner }}
+    timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Record run manifest (mode signal for the deploy guard)
+        run: |
+          python .specdev/tools/run_manifest.py init \
+            --feat "${{ needs.setup.outputs.feat }}" \
+            --mode "${{ needs.setup.outputs.mode }}"
+          git config user.name  "specdev-bot"
+          git config user.email "specdev-bot@users.noreply.github.com"
+      - name: Run the SpecDev build (headless Claude Code)
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are the SpecDev build COORDINATOR running headlessly in CI.
+            Follow the vendored specdev skill at .claude/skills/specdev exactly,
+            acting as a strict coordinator: never write component code inline —
+            dispatch the component-builder / qa-verifier / adr-checker /
+            spec-explorer subagents (vendored in .claude/agents) and keep only
+            their summaries.
+
+            Feature: ${{ needs.setup.outputs.feat }}
+            Mode:    ${{ needs.setup.outputs.mode }}
+
+            Resume from .specdev/BUILD.md; if the build is incomplete, continue
+            the dependency-wave loop until this mode's terminal state:
+              - prod: open the Implementation PR against main, then STOP. Do NOT merge.
+              - poc:  open the Implementation PR and merge it into main.
+            Keep .specdev/BUILD.md and .specdev/run.json current after every phase.
+          claude_args: '--max-turns 200'
+
+  # poc only: after the build self-merges, deploy the isolated poc environment
+  # by CALLING the reusable workflow directly (no push event, no PAT).
+  deploy-poc:
+    needs: [setup, build]
+    if: needs.setup.outputs.mode == 'poc' && needs.build.result == 'success'
+    uses: ./.github/workflows/deploy-poc.yml
+    with:
+      environment: poc
+    secrets: inherit

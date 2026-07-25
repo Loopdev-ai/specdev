@@ -156,3 +156,23 @@ def test_deploy_poc_is_reusable_and_poc_only():
     assert "post-deploy-qa.yml" in t
     # No production promotion in the poc path.
     assert "environment: production" not in t
+
+
+def test_specdev_build_triggers_and_paths():
+    t = wf_text("specdev-build.yml")
+    # three triggers
+    assert "pull_request:" in t and "types: [closed]" in t
+    assert "'poc/**'" in t or "poc/**" in t
+    assert "workflow_dispatch:" in t
+    # runs claude-code-action and the only required secret
+    assert "anthropics/claude-code-action" in t
+    assert "ANTHROPIC_API_KEY" in t
+    # invokes the reusable poc deploy
+    assert "uses: ./.github/workflows/deploy-poc.yml" in t
+    # records the manifest for the deploy guard
+    assert "run_manifest.py init" in t
+
+
+def test_specdev_build_does_not_require_a_pat():
+    t = wf_text("specdev-build.yml")
+    assert "SPECDEV_PAT" not in t
