@@ -66,9 +66,11 @@ a GitHub runner runs Claude Code headlessly to carry the build to completion.
    deploy to an isolated POC environment.
 5. **POC is contained.** poc deploys only to a dedicated `poc` environment;
    auto-promotion to production is structurally disabled for poc runs.
-6. **Auth via `ANTHROPIC_API_KEY`.** Stored as a repo/org secret, billed per
-   token. A `SPECDEV_PAT` secret is used for the poc self-merge (see *Deploy
-   integration* for why the default token is insufficient).
+6. **Auth via `ANTHROPIC_API_KEY` — no second secret.** Stored as a repo/org
+   secret, billed per token. The poc deploy is invoked *directly* by the build
+   workflow (reusable `workflow_call`), which sidesteps the `GITHUB_TOKEN`
+   recursion rule, so no PAT is required for the poc self-merge (see *Deploy
+   integration*).
 7. **Context stays bounded by the skill's existing discipline, plus
    resumability.** Subagent isolation + `BUILD.md` checkpoint are unchanged; the
    only CI addition is re-invoking the coordinator in resume-from-`BUILD.md`
@@ -83,7 +85,7 @@ Mode rides on the branch prefix and is recorded in a per-feature run manifest.
 | Mode | Branches | Handoff (what fires the runner) | Terminal state |
 |------|----------|---------------------------------|----------------|
 | **prod** | `spec/<name>` → `feat/<name>` | You brainstorm + spec + architecture locally, open and **merge the Spec PR** | Runner builds → opens the Implementation PR → **stops**. A human merges → existing `deploy.yml` (staging → staging-QA gate → auto-prod). |
-| **poc** | `poc/<name>` | You brainstorm locally, then **push the `poc/<name>` branch** | Runner writes the spec, does architecture, builds → opens the Implementation PR → **self-merges** → `deploy-poc.yml` deploys the isolated `poc` env. No prod. |
+| **poc** | `poc/<name>` | You brainstorm locally, then **push the `poc/<name>` branch** | Runner writes the spec, does architecture, builds → opens the Implementation PR → **self-merges** (plain `GITHUB_TOKEN`) → the build calls the reusable `deploy-poc.yml` to deploy the isolated `poc` env. No prod. |
 
 ### `.specdev/run.json` — per-feature run manifest
 
@@ -107,14 +109,14 @@ is overwritten per feature; that is correct — each merge carries its own.
 | File | Role |
 |------|------|
 | `assets/workflows/specdev-build.yml` | **The runner.** `claude-code-action` invoking the coordinator in resume-from-`BUILD.md` mode. Triggers in *Trigger & control flow*. Copied to `.github/workflows/` by init. |
-| `assets/workflows/deploy-poc.yml` | POC deploy: on a poc merge, deploy the isolated `poc` env, run post-deploy-QA against it, **no prod promotion**. |
+| `assets/workflows/deploy-poc.yml` | POC deploy as a **reusable** workflow (`on: workflow_call`); the build calls it after a completed poc self-merge to deploy the isolated `poc` env and run post-deploy-QA. No prod promotion. |
 | `assets/specdev/run.json` | Seed run manifest (schema shape; mode defaults filled by the coordinator per feature). Becomes `.specdev/run.json`. |
 | `assets/specdev/ci.json` | CI config: `{ "runner": "github-hosted" \| "self-hosted", "max_session_minutes": 300 }`. Becomes `.specdev/ci.json`. |
 | `.claude/skills/specdev/SKILL.md` (vendored copy target) | The specdev skill, copied into the target repo by init so the headless runner loads it. |
 | `.claude/agents/{component-builder,qa-verifier,adr-checker,spec-explorer}.md` (vendored copy targets) | The four subagents, copied by init so the coordinator can offload in CI. |
 | `assets/specdev/tools/detect_deploy.py` (edit) | Learn/emit a `poc` environment in `deploy.profile.json` alongside `staging`/`production`. |
 | `assets/workflows/deploy.yml` (edit) | Early guard: the standard staging→prod chain is skipped when the merged `run.json` mode is `poc`. |
-| `commands/init.md` (edit) | Copy the vendored `.claude/` assets; document the `ANTHROPIC_API_KEY` + `SPECDEV_PAT` secrets and the `poc` environment setup. |
+| `commands/init.md` (edit) | Copy the vendored `.claude/` assets; document the `ANTHROPIC_API_KEY` secret and the `poc` environment setup. |
 | `tests/test_specdev_ci.py` | pytest for `run.json` read/write + schema, `detect_deploy.py` poc-env handling, and the deploy-guard decision. |
 
 `init` already copies the whole `assets/specdev/` tree and `assets/workflows/*.yml`.
@@ -144,7 +146,8 @@ Path selection inside the workflow:
   Implementation PR; do not merge."* The runner stops at the open PR.
 - **poc path** — a push to `poc/**`. Invoke the coordinator: *"Write the spec,
   do architecture, and build FEAT-### in poc mode; open the Implementation PR
-  and merge it (using SPECDEV_PAT)."*
+  and merge it."* When the build reaches its terminal state, the workflow calls
+  the reusable `deploy-poc.yml` (see *Deploy integration*).
 - **Common invocation** — both paths call Claude Code with: *"Resume the SpecDev
   build from `.specdev/BUILD.md`; if incomplete, continue the wave loop until the
   terminal state for this mode."*
@@ -188,28 +191,40 @@ push to `main`. Therefore:
   `mode == "poc"`, the workflow exits before the staging→prod chain. The
   battle-tested prod chain is otherwise untouched — no weakening of preflight,
   staging QA, or rollback.
-- **`deploy-poc.yml`.** Reacts to a poc merge (guarded to `mode == "poc"`),
+- **`deploy-poc.yml`.** A **reusable** workflow (`on: workflow_call`) that
   deploys the `poc` environment via `deploy.py deploy --env poc`, runs
   `post-deploy-qa.yml` against it, and stops. There is no production job, so
-  auto-promotion cannot occur for poc.
+  auto-promotion cannot occur for poc. It is invoked by `specdev-build.yml`
+  (`uses: ./.github/workflows/deploy-poc.yml`) once the poc build reaches its
+  terminal state — **not** by a push-to-`main` event.
 - **`detect_deploy.py`** is extended to resolve a `poc` environment in
   `deploy.profile.json` (its own target/URL/health facts), so `deploy.py` and
   the `preflight` gate treat `poc` as a first-class environment.
 
-### The GitHub token gotcha
+### Why the poc deploy is invoked directly (no PAT)
 
 A merge performed by the default `GITHUB_TOKEN` does **not** trigger other
-workflows. For the poc self-merge to fire `deploy-poc.yml`, the merge must be
-made with a PAT. This design stores a `SPECDEV_PAT` (repo/org secret, minimal
-scopes: `contents:write`, `pull_requests:write`) and the coordinator uses it for
-the poc merge. `init` documents this; without the PAT, poc still merges but the
-deploy does not fire (surfaced as a documented failure mode, not a silent one).
+workflows — GitHub's recursion guard. So a poc self-merge's push to `main` would
+land the code but never fire a push-triggered deploy. Rather than merge with a
+PAT to defeat the guard, the poc deploy is a reusable workflow the build **calls
+directly** in the same run (`workflow_call`), where the recursion rule does not
+apply. This removes the second secret and, with it, the silent-failure mode
+(a missing/expired PAT merging but not deploying). The deploy is triggered only
+on the **final** checkpointed invocation — when `BUILD.md` shows the build
+complete — not on intermediate resume runs.
+
+*Alternative (documented, not the default):* a team that wants poc deploys to be
+independently event-triggered can instead store a `SPECDEV_PAT`
+(scopes `contents:write`, `pull_requests:write`), self-merge with it, and make
+`deploy-poc.yml` a push-triggered workflow guarded to `mode == "poc"`. This
+mirrors prod's event model at the cost of a rotating secret.
 
 ## Auth, secrets, guardrails
 
-- **Secrets:** `ANTHROPIC_API_KEY` (claude-code-action, per-token billing);
-  `SPECDEV_PAT` (poc self-merge). `init` lists both in the post-install
-  checklist.
+- **Secrets:** `ANTHROPIC_API_KEY` (claude-code-action, per-token billing) is
+  the only required secret. `init` lists it in the post-install checklist. (A
+  `SPECDEV_PAT` is needed only for the optional event-triggered poc-deploy
+  alternative above.)
 - **Cost bounding:** `claude-code-action` runs with a pinned model and
   `--allowedTools` scoped to what the build needs. The coordinator discipline
   keeps the main thread's token use low; cost is dominated by bursty, discarded
