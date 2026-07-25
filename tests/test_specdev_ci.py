@@ -105,3 +105,20 @@ def test_cli_init_then_validate_roundtrip(tmp_path):
                    "poc_environment": "poc"}
     assert run_cli(tmp_path, "validate").returncode == 0
     assert run_cli(tmp_path, "mode").stdout.strip() == "poc"
+
+
+# ---- detect_deploy poc environment --------------------------------------
+
+DETECT_PATH = ROOT / "assets" / "specdev" / "tools" / "detect_deploy.py"
+
+
+def test_detect_deploy_seeds_poc_environment(tmp_path):
+    # Empty repo -> target 'manual', but the environments must include poc.
+    out = subprocess.run([sys.executable, str(DETECT_PATH), "--root", str(tmp_path)],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    profile = json.loads((tmp_path / ".specdev" / "deploy.profile.json").read_text(encoding="utf-8"))
+    assert "poc" in profile["environments"]
+    assert profile["environments"]["poc"]["url"].startswith("https://")
+    # staging/production still present and untouched.
+    assert set(profile["environments"]) >= {"staging", "production", "poc"}
