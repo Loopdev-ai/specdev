@@ -176,3 +176,24 @@ def test_specdev_build_triggers_and_paths():
 def test_specdev_build_does_not_require_a_pat():
     t = wf_text("specdev-build.yml")
     assert "SPECDEV_PAT" not in t
+
+
+# ---- init vendoring + housekeeping --------------------------------------
+
+def test_vendor_sources_exist():
+    # init must have something to copy into a target repo's .claude/
+    assert (ROOT / "skills" / "specdev" / "SKILL.md").exists()
+    for a in ["component-builder", "qa-verifier", "adr-checker", "spec-explorer"]:
+        assert (ROOT / "agents" / f"{a}.md").exists(), a
+
+
+def test_init_documents_vendoring_and_secret():
+    t = (ROOT / "commands" / "init.md").read_text(encoding="utf-8")
+    assert ".claude/skills/specdev" in t
+    assert ".claude/agents" in t
+    assert "ANTHROPIC_API_KEY" in t
+
+
+def test_lint_command_covers_new_tool():
+    cfg = json.loads((ROOT / ".sdlc" / "config.json").read_text(encoding="utf-8"))
+    assert "run_manifest.py" in cfg["commands"]["lint"]
