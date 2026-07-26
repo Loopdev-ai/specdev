@@ -1,7 +1,7 @@
 {
   "name": "specdev",
-  "version": "0.5.0",
-  "description": "Spec-driven delivery pipeline: GitHub PR gates, fully-automatic deployment, post-dev and post-deploy QA, and a generated REQ->ADR->test->commit->release traceability matrix. Pairs arckit-style spec/architecture artifacts with a superpowers-style brainstorm->plan->TDD build. Includes the arch-config skill for capturing per-environment runtime hosting configuration.",
+  "version": "0.6.0",
+  "description": "Spec-driven delivery pipeline: GitHub PR gates, fully-automatic deployment, post-dev and post-deploy QA, and a generated REQ->ADR->test->commit->release traceability matrix. Pairs arckit-style spec/architecture artifacts with a superpowers-style brainstorm->plan->TDD build. Includes the arch-config skill for capturing per-environment runtime hosting configuration. Adds CI handoff: start a build locally and finish it unattended in a GitHub runner (prod/poc modes).",
   "author": {
     "name": "NeffSec",
     "email": "2791047+alaneff@users.noreply.github.com"

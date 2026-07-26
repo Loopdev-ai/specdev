@@ -17,6 +17,13 @@ Do this:
    (create the directory if needed; same no-overwrite rule).
 3b. Copy `${CLAUDE_PLUGIN_ROOT}/assets/gitleaks.toml` → `./.gitleaks.toml` (same
    no-overwrite rule) so the secret-scan gate allowlists test fixtures.
+3a2. **Vendor the SpecDev skill + subagents for headless CI.** Copy
+   `${CLAUDE_PLUGIN_ROOT}/skills/specdev/` → `./.claude/skills/specdev/` and
+   `${CLAUDE_PLUGIN_ROOT}/agents/*.md` → `./.claude/agents/` (create the dirs;
+   same no-overwrite rule). This lets `specdev-build.yml` run the build with
+   `claude-code-action` — the runner loads the same skill and the
+   component-builder / qa-verifier / adr-checker / spec-explorer subagents from
+   the repo, so the coordinator can offload work and stay context-bounded.
 3c. **Link to the org's architectural repo of record.** Ask the user for:
    - the governance repo (`owner/name` — the org's SpecDev repo holding
      `governance/adr/`), and the `ref` to track (`main`, or a tag to pin);
@@ -84,6 +91,13 @@ Then print this post-install checklist:
   `GOVERNANCE_TOKEN` secret (the workflow already reads it).
 - Create `staging` and `production` Environments (no required reviewer on
   production — promotion is automatic).
+- CI handoff (specdev-build): add the `ANTHROPIC_API_KEY` repo/org secret. Merge
+  a Spec PR (`spec/**`) to hand a prod build to the runner; push a `poc/**`
+  branch for a hands-off poc build. Tune `.specdev/ci.json` (`runner`,
+  `max_session_minutes`) — set `runner` to a self-hosted label for long builds.
+- Create a `poc` GitHub Environment (isolated from staging/production) and fill
+  `environments.poc.url` in `.specdev/deploy.profile.json`; poc builds deploy
+  only there and never promote to prod.
 - Architecture/runtime hosting config: capture values with the `arch-config`
   skill (writes `.specdev/architecture-config.json`); make `arch-config-validate`
   a required status check if you use it.

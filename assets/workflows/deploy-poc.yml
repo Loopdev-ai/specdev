@@ -1,0 +1,80 @@
+name: deploy-poc
+
+# Isolated POC delivery. NOT triggered by push — the specdev-build workflow
+# calls this reusable workflow directly (workflow_call) after a poc build's
+# self-merge, which sidesteps the GITHUB_TOKEN recursion rule (no PAT needed).
+# There is no production job, so a poc can never auto-promote to prod.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: poc
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: poc
+
+permissions:
+  contents: write   # tag releases
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Verify poc deploy facts
+        run: python .specdev/tools/deploy.py preflight --env ${{ inputs.environment }}
+
+  build:
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: meta
+        name: Compute poc release tag
+        run: echo "tag=poc-$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Build artifact
+        run: 'echo "TODO: build command -> dist/"'          # e.g. npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poc-${{ steps.meta.outputs.tag }}
+          path: dist/
+          if-no-files-found: ignore
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (flyctl, kubectl, vercel, ...)
+      - id: deploy
+        name: Deploy to the isolated poc environment
+        run: |
+          python .specdev/tools/deploy.py deploy --env ${{ inputs.environment }} --tag "${{ needs.build.outputs.tag }}"
+          echo "url=$(python .specdev/tools/deploy.py url --env ${{ inputs.environment }})" >> "$GITHUB_OUTPUT"
+
+  qa:
+    needs: [build, deploy]
+    uses: ./.github/workflows/post-deploy-qa.yml
+    with:
+      environment: ${{ inputs.environment }}
+      target_url: ${{ needs.deploy.outputs.url }}

@@ -142,6 +142,7 @@ def main() -> int:
     environments = {
         "staging": {"url": "https://staging.example.com"},
         "production": {"url": "https://example.com"},
+        "poc": {"url": "https://poc.example.com"},
     }
     # Offline URL discovery where the platform domain is deterministic.
     if target == "fly" and params.get("app", "REPLACE_ME") != "REPLACE_ME":
