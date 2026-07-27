@@ -16,14 +16,17 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Skip cleanly in repos that haven't adopted org governance.
-    if: ${{ hashFiles('.specdev/org.json') != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      # Skip cleanly in repos that haven't adopted org governance. The guard is
+      # step-level because hashFiles() is a step-only function — at job level
+      # GitHub rejects the whole file — and because it needs the checked-out
+      # workspace, which does not exist when job conditions are evaluated.
       - name: Org ADR compliance — applicable ADRs verified and current
+        if: hashFiles('.specdev/org.json') != ''
         env:
           # For a PRIVATE governance repo the default GITHUB_TOKEN cannot read
           # across repos — create a read-only PAT, save it as the

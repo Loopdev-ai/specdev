@@ -92,7 +92,8 @@ script, …) and writes `.specdev/deploy.profile.json`. `deploy.py` reads that
 profile and runs the right commands, so the workflows stay generic. **Rollback
 is target-aware:** native where the platform supports it (Fly/Vercel/Helm/k8s),
 otherwise redeploy the previous git release tag — stateless, no per-repo TODO.
-Unknown targets are written as `manual` and fail loudly rather than guessing.
+Unknown targets are written as `manual`, which means "no automatic deployment"
+— the deploy chain skips with a notice rather than guessing at a platform.
 
 **The platform is a decision, not a default.** Detection is only for *existing*
 infra. For a **new** product there's nothing to detect — choose the platform as
@@ -112,6 +113,9 @@ stubs:**
   env URL is still a placeholder; the `preflight` job in `deploy.yml` gates the
   build, so **a merge cannot deploy with an unresolved spec**. `--probe` adds a
   best-effort live platform check. Passing stamps a `verified` timestamp.
+  Fail-closed applies to a **real** target: while `target` is still `manual`
+  (a new product, or a repo that never deploys) the whole chain skips with a
+  notice instead — pick a platform to turn it on.
 - **Document** — anything not auto-discoverable is captured as the build happens
   in `BUILD.md` → *Deployment Facts*, with its source, alongside the profile.
 

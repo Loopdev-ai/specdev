@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.m.outputs.mode }}
+      target: ${{ steps.t.outputs.target }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,12 +28,23 @@ jobs:
           python-version: '3.x'
       - id: m
         run: echo "mode=$(python .specdev/tools/run_manifest.py mode)" >> "$GITHUB_OUTPUT"
+      # target 'manual' means there is no automatic deployment for this repo —
+      # the state a new product starts in, and the state a repo that never
+      # deploys stays in. Skip the chain with a notice instead of failing.
+      - id: t
+        run: |
+          target=$(python .specdev/tools/deploy.py target)
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          if [ "$target" = "manual" ]; then
+            echo "::notice title=Deploy skipped::deploy.profile.json target is 'manual' — no automatic deployment for this repo."
+          fi
 
   # Verification gate: refuse to deploy unless every destination fact in
   # deploy.profile.json is resolved (discovered or documented) and well-formed.
+  # Fail-closed applies to a real target; 'manual' skips (see gate).
   preflight:
     needs: gate
-    if: needs.gate.outputs.mode != 'poc'
+    if: needs.gate.outputs.mode != 'poc' && needs.gate.outputs.target != 'manual'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
