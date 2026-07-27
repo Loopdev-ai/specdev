@@ -7,10 +7,46 @@ phases**, and a generated **traceability matrix**.
 
 ## Install
 
+### Claude Code CLI (terminal)
+
 ```
 /plugin marketplace add Loopdev-ai/specdev   # or a local clone path
 /plugin install specdev@loopdev-specdev
 ```
+
+### Claude Code VS Code extension
+
+The extension only lists plugins from marketplaces you have added — it ships
+with none of this repo's, so **you must add the marketplace by hand first**.
+Until you do, the plugin browser shows *"No marketplaces configured. Add one
+above to discover plugins."*
+
+1. Open the Claude Code panel and go to **Plugins** ("Install and manage
+   plugins") to open the **Manage Plugins** dialog.
+2. In the marketplace field — placeholder *"GitHub repo, URL, or path…"* —
+   enter the **repo**, not the marketplace name:
+
+   ```
+   Loopdev-ai/specdev
+   ```
+
+   Press **Add**. A local clone path works here too.
+3. Find `specdev` under **Search plugins…**, install it, and pick a scope:
+   - **Install for you** — available in all your projects
+   - **Install for this project** — shared with all collaborators
+   - **Install locally** — only for you, only in this repo
+4. Click **Restart** when the *"Restart Claude to apply plugin changes"* notice
+   appears. Plugin commands do not load until you do.
+
+> **The source and the marketplace name differ.** You *add* `Loopdev-ai/specdev`
+> (the repo) but the marketplace registers itself as `loopdev-specdev` — which is
+> why the CLI installs `specdev@loopdev-specdev`. Entering `loopdev-specdev` as
+> the source will not resolve.
+
+Alternatively, run **Claude Code: Install Plugin** from the Command Palette and
+enter `specdev@Loopdev-ai/specdev` in the `plugin@marketplace` prompt. If the
+marketplace is not yet added it offers **Add Marketplace & Continue**, which
+does both steps at once.
 
 Then, inside any repo you want to put on the pipeline:
 
