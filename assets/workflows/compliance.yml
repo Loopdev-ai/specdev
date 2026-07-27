@@ -16,8 +16,6 @@ permissions:
 jobs:
   controls:
     runs-on: ubuntu-latest
-    # Skip cleanly in repos that haven't adopted the compliance layer yet.
-    if: ${{ hashFiles('.specdev/compliance/compliance.config.json') != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,15 +25,20 @@ jobs:
         with:
           python-version: '3.x'
 
+      # Skip cleanly in repos that haven't adopted the compliance layer yet.
+      # The guard is step-level because hashFiles() is a step-only function — at
+      # job level GitHub rejects the whole file — and because it needs the
+      # checked-out workspace, absent when job conditions are evaluated.
       - name: Control coverage — every applicable control has evidence
+        if: hashFiles('.specdev/compliance/compliance.config.json') != ''
         run: python .specdev/tools/gen_compliance.py --check-gaps
 
       - name: Regenerate matrix + SoA (artifact)
-        if: always()
+        if: always() && hashFiles('.specdev/compliance/compliance.config.json') != ''
         run: python .specdev/tools/gen_compliance.py || true
 
       - name: Upload compliance artifacts
-        if: always()
+        if: always() && hashFiles('.specdev/compliance/compliance.config.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: compliance

@@ -7,10 +7,46 @@ phases**, and a generated **traceability matrix**.
 
 ## Install
 
+### Claude Code CLI (terminal)
+
 ```
 /plugin marketplace add Loopdev-ai/specdev   # or a local clone path
 /plugin install specdev@loopdev-specdev
 ```
+
+### Claude Code VS Code extension
+
+The extension only lists plugins from marketplaces you have added — it ships
+with none of this repo's, so **you must add the marketplace by hand first**.
+Until you do, the plugin browser shows *"No marketplaces configured. Add one
+above to discover plugins."*
+
+1. Open the Claude Code panel and go to **Plugins** ("Install and manage
+   plugins") to open the **Manage Plugins** dialog.
+2. In the marketplace field — placeholder *"GitHub repo, URL, or path…"* —
+   enter the **repo**, not the marketplace name:
+
+   ```
+   Loopdev-ai/specdev
+   ```
+
+   Press **Add**. A local clone path works here too.
+3. Find `specdev` under **Search plugins…**, install it, and pick a scope:
+   - **Install for you** — available in all your projects
+   - **Install for this project** — shared with all collaborators
+   - **Install locally** — only for you, only in this repo
+4. Click **Restart** when the *"Restart Claude to apply plugin changes"* notice
+   appears. Plugin commands do not load until you do.
+
+> **The source and the marketplace name differ.** You *add* `Loopdev-ai/specdev`
+> (the repo) but the marketplace registers itself as `loopdev-specdev` — which is
+> why the CLI installs `specdev@loopdev-specdev`. Entering `loopdev-specdev` as
+> the source will not resolve.
+
+Alternatively, run **Claude Code: Install Plugin** from the Command Palette and
+enter `specdev@Loopdev-ai/specdev` in the `plugin@marketplace` prompt. If the
+marketplace is not yet added it offers **Add Marketplace & Continue**, which
+does both steps at once.
 
 Then, inside any repo you want to put on the pipeline:
 
@@ -92,7 +128,8 @@ script, …) and writes `.specdev/deploy.profile.json`. `deploy.py` reads that
 profile and runs the right commands, so the workflows stay generic. **Rollback
 is target-aware:** native where the platform supports it (Fly/Vercel/Helm/k8s),
 otherwise redeploy the previous git release tag — stateless, no per-repo TODO.
-Unknown targets are written as `manual` and fail loudly rather than guessing.
+Unknown targets are written as `manual`, which means "no automatic deployment"
+— the deploy chain skips with a notice rather than guessing at a platform.
 
 **The platform is a decision, not a default.** Detection is only for *existing*
 infra. For a **new** product there's nothing to detect — choose the platform as
@@ -112,6 +149,9 @@ stubs:**
   env URL is still a placeholder; the `preflight` job in `deploy.yml` gates the
   build, so **a merge cannot deploy with an unresolved spec**. `--probe` adds a
   best-effort live platform check. Passing stamps a `verified` timestamp.
+  Fail-closed applies to a **real** target: while `target` is still `manual`
+  (a new product, or a repo that never deploys) the whole chain skips with a
+  notice instead — pick a platform to turn it on.
 - **Document** — anything not auto-discoverable is captured as the build happens
   in `BUILD.md` → *Deployment Facts*, with its source, alongside the profile.
 

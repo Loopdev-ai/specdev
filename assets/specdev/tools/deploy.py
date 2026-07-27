@@ -12,6 +12,7 @@ Usage:
     deploy.py rollback --env production            [--dry-run]
     deploy.py health   --url https://...           [--dry-run]
     deploy.py url      --env staging
+    deploy.py target                               # 'manual' = nothing to deploy
 """
 import argparse
 import json
@@ -93,6 +94,23 @@ def load_profile() -> dict:
     if not PROFILE.exists():
         sys.exit(f"ERROR: {PROFILE} missing — run detect_deploy.py first.")
     return json.loads(PROFILE.read_text(encoding="utf-8"))
+
+
+def read_target() -> str:
+    """The configured target, or 'manual' when there is nothing configured.
+
+    'manual' means "no automatic deployment for this repo" — the state
+    detect_deploy.py writes for a new product, and the state a repo that never
+    deploys stays in. deploy.yml reads this to skip the chain instead of
+    failing preflight. A missing profile is the same answer, so this never
+    exits nonzero and never reds the gate job.
+    """
+    if not PROFILE.exists():
+        return "manual"
+    try:
+        return json.loads(PROFILE.read_text(encoding="utf-8")).get("target") or "manual"
+    except (json.JSONDecodeError, OSError):
+        return "manual"
 
 
 def ctx(profile: dict, env: str = "", tag: str = "") -> dict:
@@ -232,7 +250,7 @@ def do_preflight(profile, env, probe, dry) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("deploy", "rollback", "health", "url", "preflight"):
+    for name in ("deploy", "rollback", "health", "url", "preflight", "target"):
         p = sub.add_parser(name)
         p.add_argument("--env")
         p.add_argument("--tag", default="")
@@ -242,6 +260,12 @@ def main() -> int:
         p.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args()
+
+    # Answerable without a profile — must not exit nonzero (CI reads it).
+    if args.cmd == "target":
+        print(read_target())
+        return 0
+
     profile = load_profile()
 
     if args.cmd == "deploy":

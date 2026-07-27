@@ -197,3 +197,126 @@ def test_init_documents_vendoring_and_secret():
 def test_lint_command_covers_new_tool():
     cfg = json.loads((ROOT / ".sdlc" / "config.json").read_text(encoding="utf-8"))
     assert "run_manifest.py" in cfg["commands"]["lint"]
+
+
+# ---- workflow expression validity ---------------------------------------
+# hashFiles() is a step-only function. Used in a job-level `if:` GitHub rejects
+# the whole file, so the workflow never registers and no job ever runs. These
+# templates ship to every initialized repo and are never exercised by this
+# repo's own CI, so guard the rule here.
+
+STEP_ONLY_FUNCS = ("hashFiles",)
+
+
+def iter_workflows():
+    for path in sorted(WF_DIR.glob("*.yml")):
+        yield path, __import__("yaml").safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_no_job_level_step_only_functions():
+    pytest.importorskip("yaml")
+    offenders = []
+    for path, doc in iter_workflows():
+        for job_id, job in (doc.get("jobs") or {}).items():
+            cond = str((job or {}).get("if", ""))
+            for fn in STEP_ONLY_FUNCS:
+                if fn in cond:
+                    offenders.append(f"{path.name}:jobs.{job_id}.if uses {fn}()")
+    assert offenders == [], (
+        "step-only functions in a job-level `if:` make the workflow invalid: "
+        + "; ".join(offenders))
+
+
+def _steps(doc, job_id):
+    return (doc.get("jobs") or {}).get(job_id, {}).get("steps") or []
+
+
+def _checkout_index(steps):
+    for i, s in enumerate(steps):
+        if "checkout" in str(s.get("uses", "")):
+            return i
+    return None
+
+
+def test_org_adr_check_guard_is_step_level_and_after_checkout():
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(wf_text("org-adr-check.yml"))
+    steps = _steps(doc, "check")
+    guarded = [s for s in steps if "hashFiles" in str(s.get("if", ""))]
+    assert guarded, "org.json guard must survive as a step-level `if:`"
+    assert all(".specdev/org.json" in str(s["if"]) for s in guarded)
+    # hashFiles resolves against the workspace, which is empty until checkout.
+    co = _checkout_index(steps)
+    assert co is not None
+    assert all(steps.index(s) > co for s in guarded)
+
+
+def test_compliance_guard_is_step_level_on_every_running_step():
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(wf_text("compliance.yml"))
+    steps = _steps(doc, "controls")
+    co = _checkout_index(steps)
+    assert co is not None
+    # Every step after setup that does compliance work must carry the guard,
+    # including the always() ones — otherwise they run in unadopted repos.
+    work = [s for s in steps[co + 1:] if "uses" not in s or "upload-artifact" in str(s.get("uses"))]
+    assert work, "expected compliance work steps"
+    for s in work:
+        cond = str(s.get("if", ""))
+        assert "hashFiles" in cond and "compliance.config.json" in cond, s.get("name")
+    # always() semantics preserved where they existed.
+    always = [s for s in work if "always()" in str(s.get("if", ""))]
+    assert len(always) == 2
+
+
+# ---- deploy: 'manual' target means "no automatic deployment" -------------
+# detect_deploy.py writes target 'manual' for a new product and init documents
+# that as expected, so the deploy chain must skip rather than fail preflight.
+
+DEPLOY_PATH = ROOT / "assets" / "specdev" / "tools" / "deploy.py"
+
+
+def write_profile(root, target):
+    (root / ".specdev").mkdir(parents=True, exist_ok=True)
+    (root / ".specdev" / "deploy.profile.json").write_text(
+        json.dumps({"target": target, "params": {}, "environments": {}}), encoding="utf-8")
+
+
+def deploy_cli(root, *args):
+    return subprocess.run([sys.executable, str(DEPLOY_PATH), *args],
+                          cwd=str(root), capture_output=True, text=True)
+
+
+def test_deploy_target_reports_manual_for_new_product(tmp_path):
+    write_profile(tmp_path, "manual")
+    out = deploy_cli(tmp_path, "target")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "manual"
+
+
+def test_deploy_target_reports_concrete_target(tmp_path):
+    write_profile(tmp_path, "fly")
+    out = deploy_cli(tmp_path, "target")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "fly"
+
+
+def test_deploy_target_treats_missing_profile_as_manual(tmp_path):
+    # No profile at all is also "nothing to deploy" — the gate job must not
+    # go red just because the repo never ran detect_deploy.py.
+    out = deploy_cli(tmp_path, "target")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "manual"
+
+
+def test_deploy_yml_skips_chain_when_target_is_manual():
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(wf_text("deploy.yml"))
+    jobs = doc["jobs"]
+    assert "target" in jobs["gate"]["outputs"], "gate must expose the target"
+    cond = jobs["preflight"]["if"]
+    assert "needs.gate.outputs.mode != 'poc'" in cond, "poc guard must survive"
+    assert "needs.gate.outputs.target != 'manual'" in cond
+    # The target is read with the tool, not an inline json.load that would
+    # crash the gate job when the profile is absent.
+    assert "deploy.py target" in wf_text("deploy.yml")
