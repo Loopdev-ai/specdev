@@ -185,3 +185,140 @@ def test_unit_org_json_without_link_is_fine(tmp_path):
         "units": ["infra"],
     })
     assert un.check(tmp_path) == []
+
+
+# ---- effective classification ------------------------------------------
+
+AXES = {
+    "maturity": {
+        "ordered": True,
+        "values": {"poc": {"rank": 0}, "dev": {"rank": 1}, "prod": {"rank": 2}},
+    },
+    "audience": {
+        "ordered": False,
+        "values": {"internal": {}, "customer": {}},
+    },
+}
+
+
+def eff(entries, declared):
+    return un.effective(entries, AXES, declared)
+
+
+def test_dependents_is_transitive():
+    entries = [
+        {"path": "a", "depends_on": ["b"]},
+        {"path": "b", "depends_on": ["c"]},
+        {"path": "c", "depends_on": []},
+    ]
+    d = un.dependents(entries)
+    assert d["c"] == {"a", "b"}
+    assert d["b"] == {"a"}
+    assert d["a"] == set()
+
+
+def test_ranked_axis_takes_the_max():
+    got = un.combine([{"maturity": {"poc"}}, {"maturity": {"prod"}}], AXES)
+    assert got["maturity"] == {"prod"}
+
+
+def test_unordered_axis_unions():
+    got = un.combine([{"audience": {"internal"}}, {"audience": {"customer"}}], AXES)
+    assert got["audience"] == {"internal", "customer"}
+
+
+def test_single_unit_classification_is_unchanged():
+    """Bit-identical behaviour for the degenerate case: every set is size 1."""
+    entries = [{"path": ".", "depends_on": []}]
+    declared = {".": {"maturity": {"prod"}, "audience": {"internal"}}}
+    assert eff(entries, declared) == {
+        ".": {"maturity": {"prod"}, "audience": {"internal"}}
+    }
+
+
+def test_laundering_is_blocked_dependency_is_pulled_up():
+    """SPEC DECISION 4 — DO NOT DELETE.
+
+    Risky code moved into a poc-declared unit that a prod unit imports must be
+    governed as prod. This is the regression test for the whole feature.
+    """
+    entries = [
+        {"path": "prod-svc", "depends_on": ["poc/risky"]},
+        {"path": "poc/risky", "depends_on": []},
+    ]
+    declared = {
+        "prod-svc": {"maturity": {"prod"}},
+        "poc/risky": {"maturity": {"poc"}},
+    }
+    got = eff(entries, declared)
+    assert got["poc/risky"]["maturity"] == {"prod"}, \
+        "a prod unit's dependency must be governed as prod"
+
+
+def test_escalation_is_transitive():
+    entries = [
+        {"path": "prod-svc", "depends_on": ["mid"]},
+        {"path": "mid", "depends_on": ["leaf"]},
+        {"path": "leaf", "depends_on": []},
+    ]
+    declared = {
+        "prod-svc": {"maturity": {"prod"}},
+        "mid": {"maturity": {"poc"}},
+        "leaf": {"maturity": {"poc"}},
+    }
+    got = eff(entries, declared)
+    assert got["leaf"]["maturity"] == {"prod"}
+
+
+def test_dependent_direction_does_not_escalate():
+    """A poc demo importing a prod library stays poc — reading a production
+    library does not make a spike production."""
+    entries = [
+        {"path": "demos", "depends_on": ["infra"]},
+        {"path": "infra", "depends_on": []},
+    ]
+    declared = {
+        "demos": {"maturity": {"poc"}},
+        "infra": {"maturity": {"prod"}},
+    }
+    got = eff(entries, declared)
+    assert got["demos"]["maturity"] == {"poc"}
+    assert got["infra"]["maturity"] == {"prod"}
+
+
+def test_independent_units_do_not_affect_each_other():
+    entries = [
+        {"path": "a", "depends_on": []},
+        {"path": "b", "depends_on": []},
+    ]
+    declared = {"a": {"maturity": {"prod"}}, "b": {"maturity": {"poc"}}}
+    got = eff(entries, declared)
+    assert got["b"]["maturity"] == {"poc"}
+
+
+def test_unordered_axis_escalation_unions_across_dependents():
+    entries = [
+        {"path": "svc", "depends_on": ["lib"]},
+        {"path": "lib", "depends_on": []},
+    ]
+    declared = {
+        "svc": {"audience": {"customer"}},
+        "lib": {"audience": {"internal"}},
+    }
+    got = eff(entries, declared)
+    assert got["lib"]["audience"] == {"internal", "customer"}
+
+
+def test_escalations_names_the_causing_dependent():
+    entries = [
+        {"path": "prod-svc", "depends_on": ["risky"]},
+        {"path": "risky", "depends_on": []},
+    ]
+    declared = {
+        "prod-svc": {"maturity": {"prod"}},
+        "risky": {"maturity": {"poc"}},
+    }
+    lines = un.escalations(entries, AXES, declared)
+    assert len(lines) == 1
+    assert "risky" in lines[0]
+    assert "prod-svc" in lines[0]

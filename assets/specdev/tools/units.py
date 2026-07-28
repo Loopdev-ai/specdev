@@ -122,6 +122,91 @@ def cycle_errors(entries) -> list[str]:
     return errors
 
 
+def dependents(entries) -> dict:
+    """unit -> set of units that TRANSITIVELY depend on it.
+
+    Direction matters: effective classification propagates from a dependent to
+    its dependencies, because anything a production system imports is inside
+    the production blast radius. Propagating the other way would leave risky
+    code relocated into a low-classification unit ungoverned."""
+    graph = {e["path"]: e["depends_on"] for e in entries}
+    rev = {n: set() for n in graph}
+    for n, deps in graph.items():
+        for d in deps:
+            if d in rev:
+                rev[d].add(n)
+    out = {}
+    for n in graph:
+        seen, stack = set(), list(rev[n])
+        while stack:
+            m = stack.pop()
+            if m in seen or m == n:
+                continue
+            seen.add(m)
+            stack.extend(rev.get(m, ()))
+        out[n] = seen
+    return out
+
+
+def combine(classifications, axes) -> dict:
+    """Ranked axes collapse to the max-rank value; unordered axes union.
+
+    Each input is {axis: set(values)}. For a single classification with
+    single-value sets this is the identity, which is what keeps single-unit
+    repos bit-identical."""
+    out = {}
+    for axis, adef in axes.items():
+        values = adef.get("values", {})
+        vals = set()
+        for c in classifications:
+            vals |= set(c.get(axis, ()))
+        if not vals:
+            continue
+        if adef.get("ordered"):
+            top = max(vals, key=lambda v: values.get(v, {}).get("rank", -1))
+            out[axis] = {top}
+        else:
+            out[axis] = vals
+    return out
+
+
+def effective(entries, axes, declared) -> dict:
+    """{unit: {axis: set(values)}} after dependency-ward propagation.
+
+    `declared` is {unit: {axis: set(values)}}, already normalized against the
+    org scheme by the caller (check_org_adrs.normalize_classification)."""
+    deps = dependents(entries)
+    out = {}
+    for e in entries:
+        n = e["path"]
+        sources = [declared.get(n, {})]
+        sources += [declared.get(d, {}) for d in sorted(deps.get(n, ()))]
+        out[n] = combine(sources, axes)
+    return out
+
+
+def escalations(entries, axes, declared) -> list[str]:
+    """Human-readable lines describing where effective exceeded declared, and
+    which dependent caused it. Silent escalation is unexplainable at the point
+    of failure, so callers print these."""
+    deps = dependents(entries)
+    eff = effective(entries, axes, declared)
+    lines = []
+    for e in entries:
+        n = e["path"]
+        for axis in sorted(eff[n]):
+            was = set(declared.get(n, {}).get(axis, ()))
+            now = eff[n][axis]
+            if was and now != was:
+                causes = sorted(
+                    d for d in deps.get(n, ())
+                    if set(declared.get(d, {}).get(axis, ())) - was)
+                lines.append(
+                    f"{n}: {axis} {sorted(was)} -> {sorted(now)} "
+                    f"(pulled up by dependent(s): {', '.join(causes) or 'n/a'})")
+    return lines
+
+
 def link_errors(root=".") -> list[str]:
     """The governance link is repo-wide. A unit org.json that redeclares it
     with a different value is a hard error, not a precedence puzzle."""
