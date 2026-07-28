@@ -1,0 +1,194 @@
+name: deploy-unit
+
+# The staging -> QA -> production -> QA chain for ONE governed unit.
+#
+# Extracted from deploy.yml so a monorepo can run the chain per unit: deploy.yml
+# is now a dispatcher that matrixes this workflow over the units a push touched.
+# A single-root repo passes unit '.', which resolves every path exactly as
+# before multi-unit support existed.
+on:
+  workflow_call:
+    inputs:
+      unit:
+        required: false
+        type: string
+        default: '.'
+
+permissions:
+  contents: write   # tag releases
+
+jobs:
+  # Mode guard: a poc merge deploys its own isolated environment via the build
+  # workflow's deploy-poc call, so the standard staging->prod chain must NOT run
+  # for it. 'prod' (and no-manifest) fall through to the normal chain.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.m.outputs.mode }}
+      target: ${{ steps.t.outputs.target }}
+      slug: ${{ steps.s.outputs.slug }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - id: m
+        run: echo "mode=$(python .specdev/tools/run_manifest.py --root '${{ inputs.unit }}' mode)" >> "$GITHUB_OUTPUT"
+      # Release tags must not collide between units: without a slug, two units
+      # releasing on the same day at the same commit produce the same tag and
+      # the second push fails.
+      - id: s
+        name: Compute the unit's tag slug
+        run: |
+          slug=$(echo '${{ inputs.unit }}' | tr '/.' '--' | sed 's/^-*//; s/-*$//')
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+      # target 'manual' means there is no automatic deployment for this unit —
+      # the state a new product starts in, and the state a unit that never
+      # deploys stays in. Skip the chain with a notice instead of failing.
+      - id: t
+        run: |
+          target=$(python .specdev/tools/deploy.py target --root '${{ inputs.unit }}')
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          if [ "$target" = "manual" ]; then
+            echo "::notice title=Deploy skipped::deploy.profile.json target is 'manual' for unit '${{ inputs.unit }}' — no automatic deployment."
+          fi
+
+  # Verification gate: refuse to deploy unless every destination fact in
+  # deploy.profile.json is resolved (discovered or documented) and well-formed.
+  # Fail-closed applies to a real target; 'manual' skips (see gate).
+  preflight:
+    needs: gate
+    if: needs.gate.outputs.mode != 'poc' && needs.gate.outputs.target != 'manual'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Verify staging deploy facts
+        run: python .specdev/tools/deploy.py preflight --env staging --root '${{ inputs.unit }}'
+      - name: Verify production deploy facts
+        run: python .specdev/tools/deploy.py preflight --env production --root '${{ inputs.unit }}'
+
+  build:
+    needs: [gate, preflight]
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: meta
+        name: Compute release tag
+        env:
+          SLUG: ${{ needs.gate.outputs.slug }}
+        run: |
+          if [ -n "$SLUG" ]; then
+            echo "tag=v-${SLUG}-$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build artifact
+        working-directory: ${{ inputs.unit }}
+        run: 'echo "TODO: build command -> dist/"'          # e.g. npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.meta.outputs.tag }}
+          path: ${{ inputs.unit }}/dist/
+          if-no-files-found: ignore
+      - name: Tag release (immutable rollback point)
+        run: |
+          git tag "${{ steps.meta.outputs.tag }}"
+          git push origin "${{ steps.meta.outputs.tag }}"
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (flyctl, kubectl, vercel, ...)
+      - id: deploy
+        name: Deploy to staging
+        run: |
+          python .specdev/tools/deploy.py deploy --env staging --tag "${{ needs.build.outputs.tag }}" --root '${{ inputs.unit }}'
+          echo "url=$(python .specdev/tools/deploy.py url --env staging --root '${{ inputs.unit }}')" >> "$GITHUB_OUTPUT"
+
+  qa-staging:
+    needs: [build, deploy-staging]
+    uses: ./.github/workflows/post-deploy-qa.yml
+    with:
+      environment: staging
+      target_url: ${{ needs.deploy-staging.outputs.url }}
+      unit: ${{ inputs.unit }}
+
+  # Runs only if qa-staging succeeded (skipped on failure -> prod never reached).
+  deploy-prod:
+    needs: [build, qa-staging]
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (flyctl, kubectl, vercel, ...)
+      - id: deploy
+        name: Promote to production (automatic)
+        run: |
+          python .specdev/tools/deploy.py deploy --env production --tag "${{ needs.build.outputs.tag }}" --root '${{ inputs.unit }}'
+          echo "url=$(python .specdev/tools/deploy.py url --env production --root '${{ inputs.unit }}')" >> "$GITHUB_OUTPUT"
+
+  qa-prod:
+    needs: [build, deploy-prod]
+    uses: ./.github/workflows/post-deploy-qa.yml
+    with:
+      environment: production
+      target_url: ${{ needs.deploy-prod.outputs.url }}
+      unit: ${{ inputs.unit }}
+
+  rollback:
+    needs: [build, deploy-staging, qa-staging, deploy-prod, qa-prod]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # TODO: install/auth your platform CLI here (same as the deploy jobs)
+      - name: Roll back production (only if prod got the bad release)
+        if: needs.deploy-prod.result == 'success'
+        run: python .specdev/tools/deploy.py rollback --env production --root '${{ inputs.unit }}'
+      - name: Roll back staging (only if staging QA failed)
+        if: needs.qa-staging.result == 'failure'
+        run: python .specdev/tools/deploy.py rollback --env staging --root '${{ inputs.unit }}'
+      - name: Open incident issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Deploy failed — ${{ inputs.unit }} — ${{ needs.build.outputs.tag }}`,
+              labels: ['incident', 'deploy'],
+              body: `Post-deploy QA failed for unit \`${{ inputs.unit }}\`; auto-rollback triggered.\n\n` +
+                    `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            })

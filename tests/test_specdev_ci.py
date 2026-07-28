@@ -133,17 +133,26 @@ def wf_text(name):
     return (WF_DIR / name).read_text(encoding="utf-8")
 
 
-def test_deploy_yml_has_poc_gate():
-    t = wf_text("deploy.yml")
-    assert "run_manifest.py mode" in t
+def test_deploy_unit_yml_has_poc_gate():
+    """The staging->prod chain moved into the reusable deploy-unit.yml so it can
+    run per governed unit; the poc guard must survive the extraction."""
+    t = wf_text("deploy-unit.yml")
+    assert "run_manifest.py --root '${{ inputs.unit }}' mode" in t
     assert "gate:" in t
     # preflight only runs when not a poc merge
     assert "needs.gate.outputs.mode != 'poc'" in t
 
 
+def test_deploy_yml_dispatches_the_unit_chain():
+    t = wf_text("deploy.yml")
+    assert "deploy-unit.yml" in t
+    assert "units.py matrix" in t
+
+
 def test_all_workflows_parse_if_yaml_available():
     yaml = pytest.importorskip("yaml")
-    for name in ["deploy.yml", "deploy-poc.yml", "specdev-build.yml"]:
+    for name in ["deploy.yml", "deploy-unit.yml", "deploy-poc.yml",
+                 "specdev-build.yml", "specdev-sweep.yml"]:
         path = WF_DIR / name
         if path.exists():
             yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -309,9 +318,9 @@ def test_deploy_target_treats_missing_profile_as_manual(tmp_path):
     assert out.stdout.strip() == "manual"
 
 
-def test_deploy_yml_skips_chain_when_target_is_manual():
+def test_deploy_unit_yml_skips_chain_when_target_is_manual():
     yaml = pytest.importorskip("yaml")
-    doc = yaml.safe_load(wf_text("deploy.yml"))
+    doc = yaml.safe_load(wf_text("deploy-unit.yml"))
     jobs = doc["jobs"]
     assert "target" in jobs["gate"]["outputs"], "gate must expose the target"
     cond = jobs["preflight"]["if"]
@@ -319,7 +328,7 @@ def test_deploy_yml_skips_chain_when_target_is_manual():
     assert "needs.gate.outputs.target != 'manual'" in cond
     # The target is read with the tool, not an inline json.load that would
     # crash the gate job when the profile is absent.
-    assert "deploy.py target" in wf_text("deploy.yml")
+    assert "deploy.py target" in wf_text("deploy-unit.yml")
 
 
 # ---- multi-unit -----------------------------------------------------------

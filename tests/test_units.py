@@ -764,3 +764,46 @@ def test_parse_ref_nested_unit_path():
 
 def test_parse_ref_empty_is_root():
     assert un.parse_ref("", REG) == (".", "")
+
+
+# ---- per-unit release tags ---------------------------------------------
+
+def _wf(name):
+    return (WORKFLOW_DIR / name).read_text(encoding="utf-8")
+
+
+def test_poc_tag_is_namespaced_by_unit():
+    """Two units' poc builds on the same day at the same commit must not
+    produce the same tag — the second push would fail."""
+    t = _wf("deploy-poc.yml")
+    assert "slug=" in t and "poc-${slug}-" in t
+
+
+def test_release_tag_is_namespaced_by_unit():
+    t = _wf("deploy-unit.yml")
+    assert "v-${SLUG}-" in t
+
+
+def test_traceability_push_rebases_on_conflict():
+    """Per-unit concurrency groups do not stop two unit builds racing to push
+    to main; the traceability commit must rebase and retry."""
+    t = _wf("traceability.yml")
+    assert "--rebase" in t
+    assert "--all-units" in t
+
+
+def test_build_workflow_has_per_unit_concurrency_and_scope_guard():
+    t = _wf("specdev-build.yml")
+    assert "concurrency:" in t
+    assert "scope-check" in t
+    assert "resolve-ref" in t
+
+
+def test_org_adr_check_is_never_path_filtered():
+    """Spec decision 7, as a test: the staleness check is driven by the upstream
+    ADR index, not the local diff, so a path filter would let verifications rot
+    silently while the repo looks green."""
+    doc = __import__("yaml").safe_load(_wf("org-adr-check.yml"))
+    on = doc[True] if True in doc else doc["on"]
+    assert "paths" not in (on.get("pull_request") or {})
+    assert "matrix --all" in _wf("org-adr-check.yml")

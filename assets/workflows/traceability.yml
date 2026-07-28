@@ -23,14 +23,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Generate matrix
+      - name: Generate matrix (every governed unit)
         env:
           RELEASE_TAG: ${{ github.event.workflow_run.head_sha }}
-        run: python .specdev/tools/gen_traceability.py
+        run: python .specdev/tools/gen_traceability.py --all-units
+      # Concurrent unit builds can both reach this push. Per-unit concurrency
+      # groups do not prevent that race — they only serialise within a unit —
+      # so rebase and retry rather than failing the run. Each unit only ever
+      # touches its own traceability.md, so a rebase can never conflict.
       - name: Commit matrix
         run: |
           git config user.name "specdev-bot"
           git config user.email "bot@specdev.local"
-          git add .specdev/traceability.md
-          git diff --cached --quiet || git commit -m "chore(traceability): update matrix [skip ci]"
-          git push
+          git add '*/.specdev/traceability.md' .specdev/traceability.md \
+                  .specdev/traceability-index.md 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No traceability changes."
+            exit 0
+          fi
+          git commit -m "chore(traceability): update matrix [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (concurrent unit build?) — rebasing, attempt ${attempt}"
+            git pull --rebase --autostash origin main || exit 1
+          done
+          echo "could not push traceability after 5 attempts"
+          exit 1
