@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -322,3 +323,178 @@ def test_escalations_names_the_causing_dependent():
     assert len(lines) == 1
     assert "risky" in lines[0]
     assert "prod-svc" in lines[0]
+
+
+# ---- check_org_adrs: set-valued matching -------------------------------
+
+COA_PATH = ROOT / "assets" / "specdev" / "tools" / "check_org_adrs.py"
+coa = load_mod(COA_PATH, "check_org_adrs")
+
+
+def test_normalize_returns_sets():
+    got, errs = coa.normalize_classification(
+        {"maturity": "prod", "audience": "internal"}, AXES)
+    assert errs == []
+    assert got == {"maturity": {"prod"}, "audience": {"internal"}}
+
+
+def test_normalize_bare_string_single_axis_scheme():
+    axes = {"maturity": AXES["maturity"]}
+    got, errs = coa.normalize_classification("prod", axes)
+    assert errs == []
+    assert got == {"maturity": {"prod"}}
+
+
+def test_entry_matches_against_a_value_set():
+    vmap = coa.build_value_map(AXES)
+    cls = {"maturity": {"prod"}, "audience": {"internal", "customer"}}
+    assert coa.entry_matches("customer", cls, AXES, vmap) is True
+    assert coa.entry_matches("internal", cls, AXES, vmap) is True
+
+
+def test_entry_matches_ranked_plus_uses_max_rank():
+    vmap = coa.build_value_map(AXES)
+    cls = {"maturity": {"prod"}, "audience": {"internal"}}
+    assert coa.entry_matches("dev+", cls, AXES, vmap) is True
+    cls_poc = {"maturity": {"poc"}, "audience": {"internal"}}
+    assert coa.entry_matches("dev+", cls_poc, AXES, vmap) is False
+
+
+def test_entry_matches_unknown_value_fails_safe():
+    vmap = coa.build_value_map(AXES)
+    cls = {"maturity": {"prod"}}
+    assert coa.entry_matches("nonsense", cls, AXES, vmap) is False
+
+
+def test_and_conditions_still_and():
+    vmap = coa.build_value_map(AXES)
+    cls = {"maturity": {"prod"}, "audience": {"customer"}}
+    assert coa.entry_matches("customer & dev+", cls, AXES, vmap) is True
+    cls2 = {"maturity": {"prod"}, "audience": {"internal"}}
+    assert coa.entry_matches("customer & dev+", cls2, AXES, vmap) is False
+
+
+# ---- check_org_adrs: end to end ----------------------------------------
+
+def _index(adrs, axes=None):
+    return {"axes": axes or AXES, "adrs": adrs}
+
+
+def _write_manifest(root, unit, entries):
+    d = root / unit / ".specdev" / "adr"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "org-compliance.json").write_text(
+        json.dumps({"entries": entries}, indent=2), encoding="utf-8")
+
+
+def _run_coa(tmp_path, idx_file, *extra):
+    return subprocess.run(
+        [sys.executable, str(COA_PATH), "--root", str(tmp_path),
+         "--index", str(idx_file), *extra],
+        capture_output=True, text=True)
+
+
+def test_check_org_adrs_multi_unit_applies_per_unit(tmp_path):
+    make_unit(tmp_path, "infra", classification={"maturity": "prod",
+                                                 "audience": "internal"})
+    make_unit(tmp_path, "demos", classification={"maturity": "poc",
+                                                 "audience": "internal"})
+    write_registry(tmp_path, {
+        "schema_version": 1,
+        "governance_repo": "faro/governance",
+        "ref": "main",
+        "path": "governance/adr",
+        "units": ["infra", "demos"],
+    })
+    idx_file = tmp_path / "index.json"
+    idx_file.write_text(json.dumps(_index([
+        {"id": "ADR-0004", "title": "Terraform", "status": "accepted",
+         "applies_to": ["dev+"], "sha256": "abc"}])), encoding="utf-8")
+
+    rc = _run_coa(tmp_path, idx_file)
+    assert rc.returncode == 1
+    assert "infra" in rc.stdout
+
+    _write_manifest(tmp_path, "infra",
+                    [{"id": "ADR-0004", "status": "met", "sha256": "abc"}])
+    rc = _run_coa(tmp_path, idx_file)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+
+
+def test_check_org_adrs_escalated_unit_must_verify(tmp_path):
+    """The laundering scenario end-to-end: risky is only reachable as a prod
+    dependency, and the gate must demand its verification."""
+    make_unit(tmp_path, "prod-svc", classification={"maturity": "prod",
+                                                    "audience": "internal"})
+    make_unit(tmp_path, "risky", classification={"maturity": "poc",
+                                                 "audience": "internal"})
+    write_registry(tmp_path, {
+        "schema_version": 1,
+        "governance_repo": "faro/governance",
+        "ref": "main",
+        "path": "governance/adr",
+        "units": [{"path": "prod-svc", "depends_on": ["risky"]}, "risky"],
+    })
+    idx_file = tmp_path / "index.json"
+    idx_file.write_text(json.dumps(_index([
+        {"id": "ADR-0004", "title": "Terraform", "status": "accepted",
+         "applies_to": ["dev+"], "sha256": "abc"}])), encoding="utf-8")
+    _write_manifest(tmp_path, "prod-svc",
+                    [{"id": "ADR-0004", "status": "met", "sha256": "abc"}])
+
+    rc = _run_coa(tmp_path, idx_file)
+    assert rc.returncode == 1
+    assert "risky" in rc.stdout
+    assert "effective classification raised" in rc.stdout
+
+
+def test_check_org_adrs_single_root_unchanged(tmp_path):
+    """No registry: behaves exactly as before multi-unit support."""
+    d = tmp_path / ".specdev"
+    d.mkdir()
+    (d / "org.json").write_text(json.dumps({
+        "governance_repo": "faro/governance", "ref": "main",
+        "path": "governance/adr",
+        "classification": {"maturity": "prod", "audience": "internal"},
+    }), encoding="utf-8")
+    idx_file = tmp_path / "index.json"
+    idx_file.write_text(json.dumps(_index([
+        {"id": "ADR-0004", "title": "Terraform", "status": "accepted",
+         "applies_to": ["dev+"], "sha256": "abc"}])), encoding="utf-8")
+
+    rc = _run_coa(tmp_path, idx_file)
+    assert rc.returncode == 1
+
+    _write_manifest(tmp_path, ".",
+                    [{"id": "ADR-0004", "status": "met", "sha256": "abc"}])
+    rc = _run_coa(tmp_path, idx_file)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+
+
+def test_check_org_adrs_stale_sha_fails(tmp_path):
+    """The staleness half: an upstream ADR edit invalidates the verification
+    with no local change at all."""
+    d = tmp_path / ".specdev"
+    d.mkdir()
+    (d / "org.json").write_text(json.dumps({
+        "governance_repo": "faro/governance", "ref": "main",
+        "path": "governance/adr",
+        "classification": {"maturity": "prod", "audience": "internal"},
+    }), encoding="utf-8")
+    _write_manifest(tmp_path, ".",
+                    [{"id": "ADR-0004", "status": "met", "sha256": "OLD"}])
+    idx_file = tmp_path / "index.json"
+    idx_file.write_text(json.dumps(_index([
+        {"id": "ADR-0004", "title": "Terraform", "status": "accepted",
+         "applies_to": ["dev+"], "sha256": "NEW"}])), encoding="utf-8")
+
+    rc = _run_coa(tmp_path, idx_file)
+    assert rc.returncode == 1
+    assert "changed upstream" in rc.stdout
+
+
+def test_check_org_adrs_inert_without_org_json(tmp_path):
+    rc = subprocess.run(
+        [sys.executable, str(COA_PATH), "--root", str(tmp_path)],
+        capture_output=True, text=True)
+    assert rc.returncode == 0
