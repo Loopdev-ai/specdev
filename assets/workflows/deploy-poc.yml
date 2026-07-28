@@ -11,12 +11,20 @@ on:
         required: false
         type: string
         default: poc
+      unit:
+        required: false
+        type: string
+        default: '.'
   workflow_dispatch:
     inputs:
       environment:
         required: false
         type: string
         default: poc
+      unit:
+        required: false
+        type: string
+        default: '.'
 
 permissions:
   contents: write   # tag releases
@@ -30,7 +38,7 @@ jobs:
         with:
           python-version: '3.x'
       - name: Verify poc deploy facts
-        run: python .specdev/tools/deploy.py preflight --env ${{ inputs.environment }}
+        run: python .specdev/tools/deploy.py preflight --env ${{ inputs.environment }} --root '${{ inputs.unit }}' 
 
   build:
     needs: preflight
@@ -41,15 +49,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Namespaced by unit: without a slug, two units' poc builds on the same
+      # day at the same commit produce identical tags and the second push fails.
       - id: meta
         name: Compute poc release tag
-        run: echo "tag=poc-$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          slug=$(echo '${{ inputs.unit }}' | tr '/.' '--' | sed 's/^-*//; s/-*$//')
+          if [ -n "$slug" ]; then
+            echo "tag=poc-${slug}-$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=poc-$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build artifact
+        working-directory: ${{ inputs.unit }}
         run: 'echo "TODO: build command -> dist/"'          # e.g. npm run build
       - uses: actions/upload-artifact@v4
         with:
           name: poc-${{ steps.meta.outputs.tag }}
-          path: dist/
+          path: ${{ inputs.unit }}/dist/
           if-no-files-found: ignore
 
   deploy:
@@ -69,8 +86,8 @@ jobs:
       - id: deploy
         name: Deploy to the isolated poc environment
         run: |
-          python .specdev/tools/deploy.py deploy --env ${{ inputs.environment }} --tag "${{ needs.build.outputs.tag }}"
-          echo "url=$(python .specdev/tools/deploy.py url --env ${{ inputs.environment }})" >> "$GITHUB_OUTPUT"
+          python .specdev/tools/deploy.py deploy --env ${{ inputs.environment }} --tag "${{ needs.build.outputs.tag }}" --root '${{ inputs.unit }}'
+          echo "url=$(python .specdev/tools/deploy.py url --env ${{ inputs.environment }} --root '${{ inputs.unit }}')" >> "$GITHUB_OUTPUT"
 
   qa:
     needs: [build, deploy]
@@ -78,3 +95,4 @@ jobs:
     with:
       environment: ${{ inputs.environment }}
       target_url: ${{ needs.deploy.outputs.url }}
+      unit: ${{ inputs.unit }}

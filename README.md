@@ -235,6 +235,78 @@ the whole product**: it unions REQs from the active `spec.md`, every archived
 `specs/*.md`, and an optional `product-requirements.md` catalog — so archiving a
 finished feature never drops it from coverage.
 
+## Monorepos: multiple governed units
+
+By default a repository **is** one governed unit and nothing below applies —
+single-root repos need no configuration and are entirely unaffected.
+
+A repo holding several projects at different maturities can instead declare each
+as its own **governed unit**: a directory containing a `.specdev/`. A spike and a
+production service in the same repo are then classified, gated, and built
+independently. This exists because the alternative is unsafe in one direction —
+classify such a repo `poc` and its production code silently escapes the org ADRs
+that should bind it; classify it `prod` and every spike must clear a production
+bar or carry an exception, which teaches teams to route around governance.
+
+Convert an existing repo:
+
+```bash
+python .specdev/tools/units.py migrate --unit infrastructure
+python .specdev/tools/units.py check
+```
+
+That moves the unit-scoped artifacts into `infrastructure/.specdev/`, leaves the
+repo-scoped ones (`tools/`, `ci.json`) at the root, and writes
+`.specdev/units.json`:
+
+```json
+{
+  "schema_version": 1,
+  "governance_repo": "your-org/governance",
+  "ref": "main",
+  "path": "governance/adr",
+  "units": [
+    "demos",
+    "infrastructure",
+    {"path": "soc-automation", "depends_on": ["infrastructure"]}
+  ]
+}
+```
+
+- **The governance link is repo-wide** and lives only in the registry. Each
+  unit's `.specdev/org.json` carries just its `classification`. Redeclaring a
+  link key on a unit with a different value is a hard error — two units pinning
+  different governance refs is a footgun with no upside.
+- **`depends_on` drives effective classification.** A unit is governed at the
+  level of the highest-classified unit that depends on it, transitively, because
+  anything a production system imports is inside the production blast radius.
+  Moving risky code into a `poc` unit that a `prod` unit imports therefore does
+  **not** escape governance. The reverse does not escalate: a `poc` demo
+  importing a `prod` library stays `poc`.
+- **Branches carry the unit:** `spec/<unit>/<name>`, `poc/<unit>/<name>`. A
+  segment is read as a unit only when it names a registered unit, so existing
+  `spec/<name>` branches keep working. A PR touching files outside its named
+  unit fails the scope check.
+- **Builds run in parallel across units** and serialise only within one.
+- **Per-unit artifacts are never merged.** An SoA carries a scope statement, so
+  concatenating two units' SoAs yields a document true of neither; the rolled-up
+  index links to each unit's file instead.
+
+Two CI notes that matter:
+
+- Mark each gate's **`summary`** job the required status check, not the matrix
+  legs. Leg names are dynamic (`check (infrastructure)`), so branch protection
+  cannot require them — a newly added unit would otherwise arrive as a silently
+  unrequired check.
+- `org-adr-check` and the nightly `specdev-sweep` are **never** filtered by
+  changed paths. The ADR staleness check is driven by the upstream index, not
+  the local diff: an org ADR can change with no local commit at all. Filtering
+  them would leave a quiet repo looking green while its verifications rot.
+
+Registry validation runs in every gate's `discover` job; run it locally with
+`python .specdev/tools/units.py check`. Both drift directions fail — a
+`.specdev/` that is not registered, and a registered unit with no `.specdev/`.
+
 ## Layout
 
 ```
@@ -261,5 +333,8 @@ governance/
   adr-index.yml          this repo's gate: valid frontmatter, fresh index
 assets/
   specdev/               → copied to .specdev/ in target repos (incl. org.json, architecture-config.json seed, tools/arch_config.py)
+    tools/units.py       governed-unit registry: the only module that knows a repo can hold >1 unit
   workflows/             → copied to .github/workflows/ in target repos
+    deploy-unit.yml      reusable staging→QA→prod chain for ONE unit; deploy.yml matrixes it
+    specdev-sweep.yml    nightly unfiltered all-unit ADR-staleness sweep
 ```

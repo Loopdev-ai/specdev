@@ -26,6 +26,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import units  # noqa: E402  (vendored sibling module)
+
 try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -138,13 +141,8 @@ def cell(values: set[str] | None) -> str:
     return ", ".join(sorted(values)) if values else "—"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=".")
-    ap.add_argument("--out", default=".specdev/traceability.md")
-    ap.add_argument("--check-gaps", action="store_true",
-                    help="exit non-zero if any REQ has no linked test (no file write)")
-    args = ap.parse_args()
+def run_one(args) -> int:
+    """Generate for exactly one unit root."""
 
     root = Path(args.root)
     sources = spec_sources(root)
@@ -206,6 +204,34 @@ def main() -> int:
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Wrote {out} - {len(reqs)} requirements, {len(gaps)} gap(s).")
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=".")
+    ap.add_argument("--out", default=".specdev/traceability.md")
+    ap.add_argument("--check-gaps", action="store_true",
+                    help="exit non-zero if any REQ has no linked test (no file write)")
+    ap.add_argument("--all-units", action="store_true",
+                    help="generate for every registered unit")
+    args = ap.parse_args()
+
+    if not args.all_units:
+        return run_one(args)
+
+    rc = 0
+    for unit in units.unit_paths(args.root):
+        sub = argparse.Namespace(**vars(args))
+        sub.all_units = False
+        sub.root = str(Path(args.root) / unit)
+        print(f"--- {unit} ---")
+        rc |= run_one(sub)
+    if not args.check_gaps:
+        idx = units.write_rollup_index(args.root, "traceability.md",
+                                       "Traceability index")
+        if idx:
+            print(f"Wrote {idx}")
+    return rc
 
 
 if __name__ == "__main__":

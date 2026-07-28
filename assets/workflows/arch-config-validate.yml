@@ -1,17 +1,71 @@
 name: arch-config-validate
+
+# Validates each governed unit's architecture-config.json. The literal path
+# filter this workflow used to carry cannot express per-unit paths, so it
+# matches any unit's file and the per-unit filtering happens in discover.
 on:
   pull_request:
-    paths: [".specdev/architecture-config.json"]
+    paths: ["**/.specdev/architecture-config.json"]
   push:
     branches: [main]
-    paths: [".specdev/architecture-config.json"]
+    paths: ["**/.specdev/architecture-config.json"]
+
+permissions:
+  contents: read
+
 jobs:
-  validate:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      units: ${{ steps.m.outputs.units }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - name: Validate architecture-config.json
-        run: python .specdev/tools/arch_config.py validate
+      - name: Validate the unit registry
+        run: python .specdev/tools/units.py check
+      - id: m
+        name: Enumerate units
+        run: echo "units=$(python .specdev/tools/units.py matrix --all)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJSON(needs.discover.outputs.units) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      # NOTE: arch_config.py declares --root on the TOP-LEVEL parser, so it
+      # must precede the subcommand. 'validate --root X' is a usage error.
+      - name: Validate architecture-config.json — ${{ matrix.unit }}
+        if: hashFiles(format('{0}/.specdev/architecture-config.json', matrix.unit)) != ''
+        run: python .specdev/tools/arch_config.py --root '${{ matrix.unit }}' validate
+
+  # The single required status check. Matrix leg names are dynamic, so branch
+  # protection cannot require them individually.
+  summary:
+    needs: [discover, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Per-unit verdicts
+        env:
+          UNITS: ${{ needs.discover.outputs.units }}
+          VERDICT: ${{ needs.validate.result }}
+        run: |
+          {
+            echo "## arch-config-validate"
+            echo ""
+            echo "Units: \`${UNITS:-[]}\`"
+            echo ""
+            echo "Result: **${VERDICT}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if any unit failed
+        if: needs.discover.result != 'success' || needs.validate.result == 'failure'
+        run: exit 1

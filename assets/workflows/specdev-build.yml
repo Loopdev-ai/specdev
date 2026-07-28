@@ -1,12 +1,19 @@
 name: specdev-build
 
-# Hands-off SpecDev build in CI. Started locally in Claude Code, handed off here:
+# Hands-off SpecDev build in CI, scoped to ONE governed unit. Started locally in
+# Claude Code, handed off here:
 #   - prod: merging the Spec PR (spec/** -> main) fires this; the runner builds
 #     and opens the Implementation PR, then STOPS (a human merges -> deploy.yml).
 #   - poc:  pushing a poc/** branch fires this; the runner specs + builds, opens
 #     the Implementation PR, self-merges, then deploys the isolated poc env.
+#
+# The unit comes from the branch: spec/<unit>/<name> and poc/<unit>/<name>. A
+# segment is read as a unit only when it names a REGISTERED unit, so a
+# single-root repo's spec/<name> keeps working unchanged.
+#
 # Context stays bounded by the specdev skill's coordinator discipline; state is
-# checkpointed to .specdev/BUILD.md so a run can resume across job boundaries.
+# checkpointed to <unit>/.specdev/BUILD.md so a run can resume across job
+# boundaries.
 on:
   pull_request:
     types: [closed]
@@ -23,10 +30,21 @@ on:
         description: 'prod or poc'
         required: true
         type: string
+      unit:
+        description: 'governed unit (default: resolved from the branch)'
+        required: false
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
+
+# Parallel across units, serialised within one. This replaces the previous
+# one-build-per-repo invariant: unrelated projects in a monorepo no longer wait
+# on each other. Keyed on the ref so two features in the same unit still queue.
+concurrency:
+  group: specdev-build-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   setup:
@@ -35,14 +53,32 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
       mode: ${{ steps.decide.outputs.mode }}
       feat: ${{ steps.decide.outputs.feat }}
+      unit: ${{ steps.unit.outputs.unit }}
       runner: ${{ steps.cfg.outputs.runner }}
       timeout: ${{ steps.cfg.outputs.timeout }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - id: unit
+        name: Resolve the governed unit from the branch
+        env:
+          REF: ${{ github.event.pull_request.head.ref || github.ref }}
+          UNIT_INPUT: ${{ inputs.unit }}
+        run: |
+          if [ -n "$UNIT_INPUT" ]; then
+            echo "unit=$UNIT_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            python .specdev/tools/units.py resolve-ref --ref "$REF" \
+              | grep '^unit=' >> "$GITHUB_OUTPUT"
+          fi
       - id: decide
         name: Decide whether and how to run
+        env:
+          UNIT: ${{ steps.unit.outputs.unit }}
         run: |
           event="${{ github.event_name }}"
           run=false; mode=""; feat=""
@@ -56,8 +92,8 @@ jobs:
               run=true; mode="prod"
             fi
           fi
-          if [ -z "$feat" ] && [ -f .specdev/spec.md ]; then
-            feat=$(grep -oE 'FEAT-[0-9]+' .specdev/spec.md | head -1 || true)
+          if [ -z "$feat" ] && [ -f "${UNIT}/.specdev/spec.md" ]; then
+            feat=$(grep -oE 'FEAT-[0-9]+' "${UNIT}/.specdev/spec.md" | head -1 || true)
           fi
           {
             echo "run=$run"
@@ -65,14 +101,37 @@ jobs:
             echo "feat=$feat"
           } >> "$GITHUB_OUTPUT"
       - id: cfg
-        name: Read .specdev/ci.json
+        name: Read ci.json (unit first, repo root as fallback)
+        env:
+          UNIT: ${{ steps.unit.outputs.unit }}
         run: |
-          echo "runner=$(python .specdev/tools/run_manifest.py ci --get runner)" >> "$GITHUB_OUTPUT"
-          echo "timeout=$(python .specdev/tools/run_manifest.py ci --get max_session_minutes)" >> "$GITHUB_OUTPUT"
+          echo "runner=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get runner --repo-root .)" >> "$GITHUB_OUTPUT"
+          echo "timeout=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get max_session_minutes --repo-root .)" >> "$GITHUB_OUTPUT"
+
+  # A branch scoped to one unit may not change another. Without this the branch
+  # name could lie about what the PR touches, and the unit's gates would verify
+  # the wrong blast radius.
+  scope:
+    needs: setup
+    if: needs.setup.outputs.run == 'true' && needs.setup.outputs.unit != '.'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Changes must stay inside ${{ needs.setup.outputs.unit }}
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python .specdev/tools/units.py scope-check \
+            --unit '${{ needs.setup.outputs.unit }}' --changed-from "$BASE"
 
   build:
-    needs: setup
-    if: needs.setup.outputs.run == 'true'
+    needs: [setup, scope]
+    if: needs.setup.outputs.run == 'true' && !cancelled() && needs.scope.result != 'failure'
     runs-on: ${{ needs.setup.outputs.runner }}
     timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout) }}
     steps:
@@ -86,7 +145,8 @@ jobs:
         run: |
           python .specdev/tools/run_manifest.py init \
             --feat "${{ needs.setup.outputs.feat }}" \
-            --mode "${{ needs.setup.outputs.mode }}"
+            --mode "${{ needs.setup.outputs.mode }}" \
+            --unit "${{ needs.setup.outputs.unit }}"
           git config user.name  "specdev-bot"
           git config user.email "specdev-bot@users.noreply.github.com"
       - name: Run the SpecDev build (headless Claude Code)
@@ -104,12 +164,27 @@ jobs:
 
             Feature: ${{ needs.setup.outputs.feat }}
             Mode:    ${{ needs.setup.outputs.mode }}
+            Unit:    ${{ needs.setup.outputs.unit }}
 
-            Resume from .specdev/BUILD.md; if the build is incomplete, continue
-            the dependency-wave loop until this mode's terminal state:
+            You are building ONE governed unit. Every .specdev/ artifact path in
+            your work is relative to that unit root — <unit>/.specdev/spec.md,
+            <unit>/.specdev/BUILD.md, <unit>/.specdev/run.json,
+            <unit>/.specdev/adr/. The TOOLS always live at the repo root
+            (.specdev/tools/) regardless of how many units exist. Pass the unit
+            root to every tool that takes --root, and give it to the adr-checker
+            subagent as its unit root.
+
+            Never modify files outside your unit: a scope check fails the build
+            if you do. Shared, unit-less files (top-level docs, CI config) are
+            permitted but should be touched only when the feature genuinely
+            requires it.
+
+            Resume from <unit>/.specdev/BUILD.md; if the build is incomplete,
+            continue the dependency-wave loop until this mode's terminal state:
               - prod: open the Implementation PR against main, then STOP. Do NOT merge.
               - poc:  open the Implementation PR and merge it into main.
-            Keep .specdev/BUILD.md and .specdev/run.json current after every phase.
+            Keep <unit>/.specdev/BUILD.md and <unit>/.specdev/run.json current
+            after every phase.
           claude_args: '--max-turns 200'
 
   # poc only: after the build self-merges, deploy the isolated poc environment
@@ -120,4 +195,5 @@ jobs:
     uses: ./.github/workflows/deploy-poc.yml
     with:
       environment: poc
+      unit: ${{ needs.setup.outputs.unit }}
     secrets: inherit

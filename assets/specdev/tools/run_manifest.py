@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
-"""Per-feature CI run manifest (.specdev/run.json) for the SpecDev CI handoff.
+"""Per-feature CI run manifest (<unit>/.specdev/run.json) for the SpecDev CI handoff.
 
 run.json records which mode a feature's build/merge belongs to so downstream
 workflows can branch: a prod merge takes the standard deploy chain; a poc merge
 skips it (the poc build deploys an isolated env itself). Also exposes the mode
-to deploy.yml's guard and reads .specdev/ci.json for the build workflow.
+to deploy.yml's guard and reads ci.json for the build workflow.
+
+The manifest is PER GOVERNED UNIT: a monorepo runs one in-flight build per unit
+rather than one per repo, so unrelated projects do not serialise against each
+other. `--root` names the unit; `init --ref` resolves it from the branch.
+
+ci.json resolves unit-first with a repo-root fallback, so shared runner config
+is declared once at the root and a unit overrides only what it needs.
 
 Usage:
-    run_manifest.py mode                        # print governing mode ('prod' if no file)
-    run_manifest.py validate                     # exit nonzero on schema error
+    run_manifest.py --root <unit> mode           # governing mode ('prod' if no file)
+    run_manifest.py --root <unit> validate       # exit nonzero on schema error
     run_manifest.py init --feat FEAT-001 --mode poc [--poc-env poc]
-    run_manifest.py ci --get runner              # read a .specdev/ci.json key
+                         [--unit <path> | --ref spec/<unit>/<name>]
+    run_manifest.py --root <unit> ci --get runner [--repo-root .]
 """
 import argparse
 import json
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import units  # noqa: E402  (vendored sibling module)
 
 try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stdout.reconfigure(encoding="utf-8")
@@ -80,12 +91,25 @@ def prod_chain_should_run(doc) -> bool:
     return (doc or {}).get("mode") != "poc"
 
 
-def ci_get(key: str, root="."):
+_MISSING = object()
+
+
+def ci_get(key: str, root=".", repo_root=None):
+    """Read a ci.json key. A unit's ci.json wins; the repo-root ci.json is the
+    fallback so shared runner config is declared once; CI_DEFAULTS is the floor.
+
+    Returns _MISSING for an unknown key so the caller fails loudly instead of
+    printing the string 'None' at exit 0 — that value has flowed into an
+    inference-metadata record as "model": "None"."""
     cfg = dict(CI_DEFAULTS)
-    p = ci_path(root)
-    if p.exists():
-        cfg.update(json.loads(p.read_text(encoding="utf-8")))
-    return cfg.get(key, CI_DEFAULTS.get(key))
+    candidates = []
+    if repo_root is not None:
+        candidates.append(Path(repo_root) / CI_REL)
+    candidates.append(ci_path(root))
+    for p in candidates:
+        if p.exists():
+            cfg.update(json.loads(p.read_text(encoding="utf-8-sig")))
+    return cfg.get(key, _MISSING)
 
 
 def main() -> int:
@@ -98,8 +122,14 @@ def main() -> int:
     pi.add_argument("--feat", required=True)
     pi.add_argument("--mode", required=True, choices=MODES)
     pi.add_argument("--poc-env", default="poc")
+    pi.add_argument("--unit", default=None,
+                    help="governed unit (default: resolved from --ref, else '.')")
+    pi.add_argument("--ref", default=None,
+                    help="branch ref to resolve the unit from")
     pc = sub.add_parser("ci")
     pc.add_argument("--get", required=True)
+    pc.add_argument("--repo-root", default=None,
+                    help="repo root for ci.json fallback when --root is a unit")
     args = ap.parse_args()
 
     if args.cmd == "mode":
@@ -124,11 +154,21 @@ def main() -> int:
             for e in errs:
                 print(f"ERROR: {e}", file=sys.stderr)
             return 1
-        save(doc, args.root)
-        print(f"Wrote {run_path(args.root)}")
+        unit = args.unit
+        if unit is None and args.ref:
+            unit, _ = units.parse_ref(args.ref, units.load_registry(args.root))
+        unit = unit or "."
+        target = str(Path(args.root) / unit)
+        save(doc, target)
+        print(f"Wrote {run_path(target)}")
         return 0
     if args.cmd == "ci":
-        print(ci_get(args.get, args.root))
+        val = ci_get(args.get, args.root, repo_root=args.repo_root)
+        if val is _MISSING:
+            print(f"ERROR: no such ci.json key: {args.get!r} "
+                  f"(known: {', '.join(sorted(CI_DEFAULTS))})", file=sys.stderr)
+            return 1
+        print(val)
         return 0
     return 0
 

@@ -1,9 +1,9 @@
 name: post-deploy-qa
 
-# Reusable QA suite run against a live environment. Called by deploy.yml for
-# both staging (the promotion gate) and prod (release verification). A failure
-# here fails the calling job; for staging that skips prod promotion and trips
-# rollback.
+# Reusable QA suite run against a live environment, scoped to one governed
+# unit. Called by deploy-unit.yml for both staging (the promotion gate) and prod
+# (release verification), and by deploy-poc.yml. A failure here fails the calling
+# job; for staging that skips prod promotion and trips rollback.
 on:
   workflow_call:
     inputs:
@@ -13,6 +13,10 @@ on:
       target_url:
         required: true
         type: string
+      unit:
+        required: false
+        type: string
+        default: '.'
   workflow_dispatch:
     inputs:
       environment:
@@ -21,6 +25,10 @@ on:
       target_url:
         required: true
         type: string
+      unit:
+        required: false
+        type: string
+        default: '.'
 
 permissions:
   contents: read
@@ -31,14 +39,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Smoke tests
+      - name: Smoke tests — ${{ inputs.unit }}
+        working-directory: ${{ inputs.unit }}
         run: 'echo "TODO: smoke tests against ${{ inputs.target_url }} (${{ inputs.environment }})"'
 
-      - name: Critical-path E2E
+      - name: Critical-path E2E — ${{ inputs.unit }}
+        working-directory: ${{ inputs.unit }}
         run: 'echo "TODO: e2e against ${{ inputs.target_url }}"'   # e.g. npx playwright test
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
       - name: Synthetic / health check (uses profile health_path)
-        run: python .specdev/tools/deploy.py health --url "${{ inputs.target_url }}"
+        run: python .specdev/tools/deploy.py health --url "${{ inputs.target_url }}" --root '${{ inputs.unit }}' 
