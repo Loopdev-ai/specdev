@@ -157,6 +157,11 @@ stubs:**
 
 ## After `/specdev:init` — required wiring
 
+> The four stack-specific `post-dev-qa` gates (lint, unit tests, coverage,
+> SAST) ship **failing**, with a message naming what to replace. That is
+> deliberate: a stub that `echo`s exits 0, so an unwired repo would have a QA
+> gate reporting green while verifying nothing.
+
 1. Replace the **build/test** `TODO:`s in `.github/workflows/` (deploy/rollback/
    health are already wired to the profile).
 2. Review `.specdev/deploy.profile.json`: set real env URLs, fix any

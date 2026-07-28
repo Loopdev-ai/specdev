@@ -134,6 +134,12 @@ jobs:
     if: needs.setup.outputs.run == 'true' && !cancelled() && needs.scope.result != 'failure'
     runs-on: ${{ needs.setup.outputs.runner }}
     timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout) }}
+    # The `secrets` context is NOT available in `jobs.<id>.steps.if`. A guard
+    # written as `if: secrets.ANTHROPIC_API_KEY != ''` does not error — it
+    # evaluates to empty, so the step silently never runs. Surface the secret as
+    # job-level env (where `secrets` IS available) and gate on `env` instead.
+    env:
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' && 'yes' || 'no' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,6 +147,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      # Fail fast and legibly: without the key claude-code-action fails deep in
+      # the run with an opaque auth error.
+      - name: Require ANTHROPIC_API_KEY
+        if: env.HAS_ANTHROPIC_KEY != 'yes'
+        run: |
+          echo "::error title=Missing secret::specdev-build needs the ANTHROPIC_API_KEY repo or org secret."
+          echo "Add it under Settings -> Secrets and variables -> Actions."
+          exit 1
       - name: Record run manifest (mode signal for the deploy guard)
         run: |
           python .specdev/tools/run_manifest.py init \
@@ -185,7 +199,20 @@ jobs:
               - poc:  open the Implementation PR and merge it into main.
             Keep <unit>/.specdev/BUILD.md and <unit>/.specdev/run.json current
             after every phase.
-          claude_args: '--max-turns 200'
+          # Explicit tool allowlist. Without one the agent runs with the FULL
+          # default surface — including WebFetch/WebSearch — on a job that
+          # writes code and, in poc mode, self-merges to main. An allowlist
+          # makes the surface a reviewable decision instead of a default.
+          #
+          # Bash stays broad on purpose: the coordinator runs this repo's own
+          # test/lint/build commands, which vary per stack, and a prefix
+          # allowlist that is wrong fails the build in a way that is tedious to
+          # debug. TIGHTEN THIS for your stack — the syntax is per-command,
+          # e.g. Bash(git:*),Bash(python:*),Bash(npm:*) — and drop Bash
+          # entirely if your build needs none of it.
+          claude_args: >-
+            --max-turns 200
+            --allowedTools "Task,Read,Write,Edit,Glob,Grep,Bash,TodoWrite"
 
   # poc only: after the build self-merges, deploy the isolated poc environment
   # by CALLING the reusable workflow directly (no push event, no PAT).

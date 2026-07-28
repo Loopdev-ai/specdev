@@ -88,8 +88,13 @@ until configured, so leave it alone if compliance isn't in scope.
 
 Then print this post-install checklist:
 
-- Replace the build/test `TODO:`s in `.github/workflows/` with your stack's
-  commands (deploy/rollback/health are already wired to the profile).
+- **Wire the four `post-dev-qa` gates — they ship RED on purpose.** Lint, unit
+  tests, coverage, and SAST/dependency-audit exit 1 with an actionable message
+  until you replace them with your stack's commands. A stub that `echo`s exits
+  0, which would mean a QA gate reporting green while verifying nothing — and
+  with automatic prod, that gate is most of what stands between a merge and
+  production. Also replace the build `TODO:`s (deploy/rollback/health are
+  already wired to the profile).
 - Fill real URLs and any `REPLACE_ME` params in `.specdev/deploy.profile.json`,
   and add the platform-CLI install/auth step noted in `deploy.yml`.
 - Branch protection on `main`: require the `post-dev-qa` **`summary`** check +
@@ -102,7 +107,13 @@ Then print this post-install checklist:
   `GOVERNANCE_TOKEN` secret (the workflow already reads it).
 - Create `staging` and `production` Environments (no required reviewer on
   production — promotion is automatic).
-- CI handoff (specdev-build): add the `ANTHROPIC_API_KEY` repo/org secret. Merge
+- Secret scanning uses the MIT-licensed gitleaks **binary**, not
+  `gitleaks/gitleaks-action` (which needs a paid licence for organizations and
+  fails closed before scanning anything). Tune `.gitleaks.toml` for your repo.
+- CI handoff (specdev-build): add the `ANTHROPIC_API_KEY` repo/org secret — the
+  build fails fast with a clear message if it is missing. Review the
+  `--allowedTools` list in `specdev-build.yml` and tighten `Bash` to your
+  stack's commands. Merge
   a Spec PR (`spec/**`) to hand a prod build to the runner; push a `poc/**`
   branch for a hands-off poc build. Tune `.specdev/ci.json` (`runner`,
   `max_session_minutes`) — set `runner` to a self-hosted label for long builds.
