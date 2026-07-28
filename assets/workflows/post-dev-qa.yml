@@ -1,22 +1,55 @@
 name: post-dev-qa
 
-# Gate 2 — runs on the Implementation PR. With fully-automatic prod, these
-# checks are most of what stands between a merge and production: keep them
-# strict. Mark every job below as a required status check in branch protection.
+# Gate 2 — runs on the Implementation PR, per governed unit. With fully-automatic
+# prod, these checks are most of what stands between a merge and production:
+# keep them strict. Mark the 'summary' job — NOT the matrix legs — a required
+# status check in branch protection; leg names are dynamic and cannot be
+# required individually.
 on:
   pull_request:
     branches: [main]
     # Spec-only PRs (Gate 1) carry no code/tests yet — don't run Gate 2 on them.
+    # Unit-relative: a spec-only PR in any unit must be ignored, not just one
+    # in a single-root repo.
     paths-ignore:
-      - '.specdev/**'
+      - '**/.specdev/**'
+  merge_group:
 
 permissions:
   contents: read
   pull-requests: read   # gitleaks-action lists PR commits via the API
 
 jobs:
-  qa:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      units: ${{ steps.m.outputs.units }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate the unit registry
+        run: python .specdev/tools/units.py check
+      - id: m
+        name: Enumerate changed units
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BASE")" >> "$GITHUB_OUTPUT"
+
+  qa:
+    needs: discover
+    if: needs.discover.outputs.units != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJSON(needs.discover.outputs.units) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.unit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,29 +63,58 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Lint
+      - name: Lint — ${{ matrix.unit }}
         run: 'echo "TODO: project lint command"'            # e.g. npm run lint
 
-      - name: Unit + integration tests
+      - name: Unit + integration tests — ${{ matrix.unit }}
         run: 'echo "TODO: project test command"'            # e.g. npm test -- --coverage
 
       # NOTE: line coverage is a floor, not a correctness proof — a high number
       # with weak assertions still passes. Prefer branch coverage, and treat the
       # traceability gap check below (every REQ has a test) as the real
       # requirement-coverage gate.
-      - name: Coverage gate
+      - name: Coverage gate — ${{ matrix.unit }}
         run: 'echo "TODO: fail if branch coverage below threshold"' # e.g. enforce >= 80%
 
+      # Repo-wide by nature, and 'working-directory' is not valid on a 'uses'
+      # step. Runs once per matrix leg; that is redundant but harmless, and
+      # scoping a secret scan to one unit would be the wrong trade anyway.
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Dependency / SAST scan
+      - name: Dependency / SAST scan — ${{ matrix.unit }}
         run: 'echo "TODO: SAST + dependency audit"'          # e.g. npm audit --audit-level=high
 
-      # Cumulative across the whole product: checks spec.md + every archived
+      # Cumulative across the whole unit: checks spec.md + every archived
       # specs/*.md (+ product-requirements.md), so a regression that drops a
       # shipped feature's test fails here too, not just the current feature's.
-      - name: Traceability — every requirement has a test
-        run: python .specdev/tools/gen_traceability.py --check-gaps
+      - name: Traceability — every requirement has a test — ${{ matrix.unit }}
+        working-directory: .
+        run: python .specdev/tools/gen_traceability.py --check-gaps --root '${{ matrix.unit }}'
+
+  # The single required status check. Matrix leg names are dynamic, so branch
+  # protection cannot require them individually.
+  summary:
+    needs: [discover, qa]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Per-unit verdicts
+        env:
+          UNITS: ${{ needs.discover.outputs.units }}
+          VERDICT: ${{ needs.qa.result }}
+        run: |
+          {
+            echo "## post-dev-qa"
+            echo ""
+            echo "Changed units: \`${UNITS:-[]}\`"
+            echo ""
+            echo "Result: **${VERDICT}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if any unit failed
+        if: needs.discover.result != 'success' || needs.qa.result == 'failure'
+        run: |
+          echo "One or more units failed post-dev-qa — open the matrix legs for detail."
+          exit 1

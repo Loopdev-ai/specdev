@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -657,3 +659,61 @@ def test_out_of_scope_allows_shared_files(tmp_path):
 
 def test_out_of_scope_root_unit_is_never_out_of_scope(tmp_path):
     assert un.out_of_scope(tmp_path, ".", "HEAD") == []
+
+
+# ---- workflow <-> CLI contract -----------------------------------------
+# Guards a whole bug class: a workflow invoking a tool with arguments the
+# tool's parser rejects. argparse exits 2 on a usage error, so any extracted
+# command line that exits 2 means the workflow would fail at runtime with an
+# 'unrecognized arguments' error. Caught arch_config.py, whose --root sits on
+# the top-level parser and must precede the subcommand.
+
+WORKFLOW_DIR = ROOT / "assets" / "workflows"
+TOOLS_DIR = ROOT / "assets" / "specdev" / "tools"
+
+_EXPR = re.compile(r"\$\{\{[^}]*\}\}")
+_TOOL_CALL = re.compile(r"python\s+\.specdev/tools/(\w+)\.py([^\n|&;]*)")
+
+
+def _extract_tool_calls():
+    calls = []
+    for wf in sorted(WORKFLOW_DIR.glob("*.yml")):
+        text = wf.read_text(encoding="utf-8")
+        # Join shell line-continuations so a multi-line invocation is seen whole.
+        text = re.sub(r"\\\s*\n\s*", " ", text)
+        for tool, rest in _TOOL_CALL.findall(text):
+            # Workflow expressions and shell vars become a benign literal.
+            args = _EXPR.sub("X", rest)
+            args = re.sub(r'"\$\w+"|\$\w+|\$\{\w+[^}]*\}', "X", args)
+            # Many calls are wrapped in $( ) inside an echo; cut the wrapper off.
+            args = re.split(r"[)>]", args, maxsplit=1)[0]
+            args = args.replace('"', "").replace("'", "").strip()
+            calls.append((wf.name, tool, shlex.split(args)))
+    return calls
+
+
+def test_workflows_reference_only_existing_tools():
+    calls = _extract_tool_calls()
+    assert calls, "no tool invocations found in assets/workflows — regex broken?"
+    for wf, tool, _ in calls:
+        assert (TOOLS_DIR / f"{tool}.py").exists(), \
+            f"{wf} invokes .specdev/tools/{tool}.py which does not exist"
+
+
+@pytest.mark.parametrize("wf,tool,args", _extract_tool_calls(),
+                         ids=lambda v: v if isinstance(v, str) else None)
+def test_workflow_tool_invocation_is_accepted_by_the_parser(wf, tool, args, tmp_path):
+    """'unrecognized arguments' is the precise signal that a workflow passes a
+    flag the tool's parser does not accept — including a flag declared on the
+    top-level parser but written after the subcommand.
+
+    Deliberately NOT asserting on exit code 2 generally: placeholder
+    substitution turns constrained values into 'X', which argparse rejects as
+    an invalid choice. That is an artifact of this test, not a real defect."""
+    rc = subprocess.run(
+        [sys.executable, str(TOOLS_DIR / f"{tool}.py"), *args],
+        capture_output=True, text=True, cwd=tmp_path)
+    for signal in ("unrecognized arguments", "expected one argument"):
+        assert signal not in rc.stderr, (
+            f"{wf} invokes '{tool}.py {' '.join(args)}' but the parser rejects "
+            f"it:\n{rc.stderr}")

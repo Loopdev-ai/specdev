@@ -1,21 +1,50 @@
 name: org-adr-check
 
-# Deterministic org-ADR governance gate. Verifies that every org ADR applicable
-# to this repo's classification (per .specdev/org.json) has a current, justified
-# entry in .specdev/adr/org-compliance.json — the manifest the adr-checker agent
-# writes during the build. Runs on every PR (Spec PRs and Implementation PRs
-# alike) so a change cannot merge while an applicable org ADR is unverified or
-# its verification is stale. Mark this a required status check once org.json is
-# configured; it skips cleanly before then.
+# Deterministic org-ADR governance gate, per governed unit. Verifies that every
+# org ADR applicable to a unit's classification has a current, justified entry
+# in <unit>/.specdev/adr/org-compliance.json — the manifest the adr-checker
+# agent writes during the build.
+#
+# NO PATH FILTER, BY DESIGN. The staleness half of check_org_adrs.py is not
+# diff-driven: an upstream ADR edit invalidates every unit's recorded sha256
+# with no local change at all. Filtering this workflow by changed paths would
+# yield a repo that looks green for months while its verifications rot.
+#
+# Mark the 'summary' job — NOT the matrix legs — a required status check.
+# Matrix legs produce dynamic check names ("check (infrastructure)") that
+# branch protection cannot require, so a newly added unit would otherwise
+# arrive as a silently unrequired check. It skips cleanly before org.json is
+# configured.
 on:
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      units: ${{ steps.m.outputs.units }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate the unit registry
+        run: python .specdev/tools/units.py check
+      - id: m
+        name: Enumerate ALL units (never filtered — see header)
+        run: echo "units=$(python .specdev/tools/units.py matrix --all)" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJSON(needs.discover.outputs.units) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,12 +54,40 @@ jobs:
       # step-level because hashFiles() is a step-only function — at job level
       # GitHub rejects the whole file — and because it needs the checked-out
       # workspace, which does not exist when job conditions are evaluated.
-      - name: Org ADR compliance — applicable ADRs verified and current
-        if: hashFiles('.specdev/org.json') != ''
+      - name: Org ADR compliance — ${{ matrix.unit }}
+        if: hashFiles(format('{0}/.specdev/org.json', matrix.unit)) != '' || hashFiles('.specdev/org.json') != ''
         env:
           # For a PRIVATE governance repo the default GITHUB_TOKEN cannot read
           # across repos — create a read-only PAT, save it as the
           # GOVERNANCE_TOKEN secret, and it will be picked up here.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOVERNANCE_TOKEN: ${{ secrets.GOVERNANCE_TOKEN }}
-        run: python .specdev/tools/check_org_adrs.py
+        run: python .specdev/tools/check_org_adrs.py --unit '${{ matrix.unit }}'
+
+  # The single required status check. Matrix leg names are dynamic, so branch
+  # protection cannot require them individually.
+  summary:
+    needs: [discover, check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Per-unit verdicts
+        env:
+          UNITS: ${{ needs.discover.outputs.units }}
+          VERDICT: ${{ needs.check.result }}
+        run: |
+          {
+            echo "## org-adr-check"
+            echo ""
+            echo "Units swept: \`${UNITS:-[]}\`"
+            echo ""
+            echo "Result: **${VERDICT}**"
+            echo ""
+            echo "_Every unit is checked on every PR: the staleness check is driven"
+            echo "by the upstream ADR index, not by the local diff._"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if any unit failed
+        if: needs.discover.result != 'success' || needs.check.result == 'failure'
+        run: |
+          echo "One or more units failed org-adr-check — open the matrix legs for detail."
+          exit 1

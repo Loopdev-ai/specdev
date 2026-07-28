@@ -1,24 +1,81 @@
 name: spec-validate
 
-# Gate 1 — validates the spec/architecture artifacts on the Spec PR.
-# Make this a required status check on branches matching spec/**.
+# Gate 1 — validates the spec/architecture artifacts on the Spec PR, per
+# governed unit.
+#
+# Unlike org-adr-check this IS filtered to changed units: spec validation is
+# purely local, so an untouched unit's verdict cannot change. The literal
+# path filters this workflow used to carry ('.specdev/spec.md' and friends)
+# are gone — `on.paths` cannot express per-unit paths, so the filtering moved
+# into the discover job.
+#
+# Mark the 'summary' job — NOT the matrix legs — a required status check on
+# branches matching spec/**.
 on:
   pull_request:
-    paths:
-      - '.specdev/spec.md'
-      - '.specdev/adr/**'
-      - '.specdev/components.md'
+  merge_group:
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      units: ${{ steps.m.outputs.units }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate the unit registry
+        run: python .specdev/tools/units.py check
+      - id: m
+        name: Enumerate changed units
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BASE")" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: discover
+    if: needs.discover.outputs.units != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJSON(needs.discover.outputs.units) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Validate spec artifacts (Gate 1)
-        run: python .specdev/tools/validate_spec.py --strict
+      - name: Validate spec artifacts (Gate 1) — ${{ matrix.unit }}
+        if: hashFiles(format('{0}/.specdev/spec.md', matrix.unit)) != ''
+        run: python .specdev/tools/validate_spec.py --strict --root '${{ matrix.unit }}'
+
+  # The single required status check. Matrix leg names are dynamic, so branch
+  # protection cannot require them individually.
+  summary:
+    needs: [discover, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Per-unit verdicts
+        env:
+          UNITS: ${{ needs.discover.outputs.units }}
+          VERDICT: ${{ needs.validate.result }}
+        run: |
+          {
+            echo "## spec-validate"
+            echo ""
+            echo "Changed units: \`${UNITS:-[]}\`"
+            echo ""
+            echo "Result: **${VERDICT}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if any unit failed
+        if: needs.discover.result != 'success' || needs.validate.result == 'failure'
+        run: |
+          echo "One or more units failed spec-validate — open the matrix legs for detail."
+          exit 1

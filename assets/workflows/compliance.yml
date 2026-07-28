@@ -1,21 +1,54 @@
 name: compliance
 
-# Control-coverage gate. Runs alongside post-dev-qa on the Implementation PR:
-# every APPLICABLE control in the in-scope frameworks must have evidence or a
-# documented exclusion, or this fails. Mark it a required status check once you
-# have started mapping controls (it is a no-op until compliance/ is populated).
+# Control-coverage gate, per governed unit. Runs alongside post-dev-qa on the
+# Implementation PR: every APPLICABLE control in a unit's in-scope frameworks
+# must have evidence or a documented exclusion, or this fails.
+#
+# Per-unit artifacts are never merged. A Statement of Applicability carries a
+# scope statement, so concatenating two units' SoAs produces a document that is
+# true of neither — each unit uploads its own.
+#
+# Mark the 'summary' job — NOT the matrix legs — a required status check once
+# you have started mapping controls (it is a no-op until compliance/ is
+# populated).
 on:
   pull_request:
     branches: [main]
     paths-ignore:
-      - '.specdev/specs/**'
+      - '**/.specdev/specs/**'
+  merge_group:
 
 permissions:
   contents: read
 
 jobs:
-  controls:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      units: ${{ steps.m.outputs.units }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Validate the unit registry
+        run: python .specdev/tools/units.py check
+      - id: m
+        name: Enumerate changed units
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BASE")" >> "$GITHUB_OUTPUT"
+
+  controls:
+    needs: discover
+    if: needs.discover.outputs.units != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        unit: ${{ fromJSON(needs.discover.outputs.units) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,22 +58,52 @@ jobs:
         with:
           python-version: '3.x'
 
-      # Skip cleanly in repos that haven't adopted the compliance layer yet.
-      # The guard is step-level because hashFiles() is a step-only function — at
-      # job level GitHub rejects the whole file — and because it needs the
-      # checked-out workspace, absent when job conditions are evaluated.
-      - name: Control coverage — every applicable control has evidence
-        if: hashFiles('.specdev/compliance/compliance.config.json') != ''
-        run: python .specdev/tools/gen_compliance.py --check-gaps
+      # Skip cleanly in repos/units that haven't adopted the compliance layer
+      # yet. The guard is step-level because hashFiles() is a step-only
+      # function — at job level GitHub rejects the whole file — and because it
+      # needs the checked-out workspace, absent when job conditions are
+      # evaluated.
+      - name: Control coverage — ${{ matrix.unit }}
+        if: hashFiles(format('{0}/.specdev/compliance/compliance.config.json', matrix.unit)) != ''
+        run: python .specdev/tools/gen_compliance.py --check-gaps --root '${{ matrix.unit }}'
 
-      - name: Regenerate matrix + SoA (artifact)
-        if: always() && hashFiles('.specdev/compliance/compliance.config.json') != ''
-        run: python .specdev/tools/gen_compliance.py || true
+      - name: Regenerate matrix + SoA (artifact) — ${{ matrix.unit }}
+        if: always() && hashFiles(format('{0}/.specdev/compliance/compliance.config.json', matrix.unit)) != ''
+        run: python .specdev/tools/gen_compliance.py --root '${{ matrix.unit }}' || true
 
-      - name: Upload compliance artifacts
-        if: always() && hashFiles('.specdev/compliance/compliance.config.json') != ''
+      # Artifact names must be unique per unit or the uploads collide.
+      - name: Upload compliance artifacts — ${{ matrix.unit }}
+        if: always() && hashFiles(format('{0}/.specdev/compliance/compliance.config.json', matrix.unit)) != ''
         uses: actions/upload-artifact@v4
         with:
-          name: compliance
-          path: .specdev/compliance/*.md
+          name: compliance-${{ matrix.unit }}
+          path: ${{ matrix.unit }}/.specdev/compliance/*.md
           if-no-files-found: ignore
+
+  # The single required status check. Matrix leg names are dynamic, so branch
+  # protection cannot require them individually.
+  summary:
+    needs: [discover, controls]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Per-unit verdicts
+        env:
+          UNITS: ${{ needs.discover.outputs.units }}
+          VERDICT: ${{ needs.controls.result }}
+        run: |
+          {
+            echo "## compliance"
+            echo ""
+            echo "Changed units: \`${UNITS:-[]}\`"
+            echo ""
+            echo "Result: **${VERDICT}**"
+            echo ""
+            echo "_Per-unit SoAs are uploaded separately and never merged: each"
+            echo "carries its own scope statement._"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if any unit failed
+        if: needs.discover.result != 'success' || needs.controls.result == 'failure'
+        run: |
+          echo "One or more units failed the compliance gate — open the matrix legs for detail."
+          exit 1
