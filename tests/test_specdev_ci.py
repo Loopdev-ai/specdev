@@ -320,3 +320,85 @@ def test_deploy_yml_skips_chain_when_target_is_manual():
     # The target is read with the tool, not an inline json.load that would
     # crash the gate job when the profile is absent.
     assert "deploy.py target" in wf_text("deploy.yml")
+
+
+# ---- multi-unit -----------------------------------------------------------
+
+def test_run_json_is_per_unit(tmp_path):
+    (tmp_path / "infra" / ".specdev").mkdir(parents=True)
+    (tmp_path / "demos" / ".specdev").mkdir(parents=True)
+    rm.save({"schema_version": 1, "feat": "FEAT-001", "mode": "prod"},
+            tmp_path / "infra")
+    rm.save({"schema_version": 1, "feat": "FEAT-002", "mode": "poc",
+             "poc_environment": "poc"}, tmp_path / "demos")
+    assert rm.mode_of(tmp_path / "infra") == "prod"
+    assert rm.mode_of(tmp_path / "demos") == "poc"
+    assert rm.load(tmp_path / "infra")["feat"] == "FEAT-001"
+    assert rm.load(tmp_path / "demos")["feat"] == "FEAT-002"
+
+
+def test_ci_get_falls_back_to_repo_root(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    (tmp_path / ".specdev" / "ci.json").write_text(
+        json.dumps({"runner": "self-hosted"}), encoding="utf-8")
+    (tmp_path / "infra" / ".specdev").mkdir(parents=True)
+    assert rm.ci_get("runner", tmp_path / "infra", repo_root=tmp_path) == "self-hosted"
+
+
+def test_ci_get_unit_overrides_repo_root(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    (tmp_path / ".specdev" / "ci.json").write_text(
+        json.dumps({"runner": "self-hosted"}), encoding="utf-8")
+    (tmp_path / "infra" / ".specdev").mkdir(parents=True)
+    (tmp_path / "infra" / ".specdev" / "ci.json").write_text(
+        json.dumps({"runner": "ubuntu-24.04"}), encoding="utf-8")
+    assert rm.ci_get("runner", tmp_path / "infra", repo_root=tmp_path) == "ubuntu-24.04"
+
+
+def test_ci_get_missing_key_fails_loudly(tmp_path):
+    """A missing key must not print the string 'None' at exit 0 — that value
+    flowed into an inference-metadata record as \"model\": \"None\"."""
+    rc = subprocess.run(
+        [sys.executable, str(RM_PATH), "--root", str(tmp_path), "ci",
+         "--get", "no_such_key"],
+        capture_output=True, text=True)
+    assert rc.returncode != 0
+    assert "None" not in rc.stdout
+
+
+def test_ci_get_known_key_still_prints(tmp_path):
+    rc = subprocess.run(
+        [sys.executable, str(RM_PATH), "--root", str(tmp_path), "ci",
+         "--get", "runner"],
+        capture_output=True, text=True)
+    assert rc.returncode == 0
+    assert rc.stdout.strip() == "ubuntu-latest"
+
+
+def test_init_resolves_unit_from_ref(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    (tmp_path / ".specdev" / "units.json").write_text(json.dumps({
+        "schema_version": 1, "units": ["infra", "demos"]}), encoding="utf-8")
+    (tmp_path / "infra" / ".specdev").mkdir(parents=True)
+    (tmp_path / "demos" / ".specdev").mkdir(parents=True)
+
+    rc = subprocess.run(
+        [sys.executable, str(RM_PATH), "--root", str(tmp_path), "init",
+         "--feat", "FEAT-007", "--mode", "prod",
+         "--ref", "spec/demos/some-feature"],
+        capture_output=True, text=True)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+    assert (tmp_path / "demos" / ".specdev" / "run.json").exists()
+    assert not (tmp_path / "infra" / ".specdev" / "run.json").exists()
+    assert not (tmp_path / ".specdev" / "run.json").exists()
+
+
+def test_init_without_ref_writes_root(tmp_path):
+    """Back-compat: no --unit and no --ref means the root unit, exactly as
+    before multi-unit support."""
+    rc = subprocess.run(
+        [sys.executable, str(RM_PATH), "--root", str(tmp_path), "init",
+         "--feat", "FEAT-001", "--mode", "prod"],
+        capture_output=True, text=True)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+    assert (tmp_path / ".specdev" / "run.json").exists()
