@@ -28,7 +28,17 @@ try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
 except Exception:
     pass
 
-PROFILE = Path(".specdev/deploy.profile.json")
+ROOT = Path(".")
+PROFILE = ROOT / ".specdev" / "deploy.profile.json"
+
+
+def set_root(root) -> None:
+    """Re-root every path this tool touches at a governed unit. Called once
+    from main(); a monorepo runs one deploy per unit, each with its own
+    profile and its own scripts."""
+    global ROOT, PROFILE
+    ROOT = Path(root)
+    PROFILE = ROOT / ".specdev" / "deploy.profile.json"
 
 # Destination facts each target must have resolved before it may auto-deploy.
 REQUIRED = {
@@ -157,7 +167,7 @@ def do_rollback(profile, env, dry):
 
     if mode == "native":
         tmpl = RECIPES.get(target, {}).get("native_rollback")
-        if target == "script" and not Path(".specdev/deploy/rollback.sh").exists():
+        if target == "script" and not (ROOT / ".specdev" / "deploy" / "rollback.sh").exists():
             tmpl = None  # fall through to redeploy-previous
         if tmpl:
             run(tmpl.format(**ctx(profile, env)), dry)
@@ -252,6 +262,8 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("deploy", "rollback", "health", "url", "preflight", "target"):
         p = sub.add_parser(name)
+        p.add_argument("--root", default=".",
+                       help="governed unit root (default: repo root)")
         p.add_argument("--env")
         p.add_argument("--tag", default="")
         p.add_argument("--url", default="")
@@ -260,6 +272,7 @@ def main() -> int:
         p.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args()
+    set_root(args.root)
 
     # Answerable without a profile — must not exit nonzero (CI reads it).
     if args.cmd == "target":

@@ -545,3 +545,38 @@ def test_gen_traceability_all_units_writes_each_and_an_index(tmp_path):
 
 def test_rollup_index_is_absent_for_single_root(tmp_path):
     assert un.write_rollup_index(tmp_path, "traceability.md", "T") is None
+
+
+# ---- deploy.py --root --------------------------------------------------
+
+DEPLOY_PATH = ROOT / "assets" / "specdev" / "tools" / "deploy.py"
+
+
+def test_deploy_accepts_root(tmp_path):
+    unit = tmp_path / "infra"
+    (unit / ".specdev").mkdir(parents=True)
+    (unit / ".specdev" / "deploy.profile.json").write_text(
+        json.dumps({"target": "manual", "environments": {}}), encoding="utf-8")
+    rc = subprocess.run(
+        [sys.executable, str(DEPLOY_PATH), "target", "--root", str(unit)],
+        capture_output=True, text=True, cwd=tmp_path)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+    assert "manual" in rc.stdout
+
+
+def test_deploy_root_isolates_units(tmp_path):
+    """Two units, two profiles: each --root must read its own."""
+    for name, target in (("a", "manual"), ("b", "script")):
+        d = tmp_path / name / ".specdev"
+        d.mkdir(parents=True)
+        (d / "deploy.profile.json").write_text(
+            json.dumps({"target": target, "environments": {}}), encoding="utf-8")
+    out = {}
+    for name in ("a", "b"):
+        rc = subprocess.run(
+            [sys.executable, str(DEPLOY_PATH), "target", "--root",
+             str(tmp_path / name)],
+            capture_output=True, text=True, cwd=tmp_path)
+        assert rc.returncode == 0, rc.stdout + rc.stderr
+        out[name] = rc.stdout.strip()
+    assert out["a"] != out["b"]
