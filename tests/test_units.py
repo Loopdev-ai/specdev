@@ -807,3 +807,74 @@ def test_org_adr_check_is_never_path_filtered():
     on = doc[True] if True in doc else doc["on"]
     assert "paths" not in (on.get("pull_request") or {})
     assert "matrix --all" in _wf("org-adr-check.yml")
+
+
+# ---- migration ---------------------------------------------------------
+
+def test_migrate_moves_unit_scoped_artifacts(tmp_path):
+    d = tmp_path / ".specdev"
+    (d / "tools").mkdir(parents=True)
+    (d / "adr").mkdir()
+    (d / "spec.md").write_text("# Spec\n", encoding="utf-8")
+    (d / "adr" / "ADR-001.md").write_text("# ADR\n", encoding="utf-8")
+    (d / "tools" / "units.py").write_text("# tool\n", encoding="utf-8")
+    (d / "ci.json").write_text('{"runner": "ubuntu-latest"}', encoding="utf-8")
+    (d / "org.json").write_text(json.dumps({
+        "governance_repo": "faro/governance", "ref": "main",
+        "path": "governance/adr",
+        "classification": {"maturity": "prod", "audience": "internal"},
+    }), encoding="utf-8")
+
+    un.migrate(tmp_path, "infra")
+
+    assert (tmp_path / "infra" / ".specdev" / "spec.md").exists()
+    assert (tmp_path / "infra" / ".specdev" / "adr" / "ADR-001.md").exists()
+    assert not (d / "spec.md").exists()
+    # repo-scoped things stay put
+    assert (d / "tools" / "units.py").exists()
+    assert (d / "ci.json").exists()
+    # registry written with the link extracted
+    reg = json.loads((d / "units.json").read_text(encoding="utf-8"))
+    assert reg["governance_repo"] == "faro/governance"
+    assert reg["ref"] == "main"
+    assert reg["units"] == ["infra"]
+    # the unit's org.json keeps its classification and NO link keys — the
+    # link is repo-wide and lives in the registry
+    org = json.loads(
+        (tmp_path / "infra" / ".specdev" / "org.json").read_text(encoding="utf-8"))
+    assert org["classification"] == {"maturity": "prod", "audience": "internal"}
+    for k in un.LINK_KEYS:
+        assert k not in org, f"{k} must move to the registry, not stay on the unit"
+
+
+def test_migrate_result_passes_check(tmp_path):
+    """The whole point: a migrated repo must be a valid multi-unit repo."""
+    d = tmp_path / ".specdev"
+    (d / "tools").mkdir(parents=True)
+    (d / "spec.md").write_text("# Spec\n", encoding="utf-8")
+    (d / "org.json").write_text(json.dumps({
+        "governance_repo": "faro/governance", "ref": "main",
+        "classification": {"maturity": "prod"},
+    }), encoding="utf-8")
+
+    un.migrate(tmp_path, "infra")
+    assert un.check(tmp_path) == []
+    assert un.unit_paths(tmp_path) == ["infra"]
+
+
+def test_migrate_refuses_when_registry_exists(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    write_registry(tmp_path, {"schema_version": 1, "units": ["a"]})
+    with pytest.raises(SystemExit):
+        un.migrate(tmp_path, "infra")
+
+
+def test_migrate_refuses_root_unit(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    with pytest.raises(SystemExit):
+        un.migrate(tmp_path, ".")
+
+
+def test_migrate_refuses_without_specdev(tmp_path):
+    with pytest.raises(SystemExit):
+        un.migrate(tmp_path, "infra")

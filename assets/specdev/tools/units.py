@@ -12,10 +12,15 @@ before multi-unit support existed.
 Usage:
     units.py list  [--root .]                 # one unit path per line
     units.py check [--root .]                 # registry drift + validation
+    units.py matrix [--all | --changed-from REF]   # JSON array for a CI matrix
+    units.py resolve-ref --ref spec/<unit>/<name>  # unit= / feat= for CI
+    units.py scope-check --unit U --changed-from REF
+    units.py migrate --unit <path>            # single-root -> multi-unit
 """
 import argparse
 import fnmatch
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -369,6 +374,73 @@ def write_rollup_index(root, rel_artifact: str, title: str) -> Path | None:
     return out
 
 
+UNIT_SCOPED = ("spec.md", "components.md", "traceability.md", "BUILD.md",
+               "run.json", "org.json", "architecture-config.json",
+               "deploy.profile.json", "adr", "compliance", "specs", "deploy")
+REPO_SCOPED = ("tools", "units.json", "ci.json")
+
+
+def migrate(root=".", unit="") -> list[str]:
+    """Move a single-root `.specdev/` into `<unit>/.specdev/` and write the
+    registry, splitting org.json into repo-wide link + per-unit classification.
+
+    Without a tool for this, every adopter hand-rolls the move differently."""
+    root = Path(root)
+    if not unit or unit == ".":
+        print("ERROR: --unit must name a subdirectory, not the repo root",
+              file=sys.stderr)
+        raise SystemExit(1)
+    src = root / ".specdev"
+    if not src.is_dir():
+        print(f"ERROR: {src} does not exist — nothing to migrate", file=sys.stderr)
+        raise SystemExit(1)
+    if registry_path(root).exists():
+        print(f"ERROR: {REGISTRY_REL} already exists — this repo is already "
+              "multi-unit; add the unit to the registry by hand", file=sys.stderr)
+        raise SystemExit(1)
+
+    dst = root / unit / ".specdev"
+    dst.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for name in UNIT_SCOPED:
+        s = src / name
+        if s.exists():
+            shutil.move(str(s), str(dst / name))
+            moved.append(f"{unit}/.specdev/{name}")
+
+    # The governance link is repo-wide and belongs in the registry, not in a
+    # unit's org.json — two units pinning different refs is a footgun.
+    link = {}
+    org_p = dst / "org.json"
+    if org_p.exists():
+        org = json.loads(org_p.read_text(encoding="utf-8-sig"))
+        link = {k: org[k] for k in LINK_KEYS if k in org}
+        rest = {k: v for k, v in org.items() if k not in LINK_KEYS}
+        # The seeded $comment describes the link fields that just moved out;
+        # leaving it would document keys the file no longer has.
+        rest["$comment"] = (
+            f"Governed unit '{unit}'. Declares ONLY this unit's classification — "
+            f"the governance link (governance_repo/ref/path) is repo-wide and "
+            f"lives in {REGISTRY_REL}. Redeclaring a link key here with a "
+            f"different value is a hard error.")
+        rest = {"$comment": rest.pop("$comment"), **rest}
+        org_p.write_text(json.dumps(rest, indent=2) + "\n", encoding="utf-8")
+
+    reg = {"schema_version": SCHEMA_VERSION}
+    reg.setdefault("$comment", (
+        "Governed-unit registry. Each unit is a directory containing a "
+        ".specdev/. The governance link below is repo-wide; each unit's "
+        ".specdev/org.json carries only its classification. 'depends_on' drives "
+        "effective classification: a unit is governed at the level of the "
+        "highest-classified unit that depends on it."))
+    reg.update(link)
+    reg["units"] = [unit]
+    registry_path(root).write_text(
+        json.dumps(reg, indent=2) + "\n", encoding="utf-8")
+    moved.append(REGISTRY_REL)
+    return moved
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -383,6 +455,8 @@ def main() -> int:
                          "the upstream ADR index, not the local diff)")
     pr = sub.add_parser("resolve-ref")
     pr.add_argument("--ref", required=True)
+    pmg = sub.add_parser("migrate")
+    pmg.add_argument("--unit", required=True)
     ps = sub.add_parser("scope-check")
     ps.add_argument("--unit", required=True)
     ps.add_argument("--changed-from", required=True)
@@ -409,6 +483,13 @@ def main() -> int:
         unit, feat = parse_ref(args.ref, load_registry(args.root))
         print(f"unit={unit}")
         print(f"feat={feat}")
+        return 0
+    if args.cmd == "migrate":
+        print(f"Migrating the repo-root .specdev/ into {args.unit}/ ...")
+        for pth in migrate(args.root, args.unit):
+            print(f"  {pth}")
+        print(f"\nDone. Next: move this unit's source files under {args.unit}/, "
+              f"then run 'python .specdev/tools/units.py check'.")
         return 0
     if args.cmd == "scope-check":
         bad = out_of_scope(args.root, args.unit, args.changed_from)
