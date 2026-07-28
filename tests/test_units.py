@@ -717,3 +717,50 @@ def test_workflow_tool_invocation_is_accepted_by_the_parser(wf, tool, args, tmp_
         assert signal not in rc.stderr, (
             f"{wf} invokes '{tool}.py {' '.join(args)}' but the parser rejects "
             f"it:\n{rc.stderr}")
+
+
+# ---- ref parsing -------------------------------------------------------
+
+REG = {"schema_version": 1, "units": ["infrastructure", "demos"]}
+
+
+def test_parse_ref_single_root_no_registry():
+    assert un.parse_ref("spec/add-retry-logic", None) == (".", "add-retry-logic")
+
+
+def test_parse_ref_named_unit():
+    assert un.parse_ref("spec/infrastructure/vpc-peering", REG) == \
+        ("infrastructure", "vpc-peering")
+
+
+def test_parse_ref_poc_prefix():
+    assert un.parse_ref("poc/demos/rag-spike", REG) == ("demos", "rag-spike")
+
+
+def test_parse_ref_unknown_segment_is_part_of_the_feature_name():
+    """spec/foo/bar with no unit 'foo' must NOT silently become unit 'foo'."""
+    assert un.parse_ref("spec/foo/bar", REG) == (".", "foo/bar")
+
+
+def test_parse_ref_strips_refs_heads_prefix():
+    assert un.parse_ref("refs/heads/spec/demos/x", REG) == ("demos", "x")
+
+
+def test_parse_ref_non_specdev_branch():
+    assert un.parse_ref("main", REG) == (".", "main")
+
+
+def test_parse_ref_unit_name_with_no_feature_is_not_a_unit():
+    """'spec/demos' alone names a feature called demos, not unit demos with an
+    empty feature — an empty feature name would be meaningless."""
+    assert un.parse_ref("spec/demos", REG) == (".", "demos")
+
+
+def test_parse_ref_nested_unit_path():
+    reg = {"schema_version": 1, "units": ["services/api"]}
+    assert un.parse_ref("spec/services/api/add-thing", reg) == \
+        ("services/api", "add-thing")
+
+
+def test_parse_ref_empty_is_root():
+    assert un.parse_ref("", REG) == (".", "")

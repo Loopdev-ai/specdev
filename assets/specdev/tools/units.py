@@ -268,6 +268,42 @@ def check(root=".") -> list[str]:
     return errors
 
 
+BUILD_PREFIXES = ("spec/", "poc/")
+
+
+def parse_ref(ref: str, registry) -> tuple:
+    """('spec/infrastructure/vpc', reg) -> ('infrastructure', 'vpc').
+
+    A path segment is read as a unit ONLY when a registry exists and the
+    segment names a registered unit — so today's `spec/<name>` on a single-root
+    repo keeps resolving to the root unit, and `spec/foo/bar` with no unit
+    'foo' keeps 'foo/bar' as the feature name rather than inventing a unit.
+
+    Multi-segment unit paths ('services/api') are matched longest-first, so a
+    nested unit wins over a shorter prefix."""
+    ref = ref or ""
+    if ref.startswith("refs/heads/"):
+        ref = ref[len("refs/heads/"):]
+    for prefix in BUILD_PREFIXES:
+        if ref.startswith(prefix):
+            rest = ref[len(prefix):]
+            break
+    else:
+        return (".", ref)
+    if registry:
+        names = sorted((_entry(u)["path"] for u in registry.get("units", [])),
+                       key=len, reverse=True)
+        for name in names:
+            if name == ".":
+                continue
+            # A unit segment must be followed by a non-empty feature name:
+            # 'spec/demos' names a FEATURE called demos, not unit demos with
+            # no feature at all.
+            if rest.startswith(name + "/") and len(rest) > len(name) + 1:
+                return (name, rest[len(name) + 1:])
+    return (".", rest)
+
+
 def _changed_files(root=".", base=None) -> list[str]:
     if not base:
         return []
@@ -345,6 +381,8 @@ def main() -> int:
                     help="ignore --changed-from and emit every unit (REQUIRED "
                          "for org-adr-check: its staleness check is driven by "
                          "the upstream ADR index, not the local diff)")
+    pr = sub.add_parser("resolve-ref")
+    pr.add_argument("--ref", required=True)
     ps = sub.add_parser("scope-check")
     ps.add_argument("--unit", required=True)
     ps.add_argument("--changed-from", required=True)
@@ -366,6 +404,11 @@ def main() -> int:
         sel = unit_paths(args.root) if args.all else changed_units(
             args.root, args.changed_from)
         print(json.dumps(sorted(sel)))
+        return 0
+    if args.cmd == "resolve-ref":
+        unit, feat = parse_ref(args.ref, load_registry(args.root))
+        print(f"unit={unit}")
+        print(f"feat={feat}")
         return 0
     if args.cmd == "scope-check":
         bad = out_of_scope(args.root, args.unit, args.changed_from)
