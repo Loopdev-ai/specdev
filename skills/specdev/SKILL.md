@@ -16,6 +16,30 @@ deployment, QA, and traceability are automatic.
   run `/specdev:init` first (copies them from this plugin's assets).
 - One feature = one `FEAT-###` = a Spec PR then an Implementation PR.
 
+## Establish the governed unit FIRST
+
+Run `python .specdev/tools/units.py list`.
+
+- **One line, `.`** — a single-unit repo. Every `.specdev/…` path below is
+  literal and nothing else in this section applies.
+- **Several lines** — a monorepo of governed units. Pick the unit this feature
+  belongs to and treat **every `.specdev/<artifact>` path below as
+  `<unit>/.specdev/<artifact>`**: spec, components, ADRs, run.json, BUILD.md,
+  compliance, traceability. The **tools stay at the repo root**
+  (`.specdev/tools/`) regardless — pass `--root <unit>` to each one, and give
+  the unit root to the `adr-checker` subagent.
+
+  Branches carry the unit: `spec/<unit>/<name>` and `poc/<unit>/<name>`.
+
+  **Do not modify files outside your unit.** A scope check fails the build if
+  you do. Shared, unit-less files (top-level docs, CI config) are permitted but
+  should be touched only when the feature genuinely requires it.
+
+  A unit's **effective** classification can exceed what its `org.json` declares:
+  if a higher-classified unit depends on yours, yours is governed at that higher
+  level. `check_org_adrs.py` prints the escalation and the dependent that caused
+  it. Judge against the effective value.
+
 ## The pipeline (do these in order)
 
 1. **Detect mode.** New product → spec from scratch. Extending an existing one →
@@ -183,4 +207,14 @@ python .specdev/tools/validate_spec.py --strict      # Gate 1 check
 python .specdev/tools/gen_traceability.py            # write the matrix
 python .specdev/tools/gen_traceability.py --check-gaps  # Gate 2 test-coverage check
 python .specdev/tools/check_org_adrs.py              # org-ADR gate (inert until org.json is configured)
+```
+
+In a monorepo add `--root <unit>` to each (the tools stay at the repo root),
+and:
+
+```
+python .specdev/tools/units.py list                  # the repo's governed units
+python .specdev/tools/units.py check                 # registry drift + validation
+python .specdev/tools/check_org_adrs.py --unit <u>   # one unit's org-ADR gate
+python .specdev/tools/units.py migrate --unit <path> # single-root -> multi-unit
 ```

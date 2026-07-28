@@ -154,8 +154,11 @@ def check_unit(root: Path, unit: str, index: dict, classification: dict):
     if manifest_path.exists():
         entries = {e.get("id"): e for e in load_json(manifest_path).get("entries", [])}
     elif applicable:
-        return ([f"{manifest_path} not found but {len(applicable)} org ADR(s) apply — "
-                 "run the adr-checker agent to verify and write the manifest"],
+        # POSIX-normalised: these paths appear in CI logs and issue bodies, so
+        # they must read the same on every platform.
+        return ([f"{manifest_path.as_posix()} not found but {len(applicable)} "
+                 "org ADR(s) apply — run the adr-checker agent to verify and "
+                 "write the manifest"],
                 [], len(applicable))
 
     for adr in applicable:

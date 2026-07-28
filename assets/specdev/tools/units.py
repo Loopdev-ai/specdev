@@ -472,7 +472,10 @@ def main() -> int:
             print(f"ERROR: {e}", file=sys.stderr)
         if errs:
             return 1
-        print(f"{len(unit_paths(args.root))} unit(s) registered — registry clean.")
+        if load_registry(args.root) is None:
+            print(f"Single-unit repo (no {REGISTRY_REL}) — nothing to validate.")
+        else:
+            print(f"{len(unit_paths(args.root))} unit(s) registered — registry clean.")
         return 0
     if args.cmd == "matrix":
         sel = unit_paths(args.root) if args.all else changed_units(

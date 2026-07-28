@@ -2518,10 +2518,23 @@ git commit -m "feat(units): migration from single-root to multi-unit layout"
 - Modify: `skills/init` handling in `commands/init.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Create the seed registry**
+> **CORRECTED DURING IMPLEMENTATION — the seed file is NOT created.**
+> This step assumed `init` could skip a template file. It cannot:
+> `commands/init.md` step 2 copies `assets/specdev/` **wholesale** into every
+> newly initialized repo. Shipping `assets/specdev/units.json` would therefore
+> give every new single-root repo a registry containing
+> `REPLACE_ME_UNIT_PATH` — `units.py check` fails on it immediately, and since
+> every gate's `discover` job runs that check, **every gate in every new repo
+> would go red**. Exactly the opposite of "single-root repos are unaffected".
+>
+> Instead: the registry format is documented in `units.py`'s module docstring
+> and in the README, and `units.py migrate` generates a correct registry with
+> an explanatory `$comment`. A repo becomes multi-unit by running `migrate`,
+> never by editing a shipped placeholder.
 
-`assets/specdev/units.json` is **not** copied by `init` for single-root repos.
-It is a documented template only:
+- [ ] ~~**Step 1: Create the seed registry**~~ *(skipped — see above)*
+
+The shape `migrate` produces, for reference:
 
 ```json
 {

@@ -65,6 +65,14 @@ Do this:
    decision. Point the user to `.specdev/deploy-platforms.md` and
    `adr/ADR-deployment-platform.md`, help them pick the simplest fit (not
    Kubernetes by default), then set `target` + `params` + `"locked": true`.
+4b. **Single governed unit by default.** A freshly initialized repo is ONE
+   governed unit rooted at the repo root — there is no `units.json` and none is
+   needed. If the repo actually holds several projects at different maturities
+   (some throwaway, some touching real systems), tell the user they can convert
+   later with `python .specdev/tools/units.py migrate --unit <path>`, which
+   splits the layout into per-unit `.specdev/` directories and writes the
+   registry. Do NOT hand-create `.specdev/units.json` — an invalid registry
+   fails `units.py check`, and every gate's discover job runs that check.
 5. Do **not** commit. Leave the new files for the user to review.
 6. Verify the tools run: `python .specdev/tools/validate_spec.py` and
    `python .specdev/tools/gen_traceability.py` should execute (Gate 1 will fail
@@ -84,10 +92,13 @@ Then print this post-install checklist:
   commands (deploy/rollback/health are already wired to the profile).
 - Fill real URLs and any `REPLACE_ME` params in `.specdev/deploy.profile.json`,
   and add the platform-CLI install/auth step noted in `deploy.yml`.
-- Branch protection on `main`: require the `post-dev-qa` checks + PR review.
-- Require `spec-validate` on `spec/**` branches.
-- If org governance was configured (3c): mark `org-adr-check` a required
-  status check; if the governance repo is private, add a read-only PAT as the
+- Branch protection on `main`: require the `post-dev-qa` **`summary`** check +
+  PR review. Require the `summary` job, never the matrix legs — leg names are
+  dynamic, so branch protection cannot require them and a newly added governed
+  unit would arrive as a silently unrequired check.
+- Require the `spec-validate` **`summary`** check on `spec/**` branches.
+- If org governance was configured (3c): mark the `org-adr-check` **`summary`**
+  job a required status check; if the governance repo is private, add a read-only PAT as the
   `GOVERNANCE_TOKEN` secret (the workflow already reads it).
 - Create `staging` and `production` Environments (no required reviewer on
   production — promotion is automatic).
