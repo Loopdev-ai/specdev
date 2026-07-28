@@ -498,3 +498,50 @@ def test_check_org_adrs_inert_without_org_json(tmp_path):
         [sys.executable, str(COA_PATH), "--root", str(tmp_path)],
         capture_output=True, text=True)
     assert rc.returncode == 0
+
+
+# ---- artifact generation is unit-relative ------------------------------
+
+GT_PATH = ROOT / "assets" / "specdev" / "tools" / "gen_traceability.py"
+
+
+def test_gen_traceability_writes_under_root(tmp_path):
+    """Regression pin: the tool joins --out onto --root, so a unit's matrix
+    never leaks to the repo root."""
+    unit = tmp_path / "infra"
+    (unit / ".specdev").mkdir(parents=True)
+    (unit / ".specdev" / "spec.md").write_text(
+        "# Spec\n\n**Feature ID:** FEAT-001\n", encoding="utf-8")
+
+    rc = subprocess.run(
+        [sys.executable, str(GT_PATH), "--root", str(unit)],
+        capture_output=True, text=True, cwd=tmp_path)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+    assert (unit / ".specdev" / "traceability.md").exists()
+    assert not (tmp_path / ".specdev" / "traceability.md").exists()
+
+
+def test_gen_traceability_all_units_writes_each_and_an_index(tmp_path):
+    for name in ("infra", "demos"):
+        d = tmp_path / name / ".specdev"
+        d.mkdir(parents=True)
+        (d / "spec.md").write_text(
+            f"# Spec {name}\n\n**Feature ID:** FEAT-001\n", encoding="utf-8")
+    write_registry(tmp_path, {"schema_version": 1, "units": ["infra", "demos"]})
+
+    rc = subprocess.run(
+        [sys.executable, str(GT_PATH), "--root", str(tmp_path), "--all-units"],
+        capture_output=True, text=True)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+    assert (tmp_path / "infra" / ".specdev" / "traceability.md").exists()
+    assert (tmp_path / "demos" / ".specdev" / "traceability.md").exists()
+
+    idx = tmp_path / ".specdev" / "traceability-index.md"
+    assert idx.exists()
+    body = idx.read_text(encoding="utf-8")
+    assert "infra/.specdev/traceability.md" in body
+    assert "demos/.specdev/traceability.md" in body
+
+
+def test_rollup_index_is_absent_for_single_root(tmp_path):
+    assert un.write_rollup_index(tmp_path, "traceability.md", "T") is None

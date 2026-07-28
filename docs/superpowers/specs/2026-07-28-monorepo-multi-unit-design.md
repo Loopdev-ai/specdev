@@ -238,12 +238,20 @@ which makes conflicts impossible in practice rather than merely unlikely.
 
 ## Bugs fixed in passing
 
-Found while grounding the feedback; both block multi-unit and are wrong today:
+1. **`deploy.py:250`** — the only tool with no `--root`. Gains one.
 
-1. **`gen_traceability.py:144`** — `--out` defaults to the root-absolute
-   `.specdev/traceability.md`, so the tool ignores its own `--root` and writes
-   to the repo root regardless. Becomes `root`-relative.
-2. **`deploy.py:250`** — the only tool with no `--root`. Gains one.
+**Corrected during implementation:** an earlier draft of this design claimed
+`gen_traceability.py:144` ignored `--root` because `--out` defaults to the
+root-absolute `.specdev/traceability.md`. That claim was wrong. Line 204 is
+`out = root / args.out`, which joins the default onto the root, so the tool
+already writes under `--root`. Verified empirically: `--root infra` writes
+`infra/.specdev/traceability.md`. `gen_compliance.py:406` resolves
+`root / ".specdev" / "compliance"` and is likewise correct. Neither generator
+needed a path fix — only `--all-units` iteration.
+
+The root-absolute path that *is* wrong lives in the workflow, not the tool:
+`traceability.yml:34` runs `git add .specdev/traceability.md`, which would miss
+every unit's file in a multi-unit repo. Fixed in the deploy/traceability task.
 
 Also unit-relative-ised: `.specdev/specs/**` (archived specs) and the
 `paths-ignore` filters in `post-dev-qa.yml` and `compliance.yml`, all currently

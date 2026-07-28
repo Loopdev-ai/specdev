@@ -267,6 +267,31 @@ def check(root=".") -> list[str]:
     return errors
 
 
+def write_rollup_index(root, rel_artifact: str, title: str) -> Path | None:
+    """Write a rolled-up index that LINKS to each unit's artifact.
+
+    Deliberately an index, never a merge. A Statement of Applicability carries
+    a scope statement; concatenating two units' SoAs produces a document that
+    is true of neither. Returns None for a single-root repo, which needs no
+    index."""
+    reg = load_registry(root)
+    if reg is None:
+        return None
+    lines = [f"# {title}", "",
+             "Per-unit artifacts. These are deliberately **not** merged — each",
+             "carries its own scope. See the monorepo design note, decision 6.",
+             ""]
+    for u in unit_paths(root):
+        target = Path(root) / u / ".specdev" / rel_artifact
+        mark = "" if target.exists() else "  _(not generated)_"
+        lines.append(f"- [{u}]({u}/.specdev/{rel_artifact}){mark}")
+    stem = Path(rel_artifact).stem
+    out = Path(root) / ".specdev" / f"{stem}-index.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")

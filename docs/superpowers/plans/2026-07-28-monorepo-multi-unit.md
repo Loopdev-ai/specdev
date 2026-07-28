@@ -1194,66 +1194,38 @@ git commit -m "feat(org-adr): per-unit checking with set-valued classification"
 - Consumes: `units.unit_paths`
 - Produces: both tools gain `--all-units`; `gen_traceability` writes `<root>/<unit>/.specdev/traceability.md`
 
-- [ ] **Step 1: Write the failing test**
+> **CORRECTED DURING IMPLEMENTATION.** This task originally opened with a
+> bug fix: `gen_traceability.py:144`'s `--out` default was said to be
+> root-absolute, making the tool ignore `--root`. **That was wrong.** Line 204
+> is `out = root / args.out`, which joins the default onto the root. Verified
+> empirically — `--root infra` writes `infra/.specdev/traceability.md`.
+> `gen_compliance.py:406` is likewise already root-relative. The bug-fix steps
+> have been removed; only the `--all-units` work below is real.
+>
+> The genuinely root-absolute path is in `traceability.yml:34`
+> (`git add .specdev/traceability.md`) and is fixed in Task 14.
 
-Append to `tests/test_units.py`:
+- [ ] **Step 1: Add a regression test pinning the (already correct) behaviour**
 
 ```python
 GT_PATH = ROOT / "assets" / "specdev" / "tools" / "gen_traceability.py"
 
 
-def test_gen_traceability_out_is_root_relative(tmp_path):
-    """BUG FIX: --out defaulted to the root-absolute '.specdev/traceability.md',
-    so the tool ignored its own --root and wrote to the repo root."""
+def test_gen_traceability_writes_under_root(tmp_path):
     unit = tmp_path / "infra"
     (unit / ".specdev").mkdir(parents=True)
-    (unit / ".specdev" / "spec.md").write_text("# Spec\n", encoding="utf-8")
+    (unit / ".specdev" / "spec.md").write_text(
+        "# Spec\n\n**Feature ID:** FEAT-001\n", encoding="utf-8")
 
     rc = subprocess.run(
-        ["python", str(GT_PATH), "--root", str(unit)],
+        [sys.executable, str(GT_PATH), "--root", str(unit)],
         capture_output=True, text=True, cwd=tmp_path)
     assert rc.returncode == 0, rc.stdout + rc.stderr
-    assert (unit / ".specdev" / "traceability.md").exists(), \
-        "traceability.md must be written under --root"
-    assert not (tmp_path / ".specdev" / "traceability.md").exists(), \
-        "traceability.md must NOT leak to the repo root"
+    assert (unit / ".specdev" / "traceability.md").exists()
+    assert not (tmp_path / ".specdev" / "traceability.md").exists()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `python -m pytest tests/test_units.py::test_gen_traceability_out_is_root_relative -v`
-Expected: FAIL — the assertion that the file exists under `--root` fails; the file lands at the repo root instead.
-
-- [ ] **Step 3: Fix the default**
-
-In `assets/specdev/tools/gen_traceability.py`, change line 144 from:
-
-```python
-    ap.add_argument("--out", default=".specdev/traceability.md")
-```
-
-to:
-
-```python
-    ap.add_argument("--out", default=None,
-                    help="output path (default: <root>/.specdev/traceability.md)")
-```
-
-and immediately after `root = Path(args.root)` (line 149) add:
-
-```python
-    out = Path(args.out) if args.out else root / ".specdev" / "traceability.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-```
-
-Then replace every subsequent use of `args.out` in the function with `out`.
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python -m pytest tests/test_units.py::test_gen_traceability_out_is_root_relative -v`
-Expected: PASS
-
-- [ ] **Step 5: Add `--all-units` to both generators**
+- [ ] **Step 2: Add `--all-units` to both generators**
 
 Add to both `gen_traceability.py` and `gen_compliance.py`, in `main()` after parsing:
 

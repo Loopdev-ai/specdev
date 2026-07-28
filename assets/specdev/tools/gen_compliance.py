@@ -32,6 +32,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import units  # noqa: E402  (vendored sibling module)
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -393,14 +396,8 @@ def do_scaffold(base: Path, cats, mapping):
 
 
 # --------------------------------------------------------------------------- #
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=".")
-    ap.add_argument("--scaffold", action="store_true",
-                    help="add a stub mapping entry for every in-scope control (preserves existing)")
-    ap.add_argument("--check-gaps", action="store_true",
-                    help="exit non-zero if any applicable control lacks evidence/justification (no write)")
-    args = ap.parse_args()
+def run_one(args) -> int:
+    """Generate for exactly one unit root."""
 
     root = Path(args.root)
     base = root / ".specdev" / "compliance"
@@ -455,6 +452,38 @@ def main() -> int:
     for s in soas:
         print(f"Wrote {s}")
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=".")
+    ap.add_argument("--scaffold", action="store_true",
+                    help="add a stub mapping entry for every in-scope control (preserves existing)")
+    ap.add_argument("--check-gaps", action="store_true",
+                    help="exit non-zero if any applicable control lacks evidence/justification (no write)")
+    ap.add_argument("--all-units", action="store_true",
+                    help="generate for every registered unit")
+    args = ap.parse_args()
+
+    if not args.all_units:
+        return run_one(args)
+
+    rc = 0
+    for unit in units.unit_paths(args.root):
+        base = Path(args.root) / unit / ".specdev" / "compliance"
+        if not (base / "compliance.config.json").exists():
+            continue  # unit has no compliance kit; not an error
+        sub = argparse.Namespace(**vars(args))
+        sub.all_units = False
+        sub.root = str(Path(args.root) / unit)
+        print(f"--- {unit} ---")
+        rc |= run_one(sub)
+    if not args.check_gaps and not args.scaffold:
+        idx = units.write_rollup_index(args.root, "compliance/compliance-matrix.md",
+                                       "Compliance index")
+        if idx:
+            print(f"Wrote {idx}")
+    return rc
 
 
 if __name__ == "__main__":
