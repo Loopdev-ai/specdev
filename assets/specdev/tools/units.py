@@ -16,6 +16,7 @@ Usage:
 import argparse
 import fnmatch
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -267,6 +268,46 @@ def check(root=".") -> list[str]:
     return errors
 
 
+def _changed_files(root=".", base=None) -> list[str]:
+    if not base:
+        return []
+    out = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        cwd=str(root), capture_output=True, text=True, check=True).stdout
+    return [f.strip().replace("\\", "/") for f in out.splitlines() if f.strip()]
+
+
+def _owns(unit: str, path: str) -> bool:
+    return unit == "." or path == unit or path.startswith(unit + "/")
+
+
+def changed_units(root=".", base=None) -> list[str]:
+    """Units touched between `base` and HEAD. With no base, every unit."""
+    all_units = unit_paths(root)
+    if not base:
+        return sorted(all_units)
+    hit = {u for f in _changed_files(root, base) for u in all_units if _owns(u, f)}
+    return sorted(hit)
+
+
+def out_of_scope(root=".", unit=".", base=None) -> list[str]:
+    """Changed files that belong to a DIFFERENT unit, so a branch name cannot
+    lie about the scope of its PR.
+
+    Files owned by no unit (shared CI config, top-level docs) are deliberately
+    allowed: attributing them to a unit would block every cross-cutting chore."""
+    if unit == ".":
+        return []
+    all_units = unit_paths(root)
+    bad = []
+    for f in _changed_files(root, base):
+        if _owns(unit, f):
+            continue
+        if any(_owns(u, f) for u in all_units if u != unit and u != "."):
+            bad.append(f)
+    return sorted(bad)
+
+
 def write_rollup_index(root, rel_artifact: str, title: str) -> Path | None:
     """Write a rolled-up index that LINKS to each unit's artifact.
 
@@ -298,6 +339,15 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     sub.add_parser("check")
+    pm = sub.add_parser("matrix")
+    pm.add_argument("--changed-from", default=None)
+    pm.add_argument("--all", action="store_true",
+                    help="ignore --changed-from and emit every unit (REQUIRED "
+                         "for org-adr-check: its staleness check is driven by "
+                         "the upstream ADR index, not the local diff)")
+    ps = sub.add_parser("scope-check")
+    ps.add_argument("--unit", required=True)
+    ps.add_argument("--changed-from", required=True)
     args = ap.parse_args()
 
     if args.cmd == "list":
@@ -311,6 +361,21 @@ def main() -> int:
         if errs:
             return 1
         print(f"{len(unit_paths(args.root))} unit(s) registered — registry clean.")
+        return 0
+    if args.cmd == "matrix":
+        sel = unit_paths(args.root) if args.all else changed_units(
+            args.root, args.changed_from)
+        print(json.dumps(sorted(sel)))
+        return 0
+    if args.cmd == "scope-check":
+        bad = out_of_scope(args.root, args.unit, args.changed_from)
+        for f in bad:
+            print(f"ERROR: {f} is outside unit '{args.unit}'", file=sys.stderr)
+        if bad:
+            print(f"A branch scoped to '{args.unit}' may not change other units.",
+                  file=sys.stderr)
+            return 1
+        print(f"scope ok — all changes are within '{args.unit}'")
         return 0
     return 0
 

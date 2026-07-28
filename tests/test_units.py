@@ -580,3 +580,80 @@ def test_deploy_root_isolates_units(tmp_path):
         assert rc.returncode == 0, rc.stdout + rc.stderr
         out[name] = rc.stdout.strip()
     assert out["a"] != out["b"]
+
+
+# ---- changed units / scope guard ---------------------------------------
+
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=str(cwd), check=True,
+                   capture_output=True, text=True)
+
+
+def _repo(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.t")
+    _git(tmp_path, "config", "user.name", "t")
+    return tmp_path
+
+
+def _head(tmp_path):
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(tmp_path),
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_changed_units_filters_to_touched_units(tmp_path):
+    _repo(tmp_path)
+    make_unit(tmp_path, "infra")
+    make_unit(tmp_path, "demos")
+    write_registry(tmp_path, {"schema_version": 1, "units": ["infra", "demos"]})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _head(tmp_path)
+    (tmp_path / "demos" / "note.txt").write_text("x", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "touch demos")
+
+    assert un.changed_units(tmp_path, base) == ["demos"]
+
+
+def test_changed_units_without_base_returns_all(tmp_path):
+    make_unit(tmp_path, "infra")
+    make_unit(tmp_path, "demos")
+    write_registry(tmp_path, {"schema_version": 1, "units": ["infra", "demos"]})
+    assert un.changed_units(tmp_path, None) == ["demos", "infra"]
+
+
+def test_out_of_scope_detects_cross_unit_changes(tmp_path):
+    _repo(tmp_path)
+    make_unit(tmp_path, "infra")
+    make_unit(tmp_path, "soc")
+    write_registry(tmp_path, {"schema_version": 1, "units": ["infra", "soc"]})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _head(tmp_path)
+    (tmp_path / "soc" / "leak.txt").write_text("x", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "touch soc")
+
+    assert un.out_of_scope(tmp_path, "infra", base) == ["soc/leak.txt"]
+    assert un.out_of_scope(tmp_path, "soc", base) == []
+
+
+def test_out_of_scope_allows_shared_files(tmp_path):
+    """Files belonging to no unit (shared CI config, docs) are not attributed
+    to any unit and must not fail the scope guard."""
+    _repo(tmp_path)
+    make_unit(tmp_path, "infra")
+    write_registry(tmp_path, {"schema_version": 1, "units": ["infra"]})
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _head(tmp_path)
+    (tmp_path / "README.md").write_text("shared", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "touch readme")
+
+    assert un.out_of_scope(tmp_path, "infra", base) == []
+
+
+def test_out_of_scope_root_unit_is_never_out_of_scope(tmp_path):
+    assert un.out_of_scope(tmp_path, ".", "HEAD") == []
