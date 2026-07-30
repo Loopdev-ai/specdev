@@ -2,5 +2,8 @@
   "schema_version": 1,
   "runner": "ubuntu-latest",
   "max_session_minutes": 300,
-  "auto_resume": false
+  "auto_resume": true,
+  "max_permission_denials": 15,
+  "max_consecutive_tool_failures": 15,
+  "max_cost_usd": 10
 }

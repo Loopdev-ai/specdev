@@ -57,7 +57,17 @@ RUN_REL = ".specdev/run.json"
 CI_REL = ".specdev/ci.json"
 MODES = ("prod", "poc")
 FEAT_RE = re.compile(r"^FEAT-\d{3,}$")
-CI_DEFAULTS = {"runner": "ubuntu-latest", "max_session_minutes": 300, "auto_resume": False}
+# The circuit-breaker limits live in ci.json because they are per-repo risk
+# appetite, not a property of the tool. Defaults are deliberately tight:
+# max_turns alone is not a bound anyone wants to discover the cost of.
+CI_DEFAULTS = {
+    "runner": "ubuntu-latest",
+    "max_session_minutes": 300,
+    "auto_resume": True,
+    "max_permission_denials": 15,
+    "max_consecutive_tool_failures": 15,
+    "max_cost_usd": 10,
+}
 
 
 def run_path(root=".") -> Path:

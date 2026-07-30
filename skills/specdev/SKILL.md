@@ -149,7 +149,10 @@ never fills the context window:
 - **Checkpoint to disk after every phase.** Write decisions, the build log, and
   open items into `.specdev/BUILD.md` so the conversation can be safely
   summarized/compacted without losing the thread. Treat `BUILD.md` as the
-  source of truth, not your context.
+  source of truth, not your context. In CI, `specdev-build.yml` pushes that
+  file to `specdev/checkpoint/<unit>/<FEAT-###>` whatever the run's outcome —
+  so a checkpoint you actually wrote survives a crash, a timeout and a
+  circuit-break, and a re-dispatch resumes from it.
 - **Read narrowly.** When you must look at a file, read the relevant section,
   not the whole file. If you need broad answers across many files, send an
   explorer subagent and keep its conclusion only.
@@ -173,6 +176,13 @@ Turn `components.md` into a build schedule:
    for the REQs built in it. A red verdict goes back to a `component-builder`;
    never start the next wave on red. Run `qa-verifier` once more over the final
    integrated result as the pre-PR dry run.
+7. **Commit the wave before forming the next one.** The moment a wave goes
+   green, write its ledger row to `BUILD.md` and `git commit` — the wave, not
+   the phase, is the unit of durability. A run killed mid-feature then resumes
+   at the last GREEN wave rather than at the last phase boundary, and the
+   commit is what the CI checkpoint push has to work with. Commit even when
+   the feature is nowhere near done: an unfinished build that resumes is worth
+   more than a tidy history.
 
 Sequential or trivial single-component work can skip waves, but still goes
 through `component-builder` so its detail stays out of this thread.

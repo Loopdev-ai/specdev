@@ -13,6 +13,14 @@ Do this:
 2. Copy `${CLAUDE_PLUGIN_ROOT}/assets/specdev/` → `./.specdev/` (including the
    `adr/` and `tools/` subfolders). **Do not overwrite** an existing `.specdev/`
    file — if one exists, list the conflicts and ask before replacing.
+
+   **Exception — `.specdev/tools/` is shipped code, not user content.** It
+   carries no repo-specific edits, so an existing install that keeps its old
+   copy silently keeps old bugs. When `.specdev/` already exists, diff
+   `tools/` against the plugin's, show what changed, and offer to update it.
+   Same for `.github/workflows/` in step 3. Everything else under `.specdev/`
+   (spec, components, ADRs, `org.json`, `ci.json`) is the repo's own and is
+   never replaced without being asked.
 3. Copy `${CLAUDE_PLUGIN_ROOT}/assets/workflows/*.yml` → `./.github/workflows/`
    (create the directory if needed; same no-overwrite rule).
 3b. Copy `${CLAUDE_PLUGIN_ROOT}/assets/gitleaks.toml` → `./.gitleaks.toml` (same
