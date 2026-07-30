@@ -17,7 +17,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read   # gitleaks-action lists PR commits via the API
 
 jobs:
   discover:
@@ -63,29 +62,68 @@ jobs:
         with:
           python-version: '3.x'
 
+      # These four gates ship as STUBS THAT FAIL. An `echo "TODO"` would exit 0,
+      # so a repo that never wires its stack has a QA gate reporting green while
+      # verifying nothing — and with automatic prod, this gate is most of what
+      # stands between a merge and production. A red gate on a fresh repo is the
+      # correct state: replace each command below, then it goes green.
       - name: Lint — ${{ matrix.unit }}
-        run: 'echo "TODO: project lint command"'            # e.g. npm run lint
+        run: |
+          echo "::error title=Unwired QA gate::Replace the Lint command in .github/workflows/post-dev-qa.yml"
+          echo "e.g. npm run lint   |   ruff check .   |   golangci-lint run"
+          exit 1
 
       - name: Unit + integration tests — ${{ matrix.unit }}
-        run: 'echo "TODO: project test command"'            # e.g. npm test -- --coverage
+        run: |
+          echo "::error title=Unwired QA gate::Replace the test command in .github/workflows/post-dev-qa.yml"
+          echo "e.g. npm test -- --coverage   |   pytest --cov   |   go test ./..."
+          exit 1
 
       # NOTE: line coverage is a floor, not a correctness proof — a high number
       # with weak assertions still passes. Prefer branch coverage, and treat the
       # traceability gap check below (every REQ has a test) as the real
       # requirement-coverage gate.
       - name: Coverage gate — ${{ matrix.unit }}
-        run: 'echo "TODO: fail if branch coverage below threshold"' # e.g. enforce >= 80%
+        run: |
+          echo "::error title=Unwired QA gate::Replace the coverage threshold check in .github/workflows/post-dev-qa.yml"
+          echo "Prefer BRANCH coverage; e.g. pytest --cov --cov-fail-under=80"
+          exit 1
 
-      # Repo-wide by nature, and 'working-directory' is not valid on a 'uses'
-      # step. Runs once per matrix leg; that is redundant but harmless, and
-      # scoping a secret scan to one unit would be the wrong trade anyway.
-      - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+      # Repo-wide by nature: scoping a secret scan to one unit would be the
+      # wrong trade, so this runs unfiltered on every matrix leg.
+      #
+      # The gitleaks BINARY is MIT-licensed and free. gitleaks/gitleaks-action@v2
+      # requires a paid licence for GitHub organizations and FAILS CLOSED: it
+      # errors with "missing gitleaks license" BEFORE scanning anything, so the
+      # gate reports failure while having verified nothing. Running the binary
+      # directly is free and actually scans.
+      - name: Install gitleaks
+        working-directory: .
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: '8.18.4'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/gitleaks.tar.gz             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Secret scan
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # --redact keeps found secrets out of the public log.
+          # Exit 1 = leaks found; the config allowlists test fixtures.
+          if [ -f .gitleaks.toml ]; then
+            gitleaks detect --source . --config .gitleaks.toml --redact --verbose
+          else
+            gitleaks detect --source . --redact --verbose
+          fi
 
       - name: Dependency / SAST scan — ${{ matrix.unit }}
-        run: 'echo "TODO: SAST + dependency audit"'          # e.g. npm audit --audit-level=high
+        run: |
+          echo "::error title=Unwired QA gate::Replace the SAST/dependency audit in .github/workflows/post-dev-qa.yml"
+          echo "e.g. npm audit --audit-level=high   |   pip-audit   |   govulncheck ./..."
+          exit 1
 
       # Cumulative across the whole unit: checks spec.md + every archived
       # specs/*.md (+ product-requirements.md), so a regression that drops a

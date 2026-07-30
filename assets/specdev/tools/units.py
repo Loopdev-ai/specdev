@@ -25,6 +25,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+# SpecDev tools use PEP 604 unions (`dict | None`) in annotations, which are
+# evaluated at def time and raise TypeError on Python 3.9. macOS ships 3.9.x as
+# the system python3, so without this guard every tool dies with an opaque
+# "unsupported operand type(s) for |". Checked before the sibling imports below,
+# which carry the same annotations. The message is deliberately pure ASCII: this
+# runs before the stdout UTF-8 reconfigure, so a non-ASCII character here would
+# raise UnicodeEncodeError on a cp1252 console and replace the explanation with
+# a traceback.
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "SpecDev tools require Python 3.10+ (found "
+        f"{sys.version_info.major}.{sys.version_info.minor}). "
+        "On macOS the system python3 is 3.9.x; install a newer Python or use "
+        "a virtualenv. In CI, actions/setup-python with python-version '3.x' "
+        "satisfies this."
+    )
+
 try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -309,6 +326,40 @@ def parse_ref(ref: str, registry) -> tuple:
     return (".", rest)
 
 
+class ScopeBaseError(Exception):
+    """A scope check's base ref could not be resolved to a commit."""
+
+
+def _resolve_base(root=".", base=None) -> str:
+    """Resolve `base` to a commit SHA, or raise ScopeBaseError.
+
+    A scope check whose base is empty diffs nothing, finds nothing out of
+    scope, and reports green having verified NOTHING. That is not a rare edge:
+    on `workflow_dispatch` both `github.event.pull_request.base.sha` and
+    `github.event.before` are empty, so the manual-dispatch path — the resume
+    path — is exactly the one that silently loses its scope guard. Refuse
+    instead of passing vacuously."""
+    base = (base or "").strip()
+    if not base:
+        raise ScopeBaseError(
+            "no base ref given. A scope check without a base compares nothing, "
+            "so it would report success without verifying anything. On "
+            "workflow_dispatch, pass the run's own start SHA explicitly.")
+    if set(base) == {"0"}:
+        raise ScopeBaseError(
+            f"base ref '{base}' is git's null SHA, which git cannot diff "
+            "against. This is what `github.event.before` holds on the first "
+            "push of a branch; pass an explicit start SHA instead.")
+    p = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+                       cwd=str(root), capture_output=True, text=True)
+    if p.returncode != 0 or not p.stdout.strip():
+        raise ScopeBaseError(
+            f"base ref '{base}' does not resolve to a commit in this checkout. "
+            "A shallow clone is the usual cause — use "
+            "actions/checkout with fetch-depth: 0.")
+    return p.stdout.strip()
+
+
 def _changed_files(root=".", base=None) -> list[str]:
     if not base:
         return []
@@ -323,9 +374,13 @@ def _owns(unit: str, path: str) -> bool:
 
 
 def changed_units(root=".", base=None) -> list[str]:
-    """Units touched between `base` and HEAD. With no base, every unit."""
+    """Units touched between `base` and HEAD. With no resolvable base, every
+    unit — for a verification matrix the fail-safe direction is to verify more,
+    so an unusable base widens the matrix rather than emptying it."""
     all_units = unit_paths(root)
-    if not base:
+    try:
+        base = _resolve_base(root, base)
+    except ScopeBaseError:
         return sorted(all_units)
     hit = {u for f in _changed_files(root, base) for u in all_units if _owns(u, f)}
     return sorted(hit)
@@ -336,9 +391,14 @@ def out_of_scope(root=".", unit=".", base=None) -> list[str]:
     lie about the scope of its PR.
 
     Files owned by no unit (shared CI config, top-level docs) are deliberately
-    allowed: attributing them to a unit would block every cross-cutting chore."""
+    allowed: attributing them to a unit would block every cross-cutting chore.
+
+    Raises ScopeBaseError on an unresolvable base. Unlike `changed_units`, the
+    fail-safe direction here is to refuse: this is a GUARD, and a guard that
+    cannot see the diff must not report that the diff is clean."""
     if unit == ".":
         return []
+    base = _resolve_base(root, base)
     all_units = unit_paths(root)
     bad = []
     for f in _changed_files(root, base):
@@ -495,7 +555,13 @@ def main() -> int:
               f"then run 'python .specdev/tools/units.py check'.")
         return 0
     if args.cmd == "scope-check":
-        bad = out_of_scope(args.root, args.unit, args.changed_from)
+        try:
+            bad = out_of_scope(args.root, args.unit, args.changed_from)
+        except ScopeBaseError as e:
+            print(f"ERROR: scope check cannot run: {e}", file=sys.stderr)
+            print("Refusing to report success without checking anything.",
+                  file=sys.stderr)
+            return 2
         for f in bad:
             print(f"ERROR: {f} is outside unit '{args.unit}'", file=sys.stderr)
         if bad:

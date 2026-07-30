@@ -11,9 +11,19 @@ name: specdev-build
 # segment is read as a unit only when it names a REGISTERED unit, so a
 # single-root repo's spec/<name> keeps working unchanged.
 #
-# Context stays bounded by the specdev skill's coordinator discipline; state is
-# checkpointed to <unit>/.specdev/BUILD.md so a run can resume across job
-# boundaries.
+# Context stays bounded by the specdev skill's coordinator discipline. State is
+# checkpointed to <unit>/.specdev/BUILD.md, which this workflow PUSHES to
+# refs/heads/specdev/checkpoint/<unit>/<FEAT-###> in an always() step — on
+# success, failure, timeout and circuit-break alike. That push is what makes a
+# run resumable; the checkpoint file alone is not, because the runner's working
+# tree is destroyed at job teardown. With ci.json `auto_resume` true (the
+# default) a re-dispatch restores that ref before the agent starts.
+#
+# The build job is NOT green merely because the agent process exited. It ends
+# with an assertion that the mode's terminal state was actually reached (an
+# Implementation PR exists / was merged) and that the checkpoint is no longer
+# the stock template. deploy-poc is gated on that assertion, never on the exit
+# code: a build that produced nothing must not trigger a deployment.
 on:
   pull_request:
     types: [closed]
@@ -122,10 +132,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      # This pre-build check covers the INPUT branch. It cannot cover what the
+      # agent is about to write — that is the post-build check in the build
+      # job, which is the one that enforces the promise made to the agent in
+      # its prompt. On workflow_dispatch there is no base in the event payload
+      # and nothing has changed yet, so this step says so and defers, rather
+      # than diffing against an empty base and reporting green having compared
+      # nothing.
       - name: Changes must stay inside ${{ needs.setup.outputs.unit }}
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::notice title=Pre-build scope check::No base ref in this event" \
+                 "(normal for workflow_dispatch and first pushes). The input branch" \
+                 "is not diffable here; the post-build scope check in the build job" \
+                 "enforces scope against the run's own start SHA."
+            exit 0
+          fi
           python .specdev/tools/units.py scope-check \
             --unit '${{ needs.setup.outputs.unit }}' --changed-from "$BASE"
 
@@ -134,6 +158,19 @@ jobs:
     if: needs.setup.outputs.run == 'true' && !cancelled() && needs.scope.result != 'failure'
     runs-on: ${{ needs.setup.outputs.runner }}
     timeout-minutes: ${{ fromJSON(needs.setup.outputs.timeout) }}
+    # The `secrets` context is NOT available in `jobs.<id>.steps.if`. A guard
+    # written as `if: secrets.ANTHROPIC_API_KEY != ''` does not error — it
+    # evaluates to empty, so the step silently never runs. Surface the secret as
+    # job-level env (where `secrets` IS available) and gate on `env` instead.
+    env:
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' && 'yes' || 'no' }}
+      UNIT: ${{ needs.setup.outputs.unit }}
+      FEAT: ${{ needs.setup.outputs.feat }}
+      MODE: ${{ needs.setup.outputs.mode }}
+      BREAKER_STATE: ${{ github.workspace }}/.specdev-breaker.json
+    outputs:
+      terminal_ok: ${{ steps.verify.outputs.ok }}
+      checkpoint_ref: ${{ steps.checkpoint.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,14 +178,78 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      # Fail fast and legibly: without the key claude-code-action fails deep in
+      # the run with an opaque auth error.
+      - name: Require ANTHROPIC_API_KEY
+        if: env.HAS_ANTHROPIC_KEY != 'yes'
+        run: |
+          echo "::error title=Missing secret::specdev-build needs the ANTHROPIC_API_KEY repo or org secret."
+          echo "Add it under Settings -> Secrets and variables -> Actions."
+          exit 1
+      # The run's own start SHA. Captured here rather than read from the event
+      # payload because `pull_request.base.sha` and `event.before` are both
+      # empty on workflow_dispatch — which silently turned the scope guard into
+      # a no-op on exactly the path used to re-dispatch a build.
+      - id: start
+        name: Capture the run's start SHA
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Record run manifest (mode signal for the deploy guard)
         run: |
           python .specdev/tools/run_manifest.py init \
-            --feat "${{ needs.setup.outputs.feat }}" \
-            --mode "${{ needs.setup.outputs.mode }}" \
-            --unit "${{ needs.setup.outputs.unit }}"
+            --feat "$FEAT" --mode "$MODE" --unit "$UNIT"
           git config user.name  "specdev-bot"
           git config user.email "specdev-bot@users.noreply.github.com"
+      # F6 was dead config: `auto_resume` was declared in ci.json and read by
+      # nothing. It now means what it says — restore the last pushed checkpoint
+      # so a re-dispatch continues instead of restarting from zero.
+      - id: resume
+        name: Restore the last checkpoint (ci.json auto_resume)
+        run: |
+          AUTO=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get auto_resume --repo-root .)
+          REF="specdev/checkpoint/${UNIT}/${FEAT}"
+          if [ "$AUTO" != "True" ] && [ "$AUTO" != "true" ]; then
+            echo "auto_resume is $AUTO — starting from the branch as-is."; exit 0
+          fi
+          if git fetch origin "refs/heads/${REF}:refs/remotes/origin/${REF}" 2>/dev/null; then
+            PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
+            git checkout "origin/${REF}" -- "${PREFIX}.specdev/BUILD.md" \
+                                            "${PREFIX}.specdev/run.json" 2>/dev/null || true
+            echo "::notice title=Resumed::Restored the checkpoint from ${REF}."
+            echo "resumed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No checkpoint at ${REF} — this is a fresh build."
+          fi
+      # The circuit breaker runs INSIDE the agent loop as a hook, because a
+      # post-run check cannot refund a run that has already spent the money.
+      - name: Arm the circuit breaker
+        run: |
+          get () { python .specdev/tools/run_manifest.py --root "$UNIT" ci --get "$1" --repo-root .; }
+          {
+            echo "SPECDEV_MAX_DENIALS=$(get max_permission_denials)"
+            echo "SPECDEV_MAX_CONSECUTIVE_FAILURES=$(get max_consecutive_tool_failures)"
+            echo "SPECDEV_MAX_COST_USD=$(get max_cost_usd)"
+            echo "SPECDEV_BREAKER_STATE=${BREAKER_STATE}"
+          } >> "$GITHUB_ENV"
+          # GITHUB_ENV only takes effect in LATER steps, so seed the state file
+          # with the path exported inline here.
+          SPECDEV_BREAKER_STATE="${BREAKER_STATE}" \
+            python .specdev/tools/circuit_breaker.py init
+          cat > "${{ runner.temp }}/breaker-settings.json" <<'JSON'
+          {
+            "hooks": {
+              "PreToolUse": [
+                { "matcher": "*", "hooks": [
+                  { "type": "command",
+                    "command": "python .specdev/tools/circuit_breaker.py" } ] }
+              ],
+              "PostToolUse": [
+                { "matcher": "*", "hooks": [
+                  { "type": "command",
+                    "command": "python .specdev/tools/circuit_breaker.py" } ] }
+              ]
+            }
+          }
+          JSON
       - name: Run the SpecDev build (headless Claude Code)
         uses: anthropics/claude-code-action@v1
         with:
@@ -183,15 +284,146 @@ jobs:
             continue the dependency-wave loop until this mode's terminal state:
               - prod: open the Implementation PR against main, then STOP. Do NOT merge.
               - poc:  open the Implementation PR and merge it into main.
-            Keep <unit>/.specdev/BUILD.md and <unit>/.specdev/run.json current
-            after every phase.
-          claude_args: '--max-turns 200'
+
+            Reaching that terminal state is ASSERTED after you finish: the job
+            fails unless the Implementation PR actually exists (and, in poc
+            mode, was merged). Exiting cleanly without one is a failed build,
+            not a partial success.
+
+            Commit <unit>/.specdev/BUILD.md and <unit>/.specdev/run.json as
+            each dependency wave goes green — not only at the end. This job
+            pushes that checkpoint to specdev/checkpoint/<unit>/<FEAT> whatever
+            happens, so anything you have committed survives a crash or a
+            timeout and the next dispatch resumes from it. Anything you left
+            uncommitted in your context does not.
+
+            A circuit breaker is armed: if you accumulate too many permission
+            denials, too many consecutive tool failures, or too much cost, the
+            run is aborted. If a tool is denied, do NOT retry it in a loop —
+            record the blocker in BUILD.md and stop, so the checkpoint is
+            useful to the human who re-dispatches.
+          # Explicit tool allowlist. Without one the agent runs with the FULL
+          # default surface — including WebFetch/WebSearch — on a job that
+          # writes code and, in poc mode, self-merges to main. An allowlist
+          # makes the surface a reviewable decision instead of a default.
+          #
+          # ── REQUIRED FLOOR — do not tighten below this ──────────────────
+          #   Task, Agent  subagent dispatch. `Task` was renamed `Agent`; both
+          #                are listed so the list is right either way.
+          #   Skill        the prompt's first instruction is to follow the
+          #                vendored specdev skill.
+          #   Read, Write, Edit, Glob, Grep, Bash
+          #                the union of what .claude/agents/*.md declare.
+          #                --allowedTools is a SESSION permission and subagents
+          #                inherit it, so anything missing here is denied to
+          #                every subagent whatever its own frontmatter grants.
+          #
+          # Cutting below that floor does not harden the job, it breaks it.
+          # Containment comes from the scope check, the no-self-merge rule
+          # outside poc, the human PR gate, the circuit breaker and the deny
+          # list below — not from tool-prefix scarcity. Bash stays broad
+          # because the coordinator runs this repo's own test/lint/build
+          # commands, which vary per stack; the deny list covers the egress and
+          # credential paths, where the real risk is.
+          claude_args: >-
+            --max-turns 200
+            --settings "${{ runner.temp }}/breaker-settings.json"
+            --allowedTools "Task,Agent,Skill,Read,Write,Edit,Glob,Grep,Bash,TodoWrite"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),Bash(ssh:*),Bash(scp:*),Bash(aws:*),Bash(az:*),Bash(gcloud:*)"
+
+      # ── Everything below runs on success, failure, timeout and circuit-break
+      # alike. The failing run is precisely the one whose checkpoint and denial
+      # histogram are worth having.
+
+      # F5: without this the checkpoint lives only in the runner's working tree
+      # and dies at job teardown, so "resume" was never possible and a $39
+      # run was unrecoverable. Pushed to a dedicated ref — never to a release
+      # branch — so a broken build can never reach one.
+      - id: checkpoint
+        name: Push the checkpoint
+        if: always()
+        run: |
+          REF="specdev/checkpoint/${UNIT}/${FEAT}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
+          git add -A -- "${PREFIX}.specdev/" || true
+          if git diff --cached --quiet; then
+            echo "::warning title=No checkpoint::The agent wrote no changes under ${PREFIX}.specdev/."
+          else
+            git commit -m "chore(specdev): checkpoint ${FEAT} on ${UNIT} [skip ci]" || true
+          fi
+          if git push --force origin "HEAD:refs/heads/${REF}"; then
+            echo "::notice title=Checkpoint pushed::${REF}"
+          else
+            echo "::warning title=Checkpoint push failed::Could not push ${REF}."
+          fi
+
+      # F14: the promise made to the agent in its prompt — "a scope check fails
+      # the build if you do" — was false, because the only scope job ran BEFORE
+      # the agent and was never re-run against what it wrote. This is the step
+      # that makes that sentence true.
+      - name: Post-build scope check
+        if: always() && needs.setup.outputs.unit != '.'
+        run: |
+          python .specdev/tools/units.py scope-check \
+            --unit "$UNIT" --changed-from "${{ steps.start.outputs.sha }}"
+
+      - name: Circuit breaker verdict
+        if: always()
+        run: python .specdev/tools/circuit_breaker.py verdict
+
+      # F13: the job's exit code says the agent process ended, not that it
+      # built anything. deploy-poc used to be gated on that exit code, so a
+      # build that produced nothing still triggered a deployment.
+      - id: verify
+        name: Assert the mode's terminal state was reached
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if python .specdev/tools/build_outcome.py --root "$UNIT" verify \
+               --feat "$FEAT" --mode "$MODE" --unit "$UNIT" \
+               --base "${{ github.event.repository.default_branch }}" \
+               --repo "${{ github.repository }}" \
+               --json-out "${{ runner.temp }}/verify.json"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # A failed run must leave a record behind. Without this, which tools were
+      # denied — the datum you need to fix an allowlist — is unrecoverable.
+      - name: Build outcome record
+        if: always()
+        run: |
+          python .specdev/tools/build_outcome.py --root "$UNIT" report \
+            --feat "$FEAT" --mode "$MODE" \
+            --verify-json "${{ runner.temp }}/verify.json" \
+            --breaker-json "$BREAKER_STATE" \
+            --checkpoint-ref "${{ steps.checkpoint.outputs.ref }}" \
+            --out "${{ runner.temp }}/build-outcome.md" \
+            --append-build-md
+      - name: Upload the build outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: specdev-build-outcome-${{ needs.setup.outputs.feat }}
+          path: |
+            ${{ runner.temp }}/build-outcome.md
+            ${{ runner.temp }}/verify.json
+            ${{ env.BREAKER_STATE }}
+          if-no-files-found: warn
 
   # poc only: after the build self-merges, deploy the isolated poc environment
   # by CALLING the reusable workflow directly (no push event, no PAT).
+  # Gated on the terminal-state ASSERTION, not on the build job's exit code.
+  # `needs.build.result == 'success'` was satisfied by a run that produced no
+  # branch, no commit and no PR — which would have deployed nothing, as
+  # something.
   deploy-poc:
     needs: [setup, build]
-    if: needs.setup.outputs.mode == 'poc' && needs.build.result == 'success'
+    if: needs.setup.outputs.mode == 'poc' && needs.build.outputs.terminal_ok == 'true'
     uses: ./.github/workflows/deploy-poc.yml
     with:
       environment: poc

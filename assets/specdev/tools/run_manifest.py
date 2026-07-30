@@ -26,6 +26,23 @@ import re
 import sys
 from pathlib import Path
 
+# SpecDev tools use PEP 604 unions (`dict | None`) in annotations, which are
+# evaluated at def time and raise TypeError on Python 3.9. macOS ships 3.9.x as
+# the system python3, so without this guard every tool dies with an opaque
+# "unsupported operand type(s) for |". Checked before the sibling imports below,
+# which carry the same annotations. The message is deliberately pure ASCII: this
+# runs before the stdout UTF-8 reconfigure, so a non-ASCII character here would
+# raise UnicodeEncodeError on a cp1252 console and replace the explanation with
+# a traceback.
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "SpecDev tools require Python 3.10+ (found "
+        f"{sys.version_info.major}.{sys.version_info.minor}). "
+        "On macOS the system python3 is 3.9.x; install a newer Python or use "
+        "a virtualenv. In CI, actions/setup-python with python-version '3.x' "
+        "satisfies this."
+    )
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import units  # noqa: E402  (vendored sibling module)
 
@@ -40,7 +57,17 @@ RUN_REL = ".specdev/run.json"
 CI_REL = ".specdev/ci.json"
 MODES = ("prod", "poc")
 FEAT_RE = re.compile(r"^FEAT-\d{3,}$")
-CI_DEFAULTS = {"runner": "ubuntu-latest", "max_session_minutes": 300, "auto_resume": False}
+# The circuit-breaker limits live in ci.json because they are per-repo risk
+# appetite, not a property of the tool. Defaults are deliberately tight:
+# max_turns alone is not a bound anyone wants to discover the cost of.
+CI_DEFAULTS = {
+    "runner": "ubuntu-latest",
+    "max_session_minutes": 300,
+    "auto_resume": True,
+    "max_permission_denials": 15,
+    "max_consecutive_tool_failures": 15,
+    "max_cost_usd": 10,
+}
 
 
 def run_path(root=".") -> Path:

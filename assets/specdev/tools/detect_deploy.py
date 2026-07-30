@@ -18,6 +18,23 @@ import re
 import sys
 from pathlib import Path
 
+# SpecDev tools use PEP 604 unions (`dict | None`) in annotations, which are
+# evaluated at def time and raise TypeError on Python 3.9. macOS ships 3.9.x as
+# the system python3, so without this guard every tool dies with an opaque
+# "unsupported operand type(s) for |". Checked before the sibling imports below,
+# which carry the same annotations. The message is deliberately pure ASCII: this
+# runs before the stdout UTF-8 reconfigure, so a non-ASCII character here would
+# raise UnicodeEncodeError on a cp1252 console and replace the explanation with
+# a traceback.
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        "SpecDev tools require Python 3.10+ (found "
+        f"{sys.version_info.major}.{sys.version_info.minor}). "
+        "On macOS the system python3 is 3.9.x; install a newer Python or use "
+        "a virtualenv. In CI, actions/setup-python with python-version '3.x' "
+        "satisfies this."
+    )
+
 try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")

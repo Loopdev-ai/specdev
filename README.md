@@ -119,6 +119,45 @@ IMPL PR  ──gate2: post-dev-qa (required checks)──merge─▶
 | `post-deploy-qa.yml` | called by deploy | staging promotion gate + prod verification |
 | `traceability.yml` | after deploy | regenerate + commit the matrix |
 
+### Headless builds (`specdev-build.yml`)
+
+The build can be handed off to CI, where the coordinator runs unattended. Three
+properties keep an unattended run honest:
+
+- **The job is not green because the process exited.** It ends by asserting the
+  mode's terminal state — an Implementation PR exists for this unit and FEAT
+  (and, for `poc`, was merged) — and that `BUILD.md` is no longer the shipped
+  template. `deploy-poc` is gated on that assertion, so a build that produced
+  nothing cannot trigger a deployment.
+- **The checkpoint leaves the runner.** `BUILD.md` and `run.json` are pushed to
+  `specdev/checkpoint/<unit>/<FEAT-###>` on success, failure, timeout and
+  circuit-break alike; the runner's working tree is destroyed at teardown, so
+  the push is what makes a run resumable. With `auto_resume` (default on) a
+  re-dispatch restores that ref before the agent starts.
+- **A circuit breaker runs inside the agent loop**, as a hook — a post-run
+  check cannot refund a run that has already spent the money. Limits live in
+  `ci.json`:
+
+| `ci.json` key | Default | Trips when |
+|---|---|---|
+| `max_permission_denials` | 15 | cumulative denied tool calls reach it |
+| `max_consecutive_tool_failures` | 15 | that many tool calls fail in a row |
+| `max_cost_usd` | 10 | accumulated spend reaches the ceiling |
+| `auto_resume` | `true` | — restores the checkpoint ref on re-dispatch |
+
+On a trip the agent is stopped, the checkpoint is pushed, and the job exits
+with a status distinct from a hard failure — the signal to re-dispatch rather
+than debug. Every run uploads a build-outcome record (turns, cost, denial
+counts and a histogram of denied tools, terminal state reached vs. required)
+to the step summary and as an artifact.
+
+The workflow's `--allowedTools` list has a **required floor** documented inline
+above it. It is a session-level permission that subagents inherit, so cutting
+it below the union of what `.claude/agents/*.md` declare disables the
+delegation model rather than hardening it. Containment comes from the scope
+check, the no-self-merge rule, the human PR gate, the circuit breaker and the
+egress deny list — not from tool-prefix scarcity.
+
 ## Deploy determination (built in)
 
 Deploy, rollback, and health are **determined by a profile, not hard-coded**.
@@ -156,6 +195,11 @@ stubs:**
   in `BUILD.md` → *Deployment Facts*, with its source, alongside the profile.
 
 ## After `/specdev:init` — required wiring
+
+> The four stack-specific `post-dev-qa` gates (lint, unit tests, coverage,
+> SAST) ship **failing**, with a message naming what to replace. That is
+> deliberate: a stub that `echo`s exits 0, so an unwired repo would have a QA
+> gate reporting green while verifying nothing.
 
 1. Replace the **build/test** `TODO:`s in `.github/workflows/` (deploy/rollback/
    health are already wired to the profile).
