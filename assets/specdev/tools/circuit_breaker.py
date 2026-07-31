@@ -77,11 +77,37 @@ except Exception:
 STATE_ENV = "SPECDEV_BREAKER_STATE"
 DEFAULT_STATE = ".specdev-breaker.json"
 
-# A HARNESS REFUSAL — the call was not allowed to happen. These and nothing
-# else may feed the cumulative `denials` ceiling.
+# Text that LOOKS like a refusal. Tallied as a hint, never as a denial.
+#
+# Text cannot answer the only question a cumulative denial ceiling exists to
+# answer — "is --allowedTools wrong?" — because the same words arrive from
+# things that have nothing to do with the allowlist. A real run hit
+# `403: GitHub Actions is not permitted to create or approve pull requests`,
+# wrote it into BUILD.md, and then scored a fresh "denial" on every subsequent
+# Read of that file. A remote service refusing an API call, and a checkpoint
+# quoting an earlier error, are both indistinguishable from a harness refusal
+# at the level of a regex — and any pattern is one string away from the next
+# instance of this, whichever string it is.
+#
+# So the hints are kept (a runtime may report refusals only as output, which
+# is the case the old behaviour was right about) and demoted: they are counted
+# per tool, rendered in the outcome record, and count only as a resetting
+# failure. Many hints with zero structured denials is itself the datum — it
+# says this runtime is text-only.
 _DENIAL_MARKERS = re.compile(
     r"permission denied|requested permissions|has not been granted|"
     r"tool use was rejected|is not allowed",
+    re.I)
+
+# A transient upstream condition: throttling, an overloaded or unavailable
+# service, a timeout, a dropped connection. The OPPOSITE of a stuck agent —
+# and it arrives precisely when the coordinator fans out to subagents, so an
+# unclassified 429 makes the consecutive-failure bound fire hardest exactly
+# when nothing is wrong.
+_TRANSIENT_MARKERS = re.compile(
+    r"\b429\b|too many requests|rate.?limit|overloaded|\b50[234]\b|"
+    r"service unavailable|timed? ?out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|"
+    r"connection reset|temporarily unavailable",
     re.I)
 
 # ANY tool failure, refusals included. `error:`, `exception` and `traceback`
@@ -156,14 +182,44 @@ def _num(env: str, default):
     return None if v <= 0 else v  # <=0 disables a limit
 
 
+# Keys that are FRACTIONS, not ceilings. `_num` ends in `None if v <= 0`,
+# which is the right rule for a ceiling ("0 disables it") and exactly the
+# wrong one for a rate: a configured rate of 0 means "no rate constraint, the
+# count alone trips" — stricter, not disabled. Reading it through `_num` would
+# silently turn the strictest setting into the loosest.
+RATE_KEYS = ("max_denial_rate",)
+
+
+def _rate(env: str, default):
+    """A fraction in [0, 1]. Returns None only when there is no value at all."""
+    raw = os.environ.get(env, "")
+    v = None
+    if str(raw).strip() != "":
+        try:
+            v = float(raw)
+        except ValueError:
+            v = None
+    if v is None:
+        v = default
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, v)
+
+
 def limits() -> dict:
-    return {key: _num(var, DEFAULTS.get(key))
+    return {key: (_rate(var, DEFAULTS.get(key)) if key in RATE_KEYS
+                  else _num(var, DEFAULTS.get(key)))
             for key, var in ENV_FOR.items()}
 
 
 def unarmed(lim: dict) -> list[str]:
-    """Which bounds are OFF for this run. Reported, never assumed."""
-    return [k for k, v in lim.items() if not v]
+    """Which bounds are OFF for this run. Reported, never assumed.
+
+    A rate of 0 is not "off" — it is the strictest setting, so it is never
+    reported as a disabled bound."""
+    return [k for k, v in lim.items() if not v and k not in RATE_KEYS]
 
 
 def fresh_state() -> dict:
@@ -175,6 +231,9 @@ def fresh_state() -> dict:
         "max_consecutive_seen": 0,
         "denied_tools": {},
         "attempted_tools": {},
+        "denial_text_hints": {},
+        "transient_tools": {},
+        "transient_events": 0,
         "cost_usd": 0.0,
         "cost_source": "unavailable",
         "tripped": False,
@@ -256,40 +315,69 @@ def _denial_decision(payload: dict) -> bool:
     return False
 
 
-def is_denial(payload: dict) -> bool:
-    """True ONLY when the harness refused the call.
-
-    This is the numerator of the permission-denial ceiling, and it used to be
-    `is_failure` — so every red test in a TDD build spent a ceiling named
-    `max_permission_denials`, a healthy multi-wave run could trip on doing
-    exactly what it is supposed to do, the trip reason sent whoever read it to
-    audit an allowlist that was never the problem, and the outcome record's
-    "Denied tool calls" histogram listed tools that were never denied.
-
-    Checked on BOTH hook events: a runtime may surface a refusal as a
-    PreToolUse permission decision or as PostToolUse output, and which one you
-    get is runtime-dependent."""
-    if _denial_decision(payload):
-        return True
-    if re.search(r"denied|reject|blocked",
-                 str(payload.get("hook_event_name", "")), re.I):
-        return True
+def _payload_text(payload: dict) -> str:
+    out = []
     for key in ("tool_output", "tool_response", "tool_result", "error"):
         val = payload.get(key)
         if isinstance(val, dict):
             val = json.dumps(val)
-        if isinstance(val, str) and _DENIAL_MARKERS.search(val):
-            return True
+        if isinstance(val, str):
+            out.append(val)
+    return "\n".join(out)
+
+
+def is_denial(payload: dict) -> bool:
+    """True only for an AUTHORITATIVE refusal: a structured permission
+    decision of deny/block, or a hook event that names denial. Never text.
+
+    This is the numerator of the permission-denial ceiling, so it has to mean
+    "the harness refused this call" and nothing else. It was `is_failure`,
+    which spent the ceiling on every red test in a TDD build; narrowing it to
+    refusal TEXT was still wrong, because a 403 from a remote API, or a
+    checkpoint file quoting one, reads identically to a harness refusal and
+    says nothing about whether --allowedTools is right. A count of those
+    aborted a six-wave build that had finished its work, at 15 denials in 865
+    calls.
+
+    Checked on BOTH hook events: which one carries a refusal is
+    runtime-dependent."""
+    if _denial_decision(payload):
+        return True
+    return bool(re.search(r"denied|reject|blocked",
+                          str(payload.get("hook_event_name", "")), re.I))
+
+
+def denial_text_hint(payload: dict) -> bool:
+    """Refusal-shaped TEXT with no structured decision behind it. Counted and
+    reported so the uncertain case is measurable rather than guessed at."""
+    return bool(_DENIAL_MARKERS.search(_payload_text(payload)))
+
+
+def is_transient(payload: dict) -> bool:
+    """A throttle or an upstream blip. Counted and reported, but it must
+    neither extend the consecutive-failure streak nor reset it: a 429
+    sprinkled through a genuine failure run tells you nothing in either
+    direction, so it must not hide a streak any more than it may manufacture
+    one."""
+    if _TRANSIENT_MARKERS.search(_payload_text(payload)):
+        return True
+    for key in ("tool_output", "tool_response", "tool_result", "error"):
+        val = payload.get(key)
+        if isinstance(val, dict):
+            for field in ("status", "status_code", "statusCode", "code"):
+                if str(val.get(field, "")).strip() in ("429", "502", "503", "504"):
+                    return True
     return False
 
 
 def is_failure(payload: dict) -> bool:
-    """Any tool failure, refusals included. Feeds `consecutive_failures`, which
-    resets on the first success — so a red-test streak stays bounded without
-    becoming permanent. Deliberately still broad: a streak of ANY failure is a
-    sound thrash bound, and it is only the CUMULATIVE counter that needed the
-    narrower predicate."""
-    if is_denial(payload):
+    """Any tool failure — refusals and refusal-shaped text included. Feeds
+    `consecutive_failures`, which resets on the first success, so a red-test
+    streak stays bounded without becoming permanent. Deliberately still broad:
+    a streak of ANY failure is a sound thrash bound, and it is only the
+    CUMULATIVE counter that needed a narrow, authoritative predicate. A red
+    pytest stays a failure — that is precisely the streak's job."""
+    if is_denial(payload) or denial_text_hint(payload):
         return True
     event = str(payload.get("hook_event_name", ""))
     if re.search(r"fail|error|denied|reject", event, re.I):
@@ -332,9 +420,10 @@ def evaluate(st: dict, lim: dict) -> str | None:
         rate = denial_rate(st)
         if rate is None:
             pass  # no calls to divide by; the rate limb cannot be evaluated
-        elif not rate_ceiling or rate > rate_ceiling:
+        elif rate_ceiling is None or rate >= rate_ceiling:
             bound = (f"floor {int(floor)}"
-                     + (f", rate ceiling {rate_ceiling:.0%}" if rate_ceiling
+                     + (f", rate ceiling {rate_ceiling:.0%}"
+                        if rate_ceiling is not None
                         else ", no rate ceiling armed"))
             return (f"{st['denials']} permission denials in "
                     f"{st['tool_calls']} tool calls ({rate:.0%} of calls) "
@@ -396,13 +485,27 @@ def handle(payload: dict) -> tuple[dict | None, dict]:
         st["cost_usd"] = cost
         st["cost_source"] = "transcript"
 
-    # Denials are counted wherever they surface, and ONLY denials reach the
-    # cumulative ceiling. `denied_tools` is what someone reads to fix an
-    # allowlist, so it must not be padded with tools that merely failed.
+    # Only an AUTHORITATIVE refusal reaches the cumulative ceiling.
+    # `denied_tools` is what someone reads to fix an allowlist, so it must
+    # contain refusals and nothing else; refusal-shaped text is tallied
+    # separately, and a transient upstream condition separately again.
     denied = is_denial(payload)
+    transient = (not denied) and is_transient(payload)
+    hint = (not denied) and (not transient) and denial_text_hint(payload)
+
     if denied:
         st["denials"] += 1
         st["denied_tools"][tool] = st["denied_tools"].get(tool, 0) + 1
+    elif transient:
+        st["transient_events"] += 1
+        st["transient_tools"][tool] = st["transient_tools"].get(tool, 0) + 1
+    elif hint:
+        st["denial_text_hints"][tool] = st["denial_text_hints"].get(tool, 0) + 1
+
+    def _streak_up():
+        st["consecutive_failures"] += 1
+        st["max_consecutive_seen"] = max(st["max_consecutive_seen"],
+                                         st["consecutive_failures"])
 
     if event == "PreToolUse":
         st["tool_calls"] += 1
@@ -412,13 +515,11 @@ def handle(payload: dict) -> tuple[dict | None, dict]:
         # to fix an allowlist from. This leaves a record either way.
         st["attempted_tools"][tool] = st["attempted_tools"].get(tool, 0) + 1
         if denied:
-            st["consecutive_failures"] += 1
-            st["max_consecutive_seen"] = max(st["max_consecutive_seen"],
-                                             st["consecutive_failures"])
+            _streak_up()
+    elif transient:
+        pass  # neither extends nor resets the streak - see is_transient()
     elif is_failure(payload):
-        st["consecutive_failures"] += 1
-        st["max_consecutive_seen"] = max(st["max_consecutive_seen"],
-                                         st["consecutive_failures"])
+        _streak_up()
     else:
         st["consecutive_failures"] = 0
 

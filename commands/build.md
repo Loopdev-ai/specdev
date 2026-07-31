@@ -26,11 +26,24 @@ full test output, or code surveys into this thread.
 when this build's terminal state is reached.** CI asserts it mechanically after
 your turn ends (`build_outcome.py verify`), in these words:
 
-- **prod:** an Implementation PR for this unit + `FEAT-###` exists against the
-  base branch — opened by this run, not merely mentioned somewhere.
-- **poc:** that PR exists **and has been merged**.
-- **Either mode:** `<unit>/.specdev/BUILD.md` is a real checkpoint, not the
+- **The implementation branch** `specdev/impl/<unit>/<FEAT-###>` carries commits
+  beyond the base branch. The workflow pushes it for you — your job is to
+  **commit** your work, every wave, so there is something to push.
+- **A prepared PR body** at `<unit>/.specdev/PR_BODY.md`, filled in, not the
   shipped template.
+- **A real checkpoint** at `<unit>/.specdev/BUILD.md`, not the shipped template.
+
+**Do not open the PR, in either mode, and do not merge anything.** A human
+opens the PR from that branch. This is not a restriction being worked around:
+a PR opened by the build would require the repository setting *Allow GitHub
+Actions to create and approve pull requests*, which grants create and approve
+together and lets Actions approve its way past review — and a bot-authored PR
+receives none of the required checks anyway. If you find yourself reaching for
+`gh pr create`, `gh pr review` or `gh pr merge`, stop: the branch and the body
+are the deliverable.
+
+`poc` differs only in what happens next — the poc environment deploys from
+that branch directly. It has no PR and no merge either.
 
 Ending your turn short of that is a **failed build**, not a partial success —
 including ending it cleanly, mid-wave, with turns to spare. A wave whose QA is
@@ -47,9 +60,9 @@ stopping is cheap and a re-dispatch resumes from it — but only for what you
 actually committed.
 
 Interactively (this command, run by a human), the terminal state is the end of
-*After the final wave* below: green QA, green org-ADR loop, `BUILD.md` at
-`qa`, and the user told the PR is ready. Opening the PR is the human's call
-here; in headless CI it is yours.
+*After the final wave* below: green QA, green org-ADR loop, `PR_BODY.md`
+filled in, `BUILD.md` at `qa`, and the user told the PR is ready. Opening the
+PR is the human's call in both cases — headless CI is no different.
 
 ## Build loop (repeat until every component is built)
 
@@ -108,10 +121,14 @@ here; in headless CI it is yours.
      `adr-checker`. Repeat **automatically — do not ask the user between
      iterations** — until green.
    - **Green** → record the verdict in the `BUILD.md` ledger and continue.
-4. Update `BUILD.md` status to `qa`, then tell the user the build is green and
-   the next step is to push `feat/<feature>` and open the Implementation PR
-   (Gate 2). Do **not** open the PR automatically, and never announce PR
-   readiness while `qa-verifier` or `adr-checker` is red.
+4. Fill in `.specdev/PR_BODY.md` — the Implementation PR body — from the wave
+   ledger: REQs covered and the test asserting each, deployment facts resolved,
+   anything deferred. It is asserted after the run, so the stock template
+   surviving is a failed build.
+5. Update `BUILD.md` status to `qa`, then tell the user the build is green and
+   the next step is to open the Implementation PR (Gate 2) from the pushed
+   branch, pasting `PR_BODY.md`. Do **not** open the PR automatically, and
+   never announce PR readiness while `qa-verifier` or `adr-checker` is red.
 
 ## Guardrails
 

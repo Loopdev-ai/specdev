@@ -125,10 +125,25 @@ The build can be handed off to CI, where the coordinator runs unattended. Three
 properties keep an unattended run honest:
 
 - **The job is not green because the process exited.** It ends by asserting the
-  mode's terminal state — an Implementation PR exists for this unit and FEAT
-  (and, for `poc`, was merged) — and that `BUILD.md` is no longer the shipped
-  template. `deploy-poc` is gated on that assertion, so a build that produced
-  nothing cannot trigger a deployment.
+  terminal state: `specdev/impl/<unit>/<FEAT-###>` carries commits beyond the
+  base branch, `.specdev/PR_BODY.md` is filled in, and `BUILD.md` is no longer
+  the shipped template. `deploy-poc` is gated on that assertion, so a build
+  that produced nothing cannot trigger a deployment.
+- **The build never opens or merges a pull request** — in either mode. It
+  pushes a branch and prepares the PR body; a human opens the PR. See *The
+  switch this pipeline deliberately does not need* below for why that is the
+  safer *and* better-attributed contract.
+- **A coordinator that stops early gets another attempt.** Ending a turn ends
+  a headless run, and prompt wording alone did not prevent it — a run stopped
+  at turn 35 of 200 with five waves untouched, and stopped again after 6 turns
+  once the prompt was sharpened. So continuation is mechanical: up to
+  `max_build_attempts`, as further steps in the same job, and only while the
+  terminal state is unreached, spend is under `continuation_cap_usd`, and the
+  previous attempt actually committed something. That last condition is what
+  makes the loop safe — an attempt that achieved nothing does not buy another.
+  The cap is a **start gate**, not a ceiling: it bounds whether the next
+  attempt begins, not what it spends, so real exposure is "cap plus one
+  attempt".
 - **The checkpoint leaves the runner.** `BUILD.md` and `run.json` are pushed to
   `specdev/checkpoint/<unit>/<FEAT-###>` on success, failure, timeout and
   circuit-break alike; the runner's working tree is destroyed at teardown, so
@@ -392,22 +407,53 @@ Branch-protection and CI notes that matter:
   (They were all called `summary` before, which branch protection matches by
   name — so requiring one required all five ambiguously and there was no way to
   require exactly one.)
-- **A bot-authored PR does not fire `on: pull_request`.** GitHub suppresses
-  those events for anything opened with the default `GITHUB_TOKEN`, to stop
-  workflows triggering themselves recursively. So the Implementation PR a
-  headless `specdev-build` run opens receives **none** of the required checks
-  above, and cannot merge until they appear. This fails **closed** — nothing
-  merges unverified — but it surprises everyone the first time.
 
-  The safe nudge is a human action on the PR: push an empty commit
-  (`git commit --allow-empty -m 'nudge checks' && git push`), or close and
-  reopen it. Both re-fire the events under a human identity.
+### Two things GitHub will not do for a bot
 
-  **Do not "fix" this by giving the bot a PAT.** A PAT is a second identity:
-  the PR is then authored by someone who is not the workflow, so the human
-  approval the merge gate depends on stops being a non-self-approval — you
-  would trade a visible inconvenience for the quiet removal of the property the
-  gate exists to provide.
+One rule, two symptoms that look unrelated: **events authored by the default
+`GITHUB_TOKEN` do not trigger workflows.** GitHub does this to stop workflows
+triggering themselves recursively, and it is silent in both directions — no
+error, no skipped-run entry, nothing in the log.
+
+1. **A bot-authored PR does not fire `on: pull_request`,** so it receives
+   **none** of the required checks above and cannot merge. This is why the
+   build no longer opens its own PR: it pushes
+   `specdev/impl/<unit>/<FEAT-###>` and prepares `.specdev/PR_BODY.md`, and
+   **you** open the PR. A PR you open fires the events normally.
+
+   If you inherit a bot-authored PR from elsewhere, the safe nudge is a human
+   action on it: `gh pr close <n> && gh pr reopen <n>`, or push an empty
+   commit. Both re-fire the events under a human identity.
+
+2. **A workflow cannot re-dispatch itself.** A `gh workflow run` call from
+   inside the workflow it targets is a no-op: it reports success and creates
+   nothing. This is why `specdev-build`'s bounded continuation is additional
+   *steps in the same job* rather than a fresh run.
+
+**Do not "fix" either one with a PAT or a GitHub App token.** That is a second
+identity: the PR is then authored by someone who is not the workflow, so the
+human approval the merge gate depends on stops being a non-self-approval. You
+would trade a visible inconvenience for the quiet removal of the property the
+gate exists to provide.
+
+### The switch this pipeline deliberately does not need
+
+*Allow GitHub Actions to create and approve pull requests* is a **single**
+setting governing both verbs. Any design where the build opens its own PR
+forces you to enable it — and then Actions can approve pull requests, which
+GitHub's own documentation describes as enabling an unreviewed and potentially
+malicious PR that bypasses branch protections. Leaving it off, meanwhile, made
+the old terminal state unreachable: a completed build with nowhere to put its
+result.
+
+SpecDev's terminal state is a **pushed branch plus a prepared PR body**, which
+needs only `contents: write`. Leave the switch off, in both modes — `poc`
+deploys from the branch rather than merging. The build is additionally denied
+`gh pr create`, `gh pr review` and `gh pr merge`: with `pull-requests: write`
+in scope a session that can run `gh` could otherwise approve a *human's* open
+PR, and a PR awaiting review is usually exactly what is open.
+
+
 - `org-adr-check` and the nightly `specdev-sweep` are **never** filtered by
   changed paths. The ADR staleness check is driven by the upstream index, not
   the local diff: an org ADR can change with no local commit at all. Filtering

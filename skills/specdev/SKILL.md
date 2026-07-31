@@ -192,11 +192,16 @@ through `component-builder` so its detail stays out of this thread.
 A build ends at a **terminal state**, not when you feel finished. CI asserts it
 after your turn with `build_outcome.py verify`, in these words:
 
-- **prod:** an Implementation PR for this unit + `FEAT-###` exists against the
-  base branch — one THIS run opened, not one that merely mentions the id.
-- **poc:** that PR exists **and has been merged**.
-- **Either mode:** `<unit>/.specdev/BUILD.md` is a real checkpoint, not the
-  shipped template.
+- the **implementation branch** `specdev/impl/<unit>/<FEAT-###>` carries commits
+  beyond the base branch (the workflow pushes it — you must *commit*);
+- a **prepared PR body** at `<unit>/.specdev/PR_BODY.md`, filled in;
+- a **real checkpoint** at `<unit>/.specdev/BUILD.md`.
+
+**The build never opens or merges a PR, in either mode.** A human opens it from
+that branch: the build would otherwise need *Allow GitHub Actions to create and
+approve pull requests*, a single switch that also lets Actions approve its way
+past review, and a bot-authored PR gets none of the required checks in any
+case. `poc` deploys from the branch directly rather than merging.
 
 Ending a turn short of that is a failed build, not a partial success —
 including ending cleanly, mid-wave, well inside the turn budget, with later

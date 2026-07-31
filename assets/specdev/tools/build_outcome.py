@@ -9,11 +9,36 @@ code, such a build still triggered a deployment.
 This tool replaces "the process exited 0" with "the mode's terminal state was
 actually reached":
 
-    prod: an Implementation PR for this unit+FEAT exists against the base branch
-    poc:  that PR exists AND was merged
+    prod: an implementation BRANCH for this unit+FEAT was pushed by this run,
+          carrying commits beyond the base, with a prepared PR body
+    poc:  the same branch — the poc environment deploys from it directly
 
 plus a cheap independent check that the run left a real checkpoint behind
 rather than the shipped template.
+
+WHY A BRANCH AND NOT A PR. Asserting "a PR exists" required the repository to
+enable *Allow GitHub Actions to create and approve pull requests* — one switch
+that grants create and approve together. With it off, the coordinator cannot
+open its PR (403) and the terminal state is unreachable: a completed build with
+nowhere to put its result. With it on, Actions can APPROVE pull requests, which
+GitHub's own documentation describes as enabling an unreviewed and potentially
+malicious PR that bypasses branch protections. No setting satisfies both,
+because the hazard and the capability are the same switch — so the assertion,
+not the adopter's settings, had to change.
+
+A branch is also better evidence, not merely safer:
+
+  * More attributable. A ref and its commits are checkable against this run's
+    identity and start instant. A PR is an object anyone can create, which is
+    the entire subject of the provenance work this module already does.
+  * Reachable with the switch off. `contents: write` pushes a branch, so the
+    dangerous capability is never needed.
+  * A human then opens the PR — and a human-opened PR fires `on: pull_request`,
+    so the required checks actually run. A bot-authored PR receives none, so
+    the old terminal state asserted a PR the merge gate could not process.
+
+The build's job is to produce reviewable work; opening the PR is the review
+gate, and it belongs to a person.
 
 PROVENANCE IS THE WHOLE POINT. The invariant is not "a PR mentioning FEAT-002
 exists" — it is "THIS RUN produced one". Any artifact this run did not create
@@ -67,11 +92,25 @@ except Exception:
     pass
 
 BUILD_REL = ".specdev/BUILD.md"
+PR_BODY_REL = ".specdev/PR_BODY.md"
 
 # Markers present in the shipped assets/specdev/BUILD.md template. If any
 # survives the run, the coordinator never wrote a real checkpoint — which is
 # both a failed build and an unresumable one.
 STOCK_MARKERS = ("FEAT-XXX", "<FEATURE NAME>")
+
+# The branch this run pushes its work to. Deterministic and bot-owned, keyed
+# on unit+FEAT exactly like the checkpoint ref — so verifying it is a lookup,
+# not a search over branch names that happen to mention the feature.
+IMPL_REF_PREFIX = "specdev/impl"
+CHECKPOINT_REF_PREFIX = "specdev/checkpoint"
+
+# A checkpoint commit carries [skip ci] so that pushing it does not fire CI on
+# every checkpoint. That marker is correct on the checkpoint ref and poisonous
+# at the head of a work branch: GitHub skips EVERY workflow on a pull request
+# whose head commit carries it — no error, no skipped-run entry, just a PR
+# with zero checks that looks like CI has not started yet.
+SKIP_CI_MARKERS = ("[skip ci]", "[ci skip]", "[no ci]", "***NO_CI***")
 
 
 def checkpoint_path(root=".") -> Path:
@@ -92,6 +131,152 @@ def checkpoint_problems(root=".") -> list[str]:
                 f"{', '.join(repr(m) for m in found)}). The run did not "
                 f"check point any real state, so it is not resumable."]
     return []
+
+
+def pr_body_problems(root=".") -> list[str]:
+    """The prepared PR body — the other half of "reviewable work".
+
+    A branch with no description is not something a human can open a PR from
+    without reconstructing what the build did. The coordinator writes this;
+    the human opening the PR pastes it."""
+    p = Path(root) / PR_BODY_REL
+    if not p.exists():
+        return [f"{p.as_posix()} does not exist - the run prepared no PR body, "
+                f"so its branch is not reviewable work yet."]
+    text = p.read_text(encoding="utf-8-sig", errors="replace")
+    if not text.strip():
+        return [f"{p.as_posix()} is empty."]
+    found = [m for m in STOCK_MARKERS if m in text]
+    if found:
+        return [f"{p.as_posix()} is still the stock template (contains "
+                f"{', '.join(repr(m) for m in found)})."]
+    return []
+
+
+def ref_unit(unit: str = ".") -> str:
+    """A unit as a legal git ref COMPONENT.
+
+    The single-root unit is `.`, and `refs/heads/specdev/checkpoint/./FEAT-001`
+    is not a valid ref name — git rejects any path containing `/./`. Both ref
+    families were built by interpolating the unit directly, so in a
+    single-root repo (the default, and the common case) the checkpoint push
+    failed every time. It failed into the workflow's `||` branch, which prints
+    a warning, so it never failed the job: `auto_resume` had nothing to
+    restore and no run was ever actually resumable."""
+    u = (unit or ".").strip().strip("/")
+    parts = [p for p in u.split("/") if p not in ("", ".", "..")]
+    return "/".join(parts) if parts else "root"
+
+
+def implementation_ref(unit: str = ".", feat: str = "") -> str:
+    return f"{IMPL_REF_PREFIX}/{ref_unit(unit)}/{feat}"
+
+
+def checkpoint_ref(unit: str = ".", feat: str = "") -> str:
+    return f"{CHECKPOINT_REF_PREFIX}/{ref_unit(unit)}/{feat}"
+
+
+def _git(args: list, cwd=".") -> tuple[int, str]:
+    try:
+        p = subprocess.run(["git", *args], cwd=str(cwd),
+                           capture_output=True, text=True)
+    except (FileNotFoundError, OSError, NotADirectoryError):
+        return 1, ""
+    return p.returncode, p.stdout
+
+
+def _resolve(rev: str, cwd=".") -> str:
+    rc, out = _git(["rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd)
+    return out.strip() if rc == 0 else ""
+
+
+def branch_evidence(repo_dir=".", feat="", unit=".", base="main",
+                    since: str | None = None,
+                    author: str | list | None = None,
+                    remote: str = "origin") -> dict:
+    """Did THIS RUN push an implementation branch carrying real work?
+
+    Checked against git rather than an API: a ref and its commits are the most
+    directly attributable artifact a build produces."""
+    ref = implementation_ref(unit, feat)
+    rec = {"ref": ref, "sha": None, "commits_ahead": 0, "tip": {},
+           "problems": [], "warnings": []}
+
+    sha = ""
+    for spelling in (f"refs/remotes/{remote}/{ref}", f"refs/heads/{ref}", ref):
+        sha = _resolve(spelling, repo_dir)
+        if sha:
+            rec["resolved_from"] = spelling
+            break
+    if not sha:
+        rec["problems"].append(
+            f"no implementation branch at '{ref}'. The run produced no "
+            f"reviewable work: nothing was pushed for a human to open a PR "
+            f"from.")
+        return rec
+    rec["sha"] = sha
+
+    base_sha = ""
+    for spelling in (f"refs/remotes/{remote}/{base}", f"refs/heads/{base}", base):
+        base_sha = _resolve(spelling, repo_dir)
+        if base_sha:
+            break
+    if not base_sha:
+        rec["warnings"].append(
+            f"base '{base}' could not be resolved here, so 'commits beyond the "
+            f"base' was NOT checked. The branch exists; whether it carries "
+            f"work is unverified.")
+    else:
+        rc, out = _git(["rev-list", "--count", f"{base_sha}..{sha}"], repo_dir)
+        rec["commits_ahead"] = int(out.strip() or 0) if rc == 0 else 0
+        if rec["commits_ahead"] == 0:
+            rec["problems"].append(
+                f"'{ref}' carries no commits beyond '{base}'. The branch "
+                f"exists but the run committed nothing to it.")
+
+    rc, out = _git(["show", "-s", "--format=%cI%n%ae%n%an%n%s", sha], repo_dir)
+    if rc == 0 and out.strip():
+        parts = (out.strip().split("\n") + ["", "", "", ""])[:4]
+        rec["tip"] = {"committed_at": parts[0], "email": parts[1],
+                      "name": parts[2], "subject": parts[3]}
+
+    tip = rec["tip"]
+    # A [skip ci] head means every workflow on the resulting PR is skipped —
+    # silently. Refuse to call that reviewable work.
+    if any(m.lower() in (tip.get("subject") or "").lower()
+           for m in SKIP_CI_MARKERS):
+        rec["problems"].append(
+            f"the tip of '{ref}' is a [skip ci] commit "
+            f"({tip.get('subject')!r}). GitHub skips EVERY workflow on a pull "
+            f"request whose head carries that marker, so this branch would "
+            f"produce a PR with no checks at all and no indication why. The "
+            f"checkpoint commit must never be the head of the work branch.")
+
+    started = _parse_ts(since)
+    if started is not None and tip.get("committed_at"):
+        tip_at = _parse_ts(tip["committed_at"])
+        if tip_at is None:
+            rec["warnings"].append("the branch tip has no parseable commit date.")
+        elif tip_at < started:
+            rec["problems"].append(
+                f"'{ref}' was last committed {tip_at.isoformat()}, before this "
+                f"build started {started.isoformat()} - it is a leftover from "
+                f"an earlier build, not this one's output.")
+
+    wanted = ([author] if isinstance(author, str) else list(author or []))
+    wanted = [w.strip() for w in wanted if str(w).strip()]
+    if wanted and tip:
+        who = f"{tip.get('name', '')} <{tip.get('email', '')}>"
+        if not any(_same_actor(tip.get("name", ""), w)
+                   or w.lower() in (tip.get("email", "") or "").lower()
+                   or w.lower() in (tip.get("name", "") or "").lower()
+                   for w in wanted):
+            rec["warnings"].append(
+                f"'{ref}' tip was committed by {who}, which does not match "
+                f"this run's builder ({', '.join(wanted)}). The branch is "
+                f"accepted on its ref and timing; treat authorship as "
+                f"unconfirmed.")
+    return rec
 
 
 GH_PR_FIELDS = ("number,title,state,headRefName,baseRefName,url,body,"
@@ -231,58 +416,45 @@ def implementation_prs(feat: str, unit: str = ".", base: str = "main",
 
 def verify(root=".", feat="", mode="prod", unit=".", base="main",
            repo: str | None = None, since: str | None = None,
-           author: str | list | None = None) -> dict:
-    """Assert the mode's terminal state. Returns a record; `ok` is the verdict."""
+           author: str | list | None = None, repo_dir=".") -> dict:
+    """Assert the mode's terminal state. Returns a record; `ok` is the verdict.
+
+    The terminal state is REVIEWABLE WORK, not a pull request — see the module
+    docstring for why. Existing PRs are still looked up and reported, because
+    "a PR already exists for this branch" is useful to whoever reads this, but
+    no PR is required and none can satisfy the assertion on its own."""
     problems: list[str] = []
     warnings: list[str] = []
     problems += checkpoint_problems(root)
+    problems += pr_body_problems(root)
 
     authors = ([author] if isinstance(author, str) else list(author or []))
     authors = [a.strip() for a in authors if str(a).strip()]
     if since and _parse_ts(since) is None:
         warnings.append(
             f"--since {since!r} is not an ISO-8601 instant and was IGNORED; "
-            f"PRs predating this run can satisfy the assertion.")
+            f"work predating this build cannot be told from its output.")
         since = None
     if not since and not authors:
         warnings.append(
-            "no provenance filter (--since/--author) was supplied, so this "
-            "check cannot tell a PR this run created from a pre-existing one "
-            "that merely mentions " + (feat or "the FEAT id") + ". The verdict "
-            "below is a TEXT MATCH, not proof that this run produced anything.")
+            "no provenance filter (--since/--author) was supplied, so a "
+            "branch left by an earlier build cannot be told from this one's "
+            "output, and any PR listed below is a TEXT MATCH rather than "
+            "evidence about this run.")
 
+    branch = branch_evidence(repo_dir, feat=feat, unit=unit, base=base,
+                             since=since, author=authors)
+    problems += branch["problems"]
+    warnings += branch["warnings"]
+
+    # Supplementary only. A PR is neither necessary nor sufficient here.
     prs, rejected = implementation_prs(feat, unit=unit, base=base, repo=repo,
                                        since=since, author=authors)
-    merged = [p for p in prs if (p.get("state") or "").upper() == "MERGED"]
 
-    attributed = bool(since or authors)
-    numbers = ", ".join("#" + str(p["number"]) for p in prs)
-
-    if not prs:
-        problems.append(
-            f"no Implementation PR for {feat} against '{base}' was found. "
-            f"The build job exited without producing its terminal state.")
-    elif mode == "poc" and not merged:
-        # A check that cannot attribute its evidence must not state a reason
-        # that presupposes attribution. Unfiltered, `prs` may be anybody's —
-        # so "the Implementation PR ... found 1 unmerged (#101)" told a reader
-        # that THIS BUILD opened a PR and failed to merge it, and sent them to
-        # a stranger's PR to find out why. The verdict was right; the reason
-        # was false, and the reason is the part a reader acts on.
-        if attributed:
-            problems.append(
-                f"mode 'poc' requires the Implementation PR for {feat} to be "
-                f"MERGED; found {len(prs)} unmerged ({numbers}).")
-        else:
-            problems.append(
-                f"mode 'poc' requires an Implementation PR for {feat} that "
-                f"THIS RUN merged, and no PR here can be attributed to this "
-                f"run - no provenance filter (--since/--author) was supplied. "
-                f"{len(prs)} PR(s) mention {feat} and none is merged "
-                f"({numbers}); they may belong to anyone.")
-
-    required = ("Implementation PR open against " + base if mode == "prod"
-                else "Implementation PR merged into " + base)
+    required = (f"implementation branch '{branch['ref']}' pushed with commits "
+                f"beyond '{base}', and a prepared PR body — a human opens the "
+                f"PR" + (" (poc deploys from this branch directly)"
+                         if mode == "poc" else ""))
     return {
         "ok": not problems,
         "mode": mode,
@@ -294,6 +466,7 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
             "authors": authors,
             "applied": bool(since or authors),
         },
+        "implementation_branch": branch,
         "implementation_prs": [
             {"number": p["number"], "state": p.get("state"),
              "url": p.get("url"), "head": p.get("headRefName"),
@@ -302,6 +475,76 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
         "rejected_prs": rejected,
         "warnings": warnings,
         "problems": problems,
+    }
+
+
+def continuation_gate(rec: dict, attempt: int, max_attempts, spent, cap,
+                      head_before: str = "", head_now: str = "") -> dict:
+    """Should the build get another attempt in this same job?
+
+    A coordinator that ends its turn ends the run — headlessly, that is the
+    whole run, and it happened at turn 35 of 200 with five waves untouched, no
+    error and no breaker trip. Sharpening the prompt did not fix it: the next
+    run stopped after 6 turns with the corrected wording in place. What built
+    the feature was a second invocation. A fix that depends on the model
+    complying is not a fix; where a mechanical control and prompt language
+    both address a failure, the mechanical one is the fix.
+
+    Every condition must hold, and each is a reason NOT to continue when it
+    does not. The last one is what makes the loop safe: an attempt that
+    achieved nothing does not buy another."""
+    reasons = []
+
+    if rec.get("ok"):
+        reasons.append("the terminal state was reached")
+
+    try:
+        max_attempts = int(max_attempts)
+    except (TypeError, ValueError):
+        max_attempts = 1
+    if attempt >= max_attempts:
+        reasons.append(f"attempt {attempt} of {max_attempts} - no attempts left")
+
+    # An unreadable cost stops the loop. The breaker's figure reads
+    # "unavailable" on hosted runners by design, so this must come from the
+    # action's own total_cost_usd — and treating unknown as zero is exactly
+    # the mistake the cost reporting already refuses to make elsewhere.
+    try:
+        spent_f = float(str(spent).strip())
+    except (TypeError, ValueError):
+        spent_f = None
+    try:
+        cap_f = float(str(cap).strip())
+    except (TypeError, ValueError):
+        cap_f = None
+    if cap_f is None or cap_f <= 0:
+        reasons.append("no continuation spend cap is configured")
+    elif spent_f is None:
+        reasons.append(
+            "this attempt's cost could not be read from the build action, so "
+            "the next attempt would be unbudgeted - stopping rather than "
+            "treating unknown as $0")
+    elif spent_f >= cap_f:
+        reasons.append(f"${spent_f:.2f} spent reaches the ${cap_f:.2f} "
+                       f"continuation cap")
+
+    if head_before and head_now and head_before == head_now:
+        reasons.append(
+            "the last attempt committed nothing, so another would resume from "
+            "the same place with the same context and no new information")
+
+    go = not reasons
+    return {
+        "go": go,
+        "attempt": attempt,
+        "next_attempt": attempt + 1 if go else attempt,
+        "max_attempts": max_attempts,
+        "spent_usd": spent_f,
+        "cap_usd": cap_f,
+        "reasons": reasons,
+        # A cap gates whether the NEXT attempt starts; it does not bound what
+        # that attempt spends. Real exposure is "cap plus one attempt".
+        "cap_is_a_start_gate": True,
     }
 
 
@@ -317,11 +560,30 @@ def _md_report(rec: dict, breaker: dict | None) -> str:
         f"**Required terminal state:** {rec.get('required_terminal_state')}",
         "",
     ]
+    br = rec.get("implementation_branch") or {}
+    if br:
+        tip = br.get("tip") or {}
+        if br.get("sha"):
+            lines.append(
+                f"**Implementation branch:** `{br['ref']}` @ `{br['sha'][:9]}` "
+                f"— {br.get('commits_ahead', 0)} commit(s) beyond the base"
+                + (f", tip {tip.get('committed_at')}" if tip.get("committed_at")
+                   else ""))
+            lines.append("")
+            lines.append(f"> Open the PR from `{br['ref']}` yourself — a "
+                         f"human-opened PR is what fires the required checks. "
+                         f"The body is prepared in `{PR_BODY_REL}`.")
+        else:
+            lines.append(f"**Implementation branch:** `{br['ref']}` — _not "
+                         f"pushed_")
+        lines.append("")
+
     prs = rec.get("implementation_prs") or []
     filt = rec.get("provenance_filters") or {}
     # Unattributed matches are not "Implementation PRs found" — calling them
     # that is the claim the filters were never able to support.
-    label = ("**Implementation PRs found:**" if filt.get("applied")
+    label = ("**Existing PRs for this feature** (informational — not the "
+             "terminal state):" if filt.get("applied")
              else "**PRs matching on text only (NOT attributed to this run):**")
     lines.append(label + " " + (
         ", ".join(f"[#{p['number']}]({p['url']}) ({p['state']})" for p in prs)
@@ -437,6 +699,11 @@ def main() -> int:
 
     pc = sub.add_parser("checkpoint")
 
+    pr_ = sub.add_parser("refs", help="the ref names for this unit+FEAT, as "
+                                      "KEY=VALUE lines for $GITHUB_OUTPUT")
+    pr_.add_argument("--unit", default=".")
+    pr_.add_argument("--feat", required=True)
+
     pv = sub.add_parser("verify")
     pv.add_argument("--feat", required=True)
     pv.add_argument("--mode", required=True, choices=("prod", "poc"))
@@ -449,7 +716,26 @@ def main() -> int:
     pv.add_argument("--author", default=None,
                     help="comma-separated login(s) this run's PRs are opened "
                          "by; PRs by anyone else are not this run's output")
+    pv.add_argument("--repo-dir", default=".",
+                    help="the git working tree to read branch evidence from "
+                         "(default: cwd)")
     pv.add_argument("--json-out", default=None)
+
+    pg = sub.add_parser("continue-gate")
+    pg.add_argument("--feat", required=True)
+    pg.add_argument("--mode", required=True, choices=("prod", "poc"))
+    pg.add_argument("--unit", default=".")
+    pg.add_argument("--base", default="main")
+    pg.add_argument("--repo", default=None)
+    pg.add_argument("--repo-dir", default=".")
+    pg.add_argument("--since", default=None)
+    pg.add_argument("--author", default=None)
+    pg.add_argument("--attempt", type=int, required=True)
+    pg.add_argument("--max-attempts", default="1")
+    pg.add_argument("--spent", default="")
+    pg.add_argument("--cap", default="")
+    pg.add_argument("--head-before", default="")
+    pg.add_argument("--head-now", default="")
 
     pr = sub.add_parser("report")
     pr.add_argument("--feat", required=True)
@@ -461,6 +747,11 @@ def main() -> int:
     pr.add_argument("--append-build-md", action="store_true")
 
     args = ap.parse_args()
+
+    if args.cmd == "refs":
+        print(f"impl={implementation_ref(args.unit, args.feat)}")
+        print(f"checkpoint={checkpoint_ref(args.unit, args.feat)}")
+        return 0
 
     if args.cmd == "checkpoint":
         probs = checkpoint_problems(args.root)
@@ -475,7 +766,8 @@ def main() -> int:
     if args.cmd == "verify":
         authors = [a.strip() for a in (args.author or "").split(",") if a.strip()]
         rec = verify(args.root, args.feat, args.mode, args.unit,
-                     args.base, args.repo, since=args.since, author=authors)
+                     args.base, args.repo, since=args.since, author=authors,
+                     repo_dir=args.repo_dir)
         if args.json_out:
             Path(args.json_out).write_text(
                 json.dumps(rec, indent=2) + "\n", encoding="utf-8")
@@ -496,6 +788,27 @@ def main() -> int:
                   "deploy treats this as a successful build.", file=sys.stderr)
             return 1
         print(f"terminal state reached - {rec['required_terminal_state']}")
+        return 0
+
+    if args.cmd == "continue-gate":
+        authors = [a.strip() for a in (args.author or "").split(",") if a.strip()]
+        rec = verify(args.root, args.feat, args.mode, args.unit, args.base,
+                     args.repo, since=args.since, author=authors,
+                     repo_dir=args.repo_dir)
+        gate = continuation_gate(rec, args.attempt, args.max_attempts,
+                                 args.spent, args.cap,
+                                 args.head_before, args.head_now)
+        print(f"go={'true' if gate['go'] else 'false'}")
+        if gate["go"]:
+            print(f"::notice title=Continuing::Attempt {gate['next_attempt']} of "
+                  f"{gate['max_attempts']} — the terminal state is not reached "
+                  f"and the last attempt committed work. Spend so far "
+                  f"${gate['spent_usd']:.2f} of the ${gate['cap_usd']:.2f} "
+                  f"start-gate (which bounds whether the next attempt BEGINS, "
+                  f"not what it spends).", file=sys.stderr)
+        else:
+            print(f"::notice title=Not continuing::"
+                  f"{'; '.join(gate['reasons'])}", file=sys.stderr)
         return 0
 
     if args.cmd == "report":
