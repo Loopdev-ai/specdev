@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -101,8 +102,13 @@ def test_cli_init_then_validate_roundtrip(tmp_path):
     (tmp_path / ".specdev").mkdir()
     assert run_cli(tmp_path, "init", "--feat", "FEAT-007", "--mode", "poc").returncode == 0
     doc = json.loads((tmp_path / ".specdev" / "run.json").read_text(encoding="utf-8"))
+    started = doc.pop("started_at", None)
     assert doc == {"schema_version": 1, "feat": "FEAT-007", "mode": "poc",
                    "poc_environment": "poc"}
+    # The logical build's clock: stamped here, carried across a resume, and
+    # used as the terminal-state check's provenance anchor.
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", started or ""), \
+        f"started_at must be an ISO-8601 UTC instant, got {started!r}"
     assert run_cli(tmp_path, "validate").returncode == 0
     assert run_cli(tmp_path, "mode").stdout.strip() == "poc"
 

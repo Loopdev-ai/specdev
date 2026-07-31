@@ -25,6 +25,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # SpecDev tools use PEP 604 unions (`dict | None`) in annotations, which are
@@ -58,6 +59,21 @@ RUN_REL = ".specdev/run.json"
 CI_REL = ".specdev/ci.json"
 MODES = ("prod", "poc")
 FEAT_RE = re.compile(r"^FEAT-\d{3,}$")
+
+# The ONLY fields a resume carries forward from the checkpoint's run.json.
+#
+# `auto_resume` makes a re-dispatch a continuation of the same LOGICAL build,
+# so anything identifying that build has to survive the attempt boundary —
+# `started_at` above all, because the terminal-state check anchors its
+# provenance window to it. Anchoring to the attempt instead made a build that
+# HAD opened its PR unable to ever verify: the PR only gets older, so every
+# subsequent dispatch rejects it for predating the job, terminally.
+#
+# Everything else must NOT be carried. The checkpoint was written by a previous
+# attempt and restoring it wholesale silently overrode the current dispatch's
+# own inputs: re-dispatching the same unit+FEAT in a different mode left
+# run.json saying one thing and `needs.setup.outputs.mode` another.
+RESUME_CARRIES = ("started_at",)
 
 # The bundled ci.json — the sibling of this tools/ directory, i.e.
 # assets/specdev/ci.json upstream and .specdev/ci.json once installed.
@@ -137,6 +153,23 @@ def save(doc: dict, root=".") -> None:
     p.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
+def started_at(root=".") -> str:
+    """This LOGICAL build's start instant — stamped by `init` and carried
+    across a resume, so it identifies the build rather than the attempt."""
+    return str((load(root) or {}).get("started_at") or "")
+
+
+def resume_from(prev: dict, root=".") -> dict:
+    """Merge a checkpoint's run.json into the current one, carrying ONLY
+    RESUME_CARRIES. Returns the document written."""
+    doc = load(root) or {}
+    for key in RESUME_CARRIES:
+        if prev.get(key):
+            doc[key] = prev[key]
+    save(doc, root)
+    return doc
+
+
 def validate(doc: dict) -> list:
     errs = []
     if doc.get("schema_version") != SCHEMA_VERSION:
@@ -169,18 +202,56 @@ def prod_chain_should_run(doc) -> bool:
 _MISSING = object()
 
 
-def ci_resolve(key: str, root=".", repo_root=None):
-    """(value, source) for a ci.json key — the value AND the file it came from.
+def ci_supplied(root=".", repo_root=None) -> set:
+    """The keys an actual ci.json in THIS repo supplied, as opposed to ones
+    inherited from the bundled defaults.
 
-    The source is not decoration: an adopter who raises a ceiling in the wrong
-    file needs to see which file actually won, and the arming step prints it."""
-    cfg = dict(CI_DEFAULTS)
-    src = {k: CI_DEFAULTS_SOURCE for k in cfg}
+    Loading CI_DEFAULTS from the bundled ci.json fixed the three-copies drift
+    trap, but it made every shipped key resolvable in every repo whether or not
+    the adopter set it — so a control of the form "this must be a deliberate,
+    committed choice, never inherited" became unwritable, and would fail open
+    and silently. Membership here answers that question directly.
+
+    It is deliberately NOT expressed by comparing sources against
+    CI_DEFAULTS_SOURCE: in an installed tree BUNDLED_CI and `<root>/.specdev/
+    ci.json` are the SAME file, so such a comparison either aliases the bundle
+    to the adopter's own pin or turns on whether the path arrived relative or
+    absolute. Which candidate files exist and what they contain does not."""
+    supplied = set()
+    for p in _ci_candidates(root, repo_root):
+        if p.exists():
+            doc = json.loads(p.read_text(encoding="utf-8-sig"))
+            if isinstance(doc, dict):
+                supplied.update(doc)
+    return supplied
+
+
+def ci_explicit(key: str, root=".", repo_root=None) -> bool:
+    """True when a ci.json in this repo sets `key` — not when the tool's own
+    default happens to supply a value for it."""
+    return key in ci_supplied(root, repo_root)
+
+
+def _ci_candidates(root=".", repo_root=None) -> list:
+    """Lowest precedence first: the repo-root ci.json declares shared config
+    once, and a unit's own overrides only what it needs."""
     candidates = []
     if repo_root is not None:
         candidates.append(Path(repo_root) / CI_REL)
     candidates.append(ci_path(root))
-    for p in candidates:
+    return candidates
+
+
+def ci_resolve(key: str, root=".", repo_root=None):
+    """(value, source) for a ci.json key — the value AND the file it came from.
+
+    The source is not decoration: an adopter who raises a ceiling in the wrong
+    file needs to see which file actually won, and the arming step prints it.
+    Use `ci_explicit` to ask whether the repo configured the key at all; the
+    source cannot answer that (see the note there)."""
+    cfg = dict(CI_DEFAULTS)
+    src = {k: CI_DEFAULTS_SOURCE for k in cfg}
+    for p in _ci_candidates(root, repo_root):
         if not p.exists():
             continue
         doc = json.loads(p.read_text(encoding="utf-8-sig"))
@@ -257,10 +328,19 @@ def main() -> int:
                     help="governed unit (default: resolved from --ref, else '.')")
     pi.add_argument("--ref", default=None,
                     help="branch ref to resolve the unit from")
+    sub.add_parser("started-at")
+    pr = sub.add_parser("resume")
+    pr.add_argument("--from", dest="prev", required=True,
+                    help="the checkpoint's run.json; only RESUME_CARRIES is "
+                         "taken from it, never the whole document")
     pc = sub.add_parser("ci")
     pc.add_argument("--get", required=True)
     pc.add_argument("--repo-root", default=None,
                     help="repo root for ci.json fallback when --root is a unit")
+    pc.add_argument("--require-explicit", action="store_true",
+                    help="fail unless a ci.json in THIS repo sets the key; a "
+                         "value inherited from the bundled defaults is not a "
+                         "deliberate choice and does not satisfy this")
     pb = sub.add_parser("breaker-env")
     pb.add_argument("--repo-root", default=None,
                     help="repo root for ci.json fallback when --root is a unit")
@@ -283,7 +363,12 @@ def main() -> int:
         return 1 if errs else 0
     if args.cmd == "init":
         feat = (args.feat or "").strip() or None
-        doc = {"schema_version": SCHEMA_VERSION, "feat": feat, "mode": args.mode}
+        # started_at is the LOGICAL build's clock. A resume carries it forward,
+        # so the terminal-state check's provenance window covers every attempt
+        # at this unit+FEAT rather than only the current job.
+        doc = {"schema_version": SCHEMA_VERSION, "feat": feat, "mode": args.mode,
+               "started_at": datetime.now(timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M:%SZ")}
         if args.mode == "poc":
             doc["poc_environment"] = args.poc_env
         errs = validate(doc)
@@ -299,11 +384,40 @@ def main() -> int:
         save(doc, target)
         print(f"Wrote {run_path(target)}")
         return 0
+    if args.cmd == "started-at":
+        print(started_at(args.root))
+        return 0
+    if args.cmd == "resume":
+        p = Path(args.prev)
+        if not p.exists():
+            print(f"no checkpoint manifest at {p} — nothing to carry forward.")
+            return 0
+        try:
+            prev = json.loads(p.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError as e:
+            print(f"::warning title=Unusable checkpoint manifest::{p}: {e}. "
+                  f"This attempt's own run.json is kept as-is.", file=sys.stderr)
+            return 0
+        if not isinstance(prev, dict):
+            return 0
+        doc = resume_from(prev, args.root)
+        carried = {k: doc.get(k) for k in RESUME_CARRIES if prev.get(k)}
+        print(f"carried forward from the checkpoint: {carried or '(nothing)'}; "
+              f"this dispatch's feat={doc.get('feat')} mode={doc.get('mode')} "
+              f"are kept.")
+        return 0
     if args.cmd == "ci":
         val = ci_get(args.get, args.root, repo_root=args.repo_root)
         if val is _MISSING:
             print(f"ERROR: no such ci.json key: {args.get!r} "
                   f"(known: {', '.join(sorted(CI_DEFAULTS))})", file=sys.stderr)
+            return 1
+        if args.require_explicit and not ci_explicit(args.get, args.root,
+                                                     args.repo_root):
+            print(f"::error title=Unconfigured key::{args.get!r} must be set "
+                  f"explicitly in this repo's ci.json. It currently resolves to "
+                  f"{val!r} inherited from {CI_DEFAULTS_SOURCE}, which is a "
+                  f"default, not a decision.", file=sys.stderr)
             return 1
         print(val)
         return 0

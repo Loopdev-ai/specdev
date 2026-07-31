@@ -520,6 +520,228 @@ def test_build_arms_the_breaker_as_a_hook_not_a_post_run_check():
     assert "circuit_breaker.py verdict" in t
 
 
+# ---- U7/U10: provenance must anchor to the BUILD, not to the attempt -----
+#
+# `auto_resume` makes a re-dispatch a continuation of the same logical build.
+# Anchoring the provenance window to the job's own start instant therefore
+# contradicted it: a build that had already opened its Implementation PR could
+# never verify again, because the PR only gets older and each dispatch rejected
+# it for predating the job. Terminal, not transient — and in poc, where
+# deploy-poc is gated on terminal_ok, a build whose PR was already merged could
+# never deploy, silently, with "no Implementation PR was found" as the reason.
+
+BUILD_START = "2026-07-31T08:00:00Z"   # attempt 1 began here
+PR_OPENED = "2026-07-31T10:00:00Z"     # attempt 1 opened the PR, then died
+JOB_START = "2026-07-31T12:00:00Z"     # attempt 2 (the re-dispatch) begins
+
+
+def test_a_resumed_dispatch_still_recognises_the_pr_an_earlier_attempt_opened(
+        checkpointed, monkeypatch):
+    pr = _pr(createdAt=PR_OPENED)
+    rec = _verified(checkpointed, [pr], monkeypatch, since=BUILD_START)
+    assert rec["ok"] is True, (
+        "anchored to the logical build, the build's own PR must still count - "
+        "otherwise no re-dispatch of this feature can ever reach green")
+    assert rec["rejected_prs"] == []
+
+
+def test_anchoring_to_the_attempt_rejects_the_builds_own_pr(checkpointed,
+                                                            monkeypatch):
+    """The inverted half: this is what the job-anchored window did, kept as an
+    executable statement of why the anchor moved."""
+    pr = _pr(createdAt=PR_OPENED)
+    rec = _verified(checkpointed, [pr], monkeypatch, since=JOB_START)
+    assert rec["ok"] is False
+    assert "before this run started" in rec["rejected_prs"][0]["reason"]
+
+
+def test_a_poc_build_whose_pr_was_already_merged_can_still_deploy(
+        checkpointed, monkeypatch):
+    """The worst limb: deploy-poc is gated on terminal_ok, so this failed
+    closed AND silently, forever, for a build that had fully succeeded."""
+    merged = _pr(state="MERGED", createdAt=PR_OPENED)
+    rec = _verified(checkpointed, [merged], monkeypatch, mode="poc",
+                    since=BUILD_START)
+    assert rec["ok"] is True
+    assert _verified(checkpointed, [merged], monkeypatch, mode="poc",
+                     since=JOB_START)["ok"] is False
+
+
+def test_a_humans_older_pr_is_still_rejected_under_the_build_anchor(
+        checkpointed, monkeypatch):
+    """Widening the window to the logical build must not reopen U1: a PR that
+    predates the BUILD, or belongs to someone else, is still not evidence."""
+    human = _pr(number=101, state="MERGED", createdAt="2026-07-01T08:00:00Z",
+                author={"login": "a-human"})
+    rec = _verified(checkpointed, [human], monkeypatch, since=BUILD_START)
+    assert rec["ok"] is False
+    assert rec["rejected_prs"][0]["reason"]
+
+
+def test_init_stamps_the_logical_builds_clock(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    subprocess.run([sys.executable, str(TOOLS / "run_manifest.py"), "--root",
+                    str(tmp_path), "init", "--feat", "FEAT-002", "--mode",
+                    "prod", "--unit", "."], check=True, capture_output=True)
+    doc = json.loads((tmp_path / ".specdev" / "run.json").read_text("utf-8"))
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+                    doc.get("started_at", "")), \
+        "the provenance anchor has to exist before it can survive a resume"
+
+
+def test_resume_carries_the_build_clock_but_not_the_previous_dispatch(tmp_path):
+    """U10: the resume restored run.json WHOLESALE, so a re-dispatch in a
+    different mode silently inherited the checkpoint's mode while
+    needs.setup.outputs.mode said otherwise. Only RESUME_CARRIES crosses."""
+    rm = _rm()
+    (tmp_path / ".specdev").mkdir()
+    prev = tmp_path / "prev-run.json"
+    prev.write_text(json.dumps({
+        "schema_version": 1, "feat": "FEAT-002", "mode": "poc",
+        "poc_environment": "poc", "started_at": BUILD_START}), encoding="utf-8")
+    # this dispatch: same feature, prod mode
+    rm.save({"schema_version": 1, "feat": "FEAT-002", "mode": "prod"}, tmp_path)
+    doc = rm.resume_from(json.loads(prev.read_text("utf-8")), tmp_path)
+    assert doc["started_at"] == BUILD_START, "the build clock must carry"
+    assert doc["mode"] == "prod", \
+        "the checkpoint must not override THIS dispatch's mode"
+    assert "poc_environment" not in doc
+    assert rm.mode_of(tmp_path) == "prod", \
+        "run.json's consumers must agree with the dispatch, not the checkpoint"
+    assert rm.RESUME_CARRIES == ("started_at",), \
+        "widening what a resume carries reopens the override"
+
+
+def test_the_workflow_anchors_since_to_the_build_and_says_which_anchor_it_used():
+    t = wf("specdev-build.yml")
+    assert "started-at" in t, "--since must come from run.json, not the job"
+    assert '--since "$SINCE"' in t
+    assert "JOB_STARTED_AT" in t, \
+        "a build with no clock must still fall back to the job's own start"
+    assert "::warning title=No build clock" in t, \
+        "falling back to the attempt's clock must be stated, not silent"
+
+
+def test_the_workflow_does_not_restore_run_json_wholesale():
+    t = wf("specdev-build.yml")
+    resume = t.split("id: resume")[1].split("- name: Arm")[0]
+    assert "run_manifest.py --root \"$UNIT\" resume" in resume
+    assert not re.search(r'git checkout "origin/\$\{REF\}" --[^\n]*run\.json',
+                         resume), \
+        "restoring run.json wholesale overrides this dispatch's own inputs"
+    assert "BUILD.md" in resume, "the checkpoint body is still restored"
+
+
+# ---- U8: a control that cannot attribute must not claim attribution ------
+
+def test_an_unattributed_poc_failure_does_not_accuse_a_strangers_pr(
+        checkpointed, monkeypatch):
+    """The verdict was right and the stated reason was false: it told a reader
+    the build had opened a PR and failed to merge it, and sent them to a
+    stranger's PR to find out why. That is the part a reader acts on."""
+    human = _pr(number=101, state="OPEN", headRefName="infra/runners",
+                title="infra: CI runners", body="needed for FEAT-002",
+                author={"login": "a-human"})
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [human])
+    rec = bo.verify(checkpointed, "FEAT-002", "poc", ".", "main")
+    assert rec["ok"] is False
+    reason = " ".join(rec["problems"])
+    assert "cannot be attributed" in reason or "no PR" in reason
+    assert "may belong to anyone" in reason
+    assert not re.search(r"found \d+ unmerged", reason), \
+        "that phrasing presupposes the PRs are this build's output"
+
+
+def test_an_attributed_poc_failure_still_names_the_pr(checkpointed, monkeypatch):
+    """The inverted half: when the check CAN attribute, the specific, named
+    claim is exactly right and must not be softened away."""
+    rec = _verified(checkpointed, [_pr(number=7, state="OPEN")], monkeypatch,
+                    mode="poc", since=BUILD_START)
+    assert rec["ok"] is False
+    reason = " ".join(rec["problems"])
+    assert "found 1 unmerged (#7)" in reason
+    assert "may belong to anyone" not in reason
+
+
+def test_the_report_does_not_call_unattributed_matches_implementation_prs():
+    rec = {"ok": True, "feat": "FEAT-002", "mode": "prod", "unit": ".",
+           "problems": [], "provenance_filters": {"applied": False},
+           "implementation_prs": [{"number": 101, "url": "u", "state": "OPEN"}]}
+    md = bo._md_report(rec, None)
+    assert "NOT attributed to this run" in md
+    assert "**Implementation PRs found:**" not in md
+    rec["provenance_filters"] = {"applied": True, "since": BUILD_START,
+                                 "authors": [BOT]}
+    assert "**Implementation PRs found:**" in bo._md_report(rec, None)
+
+
+# ---- U9: the resolver must be able to say "configured" vs "inherited" ----
+
+def test_ci_explicit_separates_a_committed_choice_from_an_inherited_default():
+    """Loading CI_DEFAULTS from the bundled ci.json fixed the drift trap and
+    made every shipped key resolvable everywhere — so a control of the form
+    "this must be a deliberate, committed choice" became unwritable, failing
+    open and silently."""
+    rm = _rm()
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / ".specdev").mkdir()
+        assert rm.ci_get("max_cost_usd", root) == rm.CI_DEFAULTS["max_cost_usd"]
+        assert rm.ci_explicit("max_cost_usd", root) is False, \
+            "a value nobody set is not a decision"
+        (root / ".specdev" / "ci.json").write_text(
+            json.dumps({"max_cost_usd": 25}), encoding="utf-8")
+        assert rm.ci_get("max_cost_usd", root) == 25
+        assert rm.ci_explicit("max_cost_usd", root) is True
+        assert rm.ci_explicit("runner", root) is False, \
+            "other keys in the same repo are still inherited"
+
+
+def test_ci_explicit_survives_the_installed_layout_aliasing(tmp_path):
+    """In an installed tree BUNDLED_CI and <root>/.specdev/ci.json are the SAME
+    file, so answering this by comparing sources against CI_DEFAULTS_SOURCE
+    either aliases the bundle to the adopter's pin or turns on whether the path
+    arrived relative or absolute. Membership in what a candidate file supplied
+    does neither."""
+    shutil = __import__("shutil")
+    shutil.copytree(ROOT / "assets" / "specdev", tmp_path / ".specdev")
+    rm = load_mod(tmp_path / ".specdev" / "tools" / "run_manifest.py",
+                  "rm_installed_ph")
+    assert rm.BUNDLED_CI.resolve() == (tmp_path / ".specdev" / "ci.json").resolve(), \
+        "this test is only meaningful when the bundle IS the adopter's file"
+    assert rm.ci_explicit("max_cost_usd", tmp_path) is True
+    assert rm.ci_explicit("max_cost_usd", tmp_path,
+                          repo_root=tmp_path) is True
+    # A key the adopter removed resolves (from the fallback) but is NOT a choice.
+    cfg = json.loads((tmp_path / ".specdev" / "ci.json").read_text("utf-8"))
+    cfg.pop("max_cost_usd")
+    (tmp_path / ".specdev" / "ci.json").write_text(json.dumps(cfg), "utf-8")
+    rm2 = load_mod(tmp_path / ".specdev" / "tools" / "run_manifest.py",
+                   "rm_installed_ph2")
+    assert rm2.ci_get("max_cost_usd", tmp_path) is not rm2._MISSING
+    assert rm2.ci_explicit("max_cost_usd", tmp_path) is False, \
+        "a key deleted from the repo's own config is no longer a choice"
+
+
+def test_require_explicit_fails_a_key_the_repo_never_set(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+
+    def run(*extra):
+        return subprocess.run(
+            [sys.executable, str(TOOLS / "run_manifest.py"), "--root",
+             str(tmp_path), "ci", "--get", "max_cost_usd", *extra],
+            capture_output=True, text=True)
+
+    assert run().returncode == 0, "resolution itself is unchanged"
+    p = run("--require-explicit")
+    assert p.returncode == 1
+    assert "::error" in p.stderr and "not a decision" in p.stderr
+    (tmp_path / ".specdev" / "ci.json").write_text(
+        json.dumps({"max_cost_usd": 25}), encoding="utf-8")
+    assert run("--require-explicit").returncode == 0
+
+
 # ---- F17: bounds that cannot engage, and a report that hides it ----------
 
 def _rm():
