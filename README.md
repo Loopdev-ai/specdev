@@ -336,12 +336,41 @@ repo-scoped ones (`tools/`, `ci.json`) at the root, and writes
   concatenating two units' SoAs yields a document true of neither; the rolled-up
   index links to each unit's file instead.
 
-Two CI notes that matter:
+Branch-protection and CI notes that matter:
 
-- Mark each gate's **`summary`** job the required status check, not the matrix
+- Mark each gate's **summary** job the required status check, not the matrix
   legs. Leg names are dynamic (`check (infrastructure)`), so branch protection
   cannot require them — a newly added unit would otherwise arrive as a silently
-  unrequired check.
+  unrequired check. Each gate names its summary job distinctly, so require them
+  by those names:
+
+  | workflow | required check |
+  |---|---|
+  | `spec-validate.yml` | `spec-validate summary` |
+  | `post-dev-qa.yml` | `post-dev-qa summary` |
+  | `compliance.yml` | `compliance summary` |
+  | `org-adr-check.yml` | `org-adr-check summary` |
+  | `arch-config-validate.yml` | `arch-config-validate summary` |
+
+  (They were all called `summary` before, which branch protection matches by
+  name — so requiring one required all five ambiguously and there was no way to
+  require exactly one.)
+- **A bot-authored PR does not fire `on: pull_request`.** GitHub suppresses
+  those events for anything opened with the default `GITHUB_TOKEN`, to stop
+  workflows triggering themselves recursively. So the Implementation PR a
+  headless `specdev-build` run opens receives **none** of the required checks
+  above, and cannot merge until they appear. This fails **closed** — nothing
+  merges unverified — but it surprises everyone the first time.
+
+  The safe nudge is a human action on the PR: push an empty commit
+  (`git commit --allow-empty -m 'nudge checks' && git push`), or close and
+  reopen it. Both re-fire the events under a human identity.
+
+  **Do not "fix" this by giving the bot a PAT.** A PAT is a second identity:
+  the PR is then authored by someone who is not the workflow, so the human
+  approval the merge gate depends on stops being a non-self-approval — you
+  would trade a visible inconvenience for the quiet removal of the property the
+  gate exists to provide.
 - `org-adr-check` and the nightly `specdev-sweep` are **never** filtered by
   changed paths. The ADR staleness check is driven by the upstream index, not
   the local diff: an org ADR can change with no local commit at all. Filtering

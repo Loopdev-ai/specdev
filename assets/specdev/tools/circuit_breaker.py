@@ -21,9 +21,18 @@ relied on, in descending order of certainty:
      the agent stalls out instead of running free.
   3. Mid-run cost is NOT in the hook payload. It is read best-effort from the
      transcript JSONL at `transcript_path`, whose schema is undocumented and
-     which may lag the live conversation. So cost is enforced when readable and
-     is never the only bound: `max_wall_minutes` and `max_tool_calls` are
-     derived from the clock and the call count, which are always observable.
+     which may lag the live conversation. In practice the cumulative cost field
+     appears in the TERMINAL result record, so a hook reading that transcript
+     mid-run usually has nothing to sum and the cost limb never arms at all.
+     Treat the cost ceiling as opportunistic. The bounds that actually hold are
+     `max_wall_minutes` and `max_tool_calls`, derived from the clock and the
+     call count, which are always observable — they are configured in ci.json
+     and armed on every run, not left at zero as "covered by cost".
+
+Every limit's default comes from the bundled ci.json via run_manifest, so
+there is exactly one place to change one. Whether cost was ever measured is
+recorded in the state file as `cost_source` and reported after the run: a
+ceiling that could not engage is stated, never rendered as $0.
 
 The failure counter is likewise defensive: rather than depend on one event name
 for tool failure, anything whose event name mentions failure/error, or whose
@@ -65,25 +74,62 @@ def state_path() -> Path:
     return Path(os.environ.get(STATE_ENV) or DEFAULT_STATE)
 
 
-def _num(env: str, default):
-    raw = os.environ.get(env, "")
-    if raw is None or str(raw).strip() == "":
-        return default
+def _load_defaults() -> tuple[dict, str, dict]:
+    """Limit defaults + the env-var mapping, from run_manifest — the single
+    source of truth. This file used to carry its own literals, which is how a
+    repo whose arming step silently failed ran on constants nobody configured
+    while the report showed the ceiling it had asked for.
+
+    Imported defensively: a hook that cannot import must not take the build
+    down, and must not pretend to a default it does not have."""
+    fallback_env = {
+        "max_permission_denials": "SPECDEV_MAX_DENIALS",
+        "max_consecutive_tool_failures": "SPECDEV_MAX_CONSECUTIVE_FAILURES",
+        "max_cost_usd": "SPECDEV_MAX_COST_USD",
+        "max_wall_minutes": "SPECDEV_MAX_WALL_MINUTES",
+        "max_tool_calls": "SPECDEV_MAX_TOOL_CALLS",
+    }
     try:
-        v = float(raw)
-    except ValueError:
-        return default
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import run_manifest  # noqa: PLC0415  (vendored sibling module)
+        return (dict(run_manifest.CI_DEFAULTS),
+                run_manifest.CI_DEFAULTS_SOURCE,
+                dict(run_manifest.BREAKER_ENV))
+    except Exception as e:  # noqa: BLE001
+        return {}, f"unavailable (run_manifest not importable: {e})", fallback_env
+
+
+DEFAULTS, DEFAULTS_SOURCE, ENV_FOR = _load_defaults()
+
+
+def _num(env: str, default):
+    """The env var, else `default`. A value <= 0, or no value at all, disables
+    the limit — and `limits_armed()` says so afterwards rather than leaving a
+    reader to infer it from a zero."""
+    raw = os.environ.get(env, "")
+    v = None
+    if raw is not None and str(raw).strip() != "":
+        try:
+            v = float(raw)
+        except ValueError:
+            v = None
+    if v is None:
+        v = default
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
     return None if v <= 0 else v  # <=0 disables a limit
 
 
 def limits() -> dict:
-    return {
-        "max_permission_denials": _num("SPECDEV_MAX_DENIALS", 15),
-        "max_consecutive_tool_failures": _num("SPECDEV_MAX_CONSECUTIVE_FAILURES", 15),
-        "max_cost_usd": _num("SPECDEV_MAX_COST_USD", 10),
-        "max_wall_minutes": _num("SPECDEV_MAX_WALL_MINUTES", 0),
-        "max_tool_calls": _num("SPECDEV_MAX_TOOL_CALLS", 0),
-    }
+    return {key: _num(var, DEFAULTS.get(key))
+            for key, var in ENV_FOR.items()}
+
+
+def unarmed(lim: dict) -> list[str]:
+    """Which bounds are OFF for this run. Reported, never assumed."""
+    return [k for k, v in lim.items() if not v]
 
 
 def load_state() -> dict:
@@ -219,12 +265,16 @@ def handle(payload: dict) -> tuple[dict | None, dict]:
     event = str(payload.get("hook_event_name") or "PreToolUse")
     tool = str(payload.get("tool_name") or "unknown")
 
+    # Read on BOTH events, not just PreToolUse: the cumulative cost field tends
+    # to land late in the transcript, so every extra look is a chance the limb
+    # arms at all. It still may never promote — which `cost_source` records.
+    cost = read_cost(payload.get("transcript_path"))
+    if cost is not None:
+        st["cost_usd"] = cost
+        st["cost_source"] = "transcript"
+
     if event == "PreToolUse":
         st["tool_calls"] += 1
-        cost = read_cost(payload.get("transcript_path"))
-        if cost is not None:
-            st["cost_usd"] = cost
-            st["cost_source"] = "transcript"
     elif is_failure(payload):
         st["consecutive_failures"] += 1
         st["max_consecutive_seen"] = max(st["max_consecutive_seen"],
@@ -243,16 +293,39 @@ def handle(payload: dict) -> tuple[dict | None, dict]:
         out = _trip_output(reason, event)
     st["limits"] = {k: (int(v) if v and float(v).is_integer() else v)
                     for k, v in lim.items()}
+    st["limits_source"] = DEFAULTS_SOURCE
+    st["unarmed_limits"] = unarmed(lim)
     save_state(st)
     return out, st
+
+
+def _report_what_was_not_measured(st: dict) -> None:
+    """A bound that could not engage is a fact about the run, and belongs in
+    the log of that run — not in a reader's head. Silence here is what let a
+    configured $10 ceiling sit inactive for an entire multi-wave build while
+    the outcome report rendered it as `$0.0 / $10`."""
+    lim = st.get("limits") or {}
+    ceiling = lim.get("max_cost_usd")
+    if ceiling and st.get("cost_source", "unavailable") == "unavailable":
+        print(f"::warning title=Cost ceiling inactive::Mid-run cost was never "
+              f"readable from the agent transcript, so the ${ceiling} ceiling "
+              f"could not engage at any point in this run. This is NOT $0 "
+              f"spent - see the build job's total_cost_usd output for the "
+              f"actual figure. The wall-clock and tool-call ceilings are the "
+              f"bounds that held.")
+    for name in st.get("unarmed_limits") or []:
+        print(f"::warning title=Bound disabled::{name} was 0/unset for this "
+              f"run, so that bound never applied.")
 
 
 def verdict() -> int:
     """Post-run: exit 3 (distinct from a hard failure) if the breaker tripped."""
     st = load_state()
+    _report_what_was_not_measured(st)
     if not st.get("tripped"):
         print(f"circuit breaker ok - {st.get('tool_calls', 0)} tool calls, "
-              f"{st.get('denials', 0)} denials")
+              f"{st.get('denials', 0)} denials, cost "
+              f"{'$%.2f' % st['cost_usd'] if st.get('cost_source', 'unavailable') != 'unavailable' else 'not measured'}")
         return 0
     print(f"::error title=SpecDev circuit breaker::{st.get('trip_reason')}")
     print(f"The agent was aborted after {st.get('tool_calls', 0)} tool calls "

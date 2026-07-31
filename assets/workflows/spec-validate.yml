@@ -9,8 +9,11 @@ name: spec-validate
 # are gone — `on.paths` cannot express per-unit paths, so the filtering moved
 # into the discover job.
 #
-# Mark the 'summary' job — NOT the matrix legs — a required status check on
-# branches matching spec/**.
+# Mark the **spec-validate summary** check — NOT the matrix legs — a required
+# status check on branches matching spec/**. Each gate's summary job carries a
+# DISTINCT name: for exactly this reason. They were all called 'summary', so
+# branch protection could not tell five gates apart and requiring one required
+# all five ambiguously — which made this very instruction unachievable.
 on:
   pull_request:
   merge_group:
@@ -58,6 +61,7 @@ jobs:
   # The single required status check. Matrix leg names are dynamic, so branch
   # protection cannot require them individually.
   summary:
+    name: spec-validate summary
     needs: [discover, validate]
     if: always()
     runs-on: ubuntu-latest

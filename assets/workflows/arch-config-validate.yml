@@ -3,6 +3,12 @@ name: arch-config-validate
 # Validates each governed unit's architecture-config.json. The literal path
 # filter this workflow used to carry cannot express per-unit paths, so it
 # matches any unit's file and the per-unit filtering happens in discover.
+#
+# Mark the **arch-config-validate summary** check — NOT the matrix legs — a
+# required status check. Leg names are dynamic, so the summary job is the only
+# requirable check here; its `name:` is distinct from every other gate's
+# because branch protection matches on that name and five jobs all called
+# 'summary' cannot be required individually.
 on:
   pull_request:
     paths: ["**/.specdev/architecture-config.json"]
@@ -50,6 +56,7 @@ jobs:
   # The single required status check. Matrix leg names are dynamic, so branch
   # protection cannot require them individually.
   summary:
+    name: arch-config-validate summary
     needs: [discover, validate]
     if: always()
     runs-on: ubuntu-latest

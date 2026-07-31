@@ -190,9 +190,18 @@ jobs:
       # payload because `pull_request.base.sha` and `event.before` are both
       # empty on workflow_dispatch — which silently turned the scope guard into
       # a no-op on exactly the path used to re-dispatch a build.
+      # `at` is the provenance half of the same idea: the terminal-state check
+      # must be able to tell a PR THIS run opened from one that already
+      # existed. Without it any pre-existing PR mentioning the FEAT id — a
+      # human's, merged weeks ago — satisfies the assertion, and a run that
+      # produced nothing reports success.
       - id: start
-        name: Capture the run's start SHA
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        name: Capture the run's start SHA and instant
+        run: |
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
       - name: Record run manifest (mode signal for the deploy guard)
         run: |
           python .specdev/tools/run_manifest.py init \
@@ -221,15 +230,24 @@ jobs:
           fi
       # The circuit breaker runs INSIDE the agent loop as a hook, because a
       # post-run check cannot refund a run that has already spent the money.
+      #
+      # Every limit is resolved in ONE call that fails loudly. The previous
+      # shape — three `$(get ...)` substitutions inside an `echo` — could not
+      # fail: a command substitution's nonzero exit does not trip `set -e`
+      # because the compound command's status is echo's. A broken ci.json
+      # therefore wrote empty values, the breaker fell back to library
+      # constants the adopter never chose, and the run presented as configured.
+      # `breaker-env` also writes the resolved limits AND the file each came
+      # from into the step summary, so "armed with what?" is answerable from
+      # the run page.
       - name: Arm the circuit breaker
         run: |
-          get () { python .specdev/tools/run_manifest.py --root "$UNIT" ci --get "$1" --repo-root .; }
-          {
-            echo "SPECDEV_MAX_DENIALS=$(get max_permission_denials)"
-            echo "SPECDEV_MAX_CONSECUTIVE_FAILURES=$(get max_consecutive_tool_failures)"
-            echo "SPECDEV_MAX_COST_USD=$(get max_cost_usd)"
-            echo "SPECDEV_BREAKER_STATE=${BREAKER_STATE}"
-          } >> "$GITHUB_ENV"
+          set -euo pipefail
+          python .specdev/tools/run_manifest.py --root "$UNIT" breaker-env \
+            --repo-root . --summary-out "$GITHUB_STEP_SUMMARY" \
+            > "${{ runner.temp }}/breaker.env"
+          cat "${{ runner.temp }}/breaker.env" >> "$GITHUB_ENV"
+          echo "SPECDEV_BREAKER_STATE=${BREAKER_STATE}" >> "$GITHUB_ENV"
           # GITHUB_ENV only takes effect in LATER steps, so seed the state file
           # with the path exported inline here.
           SPECDEV_BREAKER_STATE="${BREAKER_STATE}" \
@@ -288,7 +306,12 @@ jobs:
             Reaching that terminal state is ASSERTED after you finish: the job
             fails unless the Implementation PR actually exists (and, in poc
             mode, was merged). Exiting cleanly without one is a failed build,
-            not a partial success.
+            not a partial success. Do NOT end your turn while a wave's QA is
+            still outstanding or later waves are untouched — having turns to
+            spare is not a reason to stop. If you genuinely cannot get there,
+            write what is done, what is outstanding and what blocked you into
+            <unit>/.specdev/BUILD.md, COMMIT it, and stop; an unexplained
+            early exit is the one outcome this pipeline cannot recover from.
 
             Commit <unit>/.specdev/BUILD.md and <unit>/.specdev/run.json as
             each dependency wave goes green — not only at the end. This job
@@ -375,16 +398,26 @@ jobs:
       # F13: the job's exit code says the agent process ended, not that it
       # built anything. deploy-poc used to be gated on that exit code, so a
       # build that produced nothing still triggered a deployment.
+      #
+      # --since/--author are what make this an assertion about THIS RUN rather
+      # than a text search. Gated on them, a human's PR that discusses the
+      # feature, or one merged weeks ago, can no longer stand in for output
+      # this build never produced. PR_AUTHORS is the identity the agent's
+      # github_token resolves to; change it here (not in the tool) if you run
+      # the build under a different app.
       - id: verify
         name: Assert the mode's terminal state was reached
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_AUTHORS: 'github-actions[bot]'
         run: |
           if python .specdev/tools/build_outcome.py --root "$UNIT" verify \
                --feat "$FEAT" --mode "$MODE" --unit "$UNIT" \
                --base "${{ github.event.repository.default_branch }}" \
                --repo "${{ github.repository }}" \
+               --since "${{ steps.start.outputs.at }}" \
+               --author "$PR_AUTHORS" \
                --json-out "${{ runner.temp }}/verify.json"; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
@@ -421,9 +454,32 @@ jobs:
   # `needs.build.result == 'success'` was satisfied by a run that produced no
   # branch, no commit and no PR — which would have deployed nothing, as
   # something.
+  #
+  # The `permissions:` block below is dictated by deploy-poc.yml, not by this
+  # file. A called reusable workflow may not request a permission the calling
+  # job does not hold, and GitHub validates that at workflow INITIALISATION —
+  # before any `if:` is evaluated. So an under-granted call here does not skip
+  # in prod mode: the whole run ends as `startup_failure`, zero jobs, no logs,
+  # in EVERY mode.
+  #
+  # `id-token: write` is granted here because deploy-poc.yml carries a
+  # "TODO: install/auth your platform CLI here" and OIDC login is the way most
+  # adopters fill it — the first adopter to do so would otherwise break the
+  # build workflow entirely, with a failure that names neither file. Granting
+  # it up front costs nothing (the callee still bounds what it uses) and
+  # removes the trap. It belongs on this job rather than at workflow level:
+  # hoisting it would also hand an OIDC identity to the agentic build job,
+  # which has no use for one.
+  #
+  # tests/test_installed_layout.py checks every caller/callee pair for this;
+  # if you add a permission to any job in deploy-poc.yml, it fails here until
+  # this block matches.
   deploy-poc:
     needs: [setup, build]
     if: needs.setup.outputs.mode == 'poc' && needs.build.outputs.terminal_ok == 'true'
+    permissions:
+      contents: write
+      id-token: write
     uses: ./.github/workflows/deploy-poc.yml
     with:
       environment: poc

@@ -19,6 +19,7 @@ Usage:
     run_manifest.py init --feat FEAT-001 --mode poc [--poc-env poc]
                          [--unit <path> | --ref spec/<unit>/<name>]
     run_manifest.py --root <unit> ci --get runner [--repo-root .]
+    run_manifest.py --root <unit> breaker-env [--repo-root .] [--summary-out F]
 """
 import argparse
 import json
@@ -57,17 +58,64 @@ RUN_REL = ".specdev/run.json"
 CI_REL = ".specdev/ci.json"
 MODES = ("prod", "poc")
 FEAT_RE = re.compile(r"^FEAT-\d{3,}$")
-# The circuit-breaker limits live in ci.json because they are per-repo risk
-# appetite, not a property of the tool. Defaults are deliberately tight:
-# max_turns alone is not a bound anyone wants to discover the cost of.
-CI_DEFAULTS = {
+
+# The bundled ci.json — the sibling of this tools/ directory, i.e.
+# assets/specdev/ci.json upstream and .specdev/ci.json once installed.
+BUNDLED_CI = Path(__file__).resolve().parent.parent / "ci.json"
+
+# ONE source of truth for every limit default: the bundled ci.json above.
+#
+# These used to exist in three uncoordinated copies — ci.json, this dict, and
+# circuit_breaker.py's own literals — which made drift silent AND asymmetric: a
+# repo that omitted a key got this dict, a repo whose arming step failed got
+# circuit_breaker's literals, and only a repo with a complete ci.json got what
+# the shipped config actually said. Raising a ceiling in two of the three
+# places aborted builds below the cost of an honest multi-wave run while
+# looking like a runaway trip.
+#
+# _FALLBACK_DEFAULTS exists only for the case where the bundled file is missing
+# or malformed (an adopter edits it; it is their config file too). It is not a
+# second opinion: tests/test_pipeline_hardening.py asserts it agrees with
+# ci.json key for key, so drift fails CI rather than a build.
+_FALLBACK_DEFAULTS = {
     "runner": "ubuntu-latest",
     "max_session_minutes": 300,
     "auto_resume": True,
     "max_permission_denials": 15,
     "max_consecutive_tool_failures": 15,
     "max_cost_usd": 10,
+    "max_wall_minutes": 240,
+    "max_tool_calls": 3000,
 }
+
+# ci.json key -> the environment variable circuit_breaker.py reads it from.
+# Lives here, beside the defaults, so the arming step in specdev-build.yml
+# cannot export a subset by hand — which is how max_wall_minutes and
+# max_tool_calls came to be implemented, documented as the backstop for an
+# unreadable cost, and unreachable in every shipped run.
+BREAKER_ENV = {
+    "max_permission_denials": "SPECDEV_MAX_DENIALS",
+    "max_consecutive_tool_failures": "SPECDEV_MAX_CONSECUTIVE_FAILURES",
+    "max_cost_usd": "SPECDEV_MAX_COST_USD",
+    "max_wall_minutes": "SPECDEV_MAX_WALL_MINUTES",
+    "max_tool_calls": "SPECDEV_MAX_TOOL_CALLS",
+}
+
+
+def _load_bundled_defaults() -> tuple[dict, str]:
+    cfg = dict(_FALLBACK_DEFAULTS)
+    try:
+        doc = json.loads(BUNDLED_CI.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as e:
+        return cfg, f"built-in fallback ({BUNDLED_CI.name} unreadable: {e})"
+    if not isinstance(doc, dict):
+        return cfg, f"built-in fallback ({BUNDLED_CI.name} is not an object)"
+    doc.pop("schema_version", None)
+    cfg.update(doc)
+    return cfg, BUNDLED_CI.as_posix()
+
+
+CI_DEFAULTS, CI_DEFAULTS_SOURCE = _load_bundled_defaults()
 
 
 def run_path(root=".") -> Path:
@@ -121,6 +169,28 @@ def prod_chain_should_run(doc) -> bool:
 _MISSING = object()
 
 
+def ci_resolve(key: str, root=".", repo_root=None):
+    """(value, source) for a ci.json key — the value AND the file it came from.
+
+    The source is not decoration: an adopter who raises a ceiling in the wrong
+    file needs to see which file actually won, and the arming step prints it."""
+    cfg = dict(CI_DEFAULTS)
+    src = {k: CI_DEFAULTS_SOURCE for k in cfg}
+    candidates = []
+    if repo_root is not None:
+        candidates.append(Path(repo_root) / CI_REL)
+    candidates.append(ci_path(root))
+    for p in candidates:
+        if not p.exists():
+            continue
+        doc = json.loads(p.read_text(encoding="utf-8-sig"))
+        cfg.update(doc)
+        src.update({k: p.as_posix() for k in doc})
+    if key not in cfg:
+        return _MISSING, None
+    return cfg[key], src.get(key)
+
+
 def ci_get(key: str, root=".", repo_root=None):
     """Read a ci.json key. A unit's ci.json wins; the repo-root ci.json is the
     fallback so shared runner config is declared once; CI_DEFAULTS is the floor.
@@ -128,15 +198,49 @@ def ci_get(key: str, root=".", repo_root=None):
     Returns _MISSING for an unknown key so the caller fails loudly instead of
     printing the string 'None' at exit 0 — that value has flowed into an
     inference-metadata record as "model": "None"."""
-    cfg = dict(CI_DEFAULTS)
-    candidates = []
-    if repo_root is not None:
-        candidates.append(Path(repo_root) / CI_REL)
-    candidates.append(ci_path(root))
-    for p in candidates:
-        if p.exists():
-            cfg.update(json.loads(p.read_text(encoding="utf-8-sig")))
-    return cfg.get(key, _MISSING)
+    return ci_resolve(key, root, repo_root)[0]
+
+
+def breaker_env(root=".", repo_root=None) -> tuple[dict, dict, list[str]]:
+    """Resolve every circuit-breaker limit: (env vars, sources, errors).
+
+    All of them, together, from the one mapping above. The workflow used to
+    inline three `$(...)` substitutions inside an `echo`, where a nonzero exit
+    does NOT trip `set -e` (the compound command's status is echo's), so any
+    run_manifest failure wrote an empty value, circuit_breaker fell through to
+    its own literals, and the run presented as configured. Errors are returned
+    so the caller can fail the step instead of arming a guess."""
+    env, sources, errors = {}, {}, []
+    for key, var in BREAKER_ENV.items():
+        try:
+            val, src = ci_resolve(key, root, repo_root)
+        except (OSError, json.JSONDecodeError) as e:
+            errors.append(f"{key}: could not read ci.json ({e})")
+            continue
+        if val is _MISSING:
+            errors.append(f"{key}: no such ci.json key")
+            continue
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            errors.append(f"{key}: {val!r} is not a number")
+            continue
+        env[var] = int(num) if num.is_integer() else num
+        sources[var] = src
+    return env, sources, errors
+
+
+def _breaker_summary(env: dict, sources: dict) -> str:
+    lines = ["### SpecDev circuit breaker — limits armed for this run", "",
+             "| limit | value | resolved from |", "|---|---|---|"]
+    for key, var in BREAKER_ENV.items():
+        val = env.get(var)
+        shown = "**not armed**" if val in (None, 0) else f"`{val}`"
+        lines.append(f"| `{key}` | {shown} | `{sources.get(var, '-')}` |")
+    lines += ["", "A limit of `0` is disabled. Cost is best-effort: it is "
+              "enforced only when the mid-run transcript exposes it, which is "
+              "why the wall-clock and tool-call ceilings exist.", ""]
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
@@ -157,6 +261,12 @@ def main() -> int:
     pc.add_argument("--get", required=True)
     pc.add_argument("--repo-root", default=None,
                     help="repo root for ci.json fallback when --root is a unit")
+    pb = sub.add_parser("breaker-env")
+    pb.add_argument("--repo-root", default=None,
+                    help="repo root for ci.json fallback when --root is a unit")
+    pb.add_argument("--summary-out", default=None,
+                    help="append the resolved-limits table here (e.g. "
+                         "$GITHUB_STEP_SUMMARY)")
     args = ap.parse_args()
 
     if args.cmd == "mode":
@@ -196,6 +306,27 @@ def main() -> int:
                   f"(known: {', '.join(sorted(CI_DEFAULTS))})", file=sys.stderr)
             return 1
         print(val)
+        return 0
+    if args.cmd == "breaker-env":
+        env, sources, errors = breaker_env(args.root, args.repo_root)
+        if errors:
+            for e in errors:
+                print(f"ERROR: {e}", file=sys.stderr)
+            print("::error title=Circuit breaker not armed::Could not resolve "
+                  "every limit from ci.json: " + "; ".join(errors) +
+                  ". Refusing to arm the breaker with library constants the "
+                  "adopter never configured.", file=sys.stderr)
+            return 1
+        for var, val in env.items():
+            print(f"{var}={val}")
+        if args.summary_out:
+            with open(args.summary_out, "a", encoding="utf-8") as fh:
+                fh.write(_breaker_summary(env, sources))
+        for key, var in BREAKER_ENV.items():
+            if not env.get(var):
+                print(f"::warning title=Limit disabled::ci.json sets {key} to "
+                      f"{env.get(var)} — that bound is OFF for this run.",
+                      file=sys.stderr)
         return 0
     return 0
 
