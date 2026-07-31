@@ -429,11 +429,174 @@ def _state(tmp_path, **over):
     return st
 
 
+def _denial_lim(**over):
+    lim = dict(max_permission_denials=15, max_denial_rate=0.10,
+               max_consecutive_tool_failures=0, max_cost_usd=0,
+               max_wall_minutes=0, max_tool_calls=0)
+    lim.update(over)
+    return lim
+
+
 def test_breaker_trips_on_denials(tmp_path):
-    lim = dict(max_permission_denials=15, max_consecutive_tool_failures=0,
-               max_cost_usd=0, max_wall_minutes=0, max_tool_calls=0)
-    assert cb.evaluate(_state(tmp_path, denials=14), lim) is None
-    assert "permission denials" in cb.evaluate(_state(tmp_path, denials=15), lim)
+    lim = _denial_lim()
+    assert cb.evaluate(_state(tmp_path, denials=14, tool_calls=40), lim) is None
+    assert "permission denials" in cb.evaluate(
+        _state(tmp_path, denials=15, tool_calls=40), lim)
+
+
+# ---- U13: an absolute denial ceiling is scale-dependent ------------------
+#
+# A bare count of 15 means opposite things at different run lengths. Trip only
+# when BOTH hold: a substantial number of refusals, AND refusals being a
+# substantial fraction of what the run is doing. Lowering the count makes the
+# long-run false positive worse; raising it delays the short-run true positive.
+
+@pytest.mark.parametrize("denials,calls,trips,why", [
+    (16, 900, False, "scattered noise in a long healthy build"),
+    (86, 300, True, "the motivating pathology"),
+    (20, 40, True, "short, clearly broken"),
+    (2, 5, False, "the floor is the minimum-sample guard"),
+])
+def test_the_denial_ceiling_needs_both_a_floor_and_a_rate(tmp_path, denials,
+                                                          calls, trips, why):
+    reason = cb.evaluate(_state(tmp_path, denials=denials, tool_calls=calls),
+                         _denial_lim())
+    assert bool(reason) is trips, f"{denials}/{calls} - {why}"
+    if trips:
+        assert f"{denials} permission denials in {calls} tool calls" in reason
+        assert "% of calls" in reason, \
+            "the reason must show the rate the decision was made on"
+
+
+def test_a_bare_count_would_have_failed_the_long_healthy_build(tmp_path):
+    """The inverted half: with no rate ceiling armed, the old scale-dependent
+    behaviour is what you get — kept executable so the rate cannot quietly
+    stop being applied."""
+    st = _state(tmp_path, denials=16, tool_calls=900)
+    assert cb.evaluate(st, _denial_lim()) is None
+    assert cb.evaluate(st, _denial_lim(max_denial_rate=0)) is not None
+
+
+def test_the_rate_is_never_evaluated_before_the_first_tool_call(tmp_path):
+    """Guard the division structurally, not just by relying on the floor."""
+    assert cb.denial_rate(_state(tmp_path, denials=3, tool_calls=0)) is None
+    assert cb.evaluate(_state(tmp_path, denials=99, tool_calls=0),
+                       _denial_lim()) is None
+
+
+def test_the_rate_is_not_extended_to_the_consecutive_failure_bound(tmp_path):
+    """A streak resets on success, so a percentage of it is not a meaningful
+    quantity. It stays an absolute bound."""
+    lim = _denial_lim(max_consecutive_tool_failures=15, max_denial_rate=0.10)
+    reason = cb.evaluate(
+        _state(tmp_path, consecutive_failures=15, tool_calls=9000), lim)
+    assert reason and "consecutive tool failures" in reason
+
+
+# ---- U12: the denial ceiling was spent by ordinary tool failures ---------
+
+RED_TEST = ("FAILED tests/test_widget.py::test_adds - AssertionError\n"
+            "Traceback (most recent call last):\n"
+            "  File \"widget.py\", line 3, in add\n"
+            "Exception: not implemented yet\n"
+            "Error: 1 test failed")
+
+
+def _breaker(tmp_path, monkeypatch, **env):
+    monkeypatch.setenv(cb.STATE_ENV, str(tmp_path / "b.json"))
+    for var in ("SPECDEV_MAX_DENIALS", "SPECDEV_MAX_CONSECUTIVE_FAILURES",
+                "SPECDEV_MAX_COST_USD", "SPECDEV_MAX_WALL_MINUTES",
+                "SPECDEV_MAX_TOOL_CALLS"):
+        monkeypatch.setenv(var, env.get(var, "0"))
+    return cb
+
+
+def test_red_tests_do_not_spend_the_permission_denial_ceiling(tmp_path,
+                                                              monkeypatch):
+    """This pipeline is TDD: a red test run is the normal first half of every
+    component, and it prints 'Error:', 'Exception' and 'Traceback'. One
+    predicate fed both counters, so a healthy multi-wave build accumulated
+    them against a ceiling named max_permission_denials and could trip on
+    doing exactly what it is supposed to do."""
+    _breaker(tmp_path, monkeypatch)
+    for _ in range(30):
+        cb.handle({"hook_event_name": "PreToolUse", "tool_name": "Bash"})
+        cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                   "tool_output": RED_TEST})
+    st = cb.load_state()
+    assert st["denials"] == 0, \
+        "a failing test is not a harness refusal and must not spend the ceiling"
+    assert st["denied_tools"] == {}, \
+        "the histogram used to fix an allowlist must not list undenied tools"
+    assert st["consecutive_failures"] == 30, \
+        "the streak bound must still see them - it resets on the first success"
+
+
+def test_a_real_refusal_still_counts_as_a_denial(tmp_path, monkeypatch):
+    """The inverted half of the test above."""
+    _breaker(tmp_path, monkeypatch)
+    for output in ("Error: permission denied",
+                   "This tool has not been granted to this session",
+                   "Bash(curl:*) is not allowed",
+                   "tool use was rejected"):
+        cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                   "tool_output": output})
+    assert cb.load_state()["denials"] == 4
+    assert cb.load_state()["denied_tools"] == {"Bash": 4}
+
+
+def test_a_structured_deny_counts_on_either_hook_event(tmp_path, monkeypatch):
+    """Which event carries a refusal is runtime-dependent, so both are read."""
+    _breaker(tmp_path, monkeypatch)
+    cb.handle({"hook_event_name": "PreToolUse", "tool_name": "WebFetch",
+               "hookSpecificOutput": {"permissionDecision": "deny"}})
+    cb.handle({"hook_event_name": "PostToolUse", "tool_name": "WebSearch",
+               "tool_response": {"permissionDecision": "block"}})
+    st = cb.load_state()
+    assert st["denials"] == 2
+    assert st["denied_tools"] == {"WebFetch": 1, "WebSearch": 1}
+
+
+def test_the_trip_reason_names_denials_only_when_they_are_denials(tmp_path,
+                                                                  monkeypatch):
+    """A run whose failures were all red tests must not be told it hit a
+    permission-denial ceiling - that sends the reader to audit an allowlist
+    which was never the problem."""
+    _breaker(tmp_path, monkeypatch, SPECDEV_MAX_CONSECUTIVE_FAILURES="5")
+    for _ in range(6):
+        cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                   "tool_output": RED_TEST})
+    st = cb.load_state()
+    assert st["tripped"]
+    assert "consecutive tool failures" in st["trip_reason"]
+    assert "permission denial" not in st["trip_reason"]
+
+
+def test_every_attempted_tool_is_recorded_even_when_denials_are_invisible(
+        tmp_path, monkeypatch):
+    """A harness that refuses a call outright may surface it to neither hook,
+    leaving `denied_tools` empty and nothing to fix an allowlist from.
+    PreToolUse is the one signal the design notes call certain, so the record
+    of what was ATTEMPTED survives regardless."""
+    _breaker(tmp_path, monkeypatch)
+    for tool in ("Bash", "Bash", "WebFetch"):
+        cb.handle({"hook_event_name": "PreToolUse", "tool_name": tool})
+    st = cb.load_state()
+    assert st["attempted_tools"] == {"Bash": 2, "WebFetch": 1}
+    assert st["denied_tools"] == {}, "nothing was observably denied"
+
+
+def test_a_state_file_from_an_older_version_does_not_crash_the_hook(tmp_path,
+                                                                    monkeypatch):
+    """The hook must never take the build down, including on a state file
+    written before `attempted_tools` existed."""
+    monkeypatch.setenv(cb.STATE_ENV, str(tmp_path / "b.json"))
+    (tmp_path / "b.json").write_text(json.dumps(
+        {"tool_calls": 3, "denials": 1, "denied_tools": {"Bash": 1}}),
+        encoding="utf-8")
+    out, st = cb.handle({"hook_event_name": "PreToolUse", "tool_name": "Bash"})
+    assert st["attempted_tools"] == {"Bash": 1}
+    assert st["tool_calls"] == 4
 
 
 def test_breaker_trips_on_consecutive_failures(tmp_path):
@@ -820,6 +983,26 @@ def test_an_unmeasurable_cost_is_reported_as_inactive_not_as_zero(tmp_path):
     known = dict(breaker, cost_usd=7.5, cost_source="transcript")
     md2 = bo._md_report(rec, known)
     assert "7.5" in md2 and "transcript" in md2 and "INACTIVE" not in md2
+
+
+def test_the_report_shows_both_halves_of_the_denial_ceiling(tmp_path):
+    """A reader who sees only "12 / 15" cannot tell a run nowhere near
+    tripping from one held back solely by the rate."""
+    rec = {"ok": False, "feat": "FEAT-002", "mode": "prod", "unit": ".",
+           "problems": [], "implementation_prs": []}
+    breaker = {"tripped": False, "denials": 16, "tool_calls": 900,
+               "cost_source": "transcript", "cost_usd": 3.2,
+               "denied_tools": {"WebFetch": 16},
+               "attempted_tools": {"Bash": 700, "WebFetch": 16},
+               "limits": {"max_permission_denials": 15, "max_denial_rate": 0.1,
+                          "max_cost_usd": 10}}
+    md = bo._md_report(rec, breaker)
+    assert "16 / 15" in md, "the floor was cleared and must be shown as such"
+    assert "2% of 900 tool calls / 10%" in md, "the rate is why it did not trip"
+    assert "BOTH" in md
+    assert "harness refusals only" in md, \
+        "the label must not imply ordinary failures were counted"
+    assert "**Tools attempted**" in md and "| `Bash` | 700 | 0 |" in md
 
 
 def test_the_breaker_verdict_says_the_ceiling_never_engaged(tmp_path, monkeypatch,

@@ -359,8 +359,19 @@ def _md_report(rec: dict, breaker: dict | None) -> str:
             return breaker.get(name, lim.get(name, "-"))
 
         lines.append(f"- **Tripped:** {'YES - ' + str(breaker.get('trip_reason')) if tripped else 'no'}")
-        lines.append(f"- Permission denials: {breaker.get('denials', 0)}"
-                     f" / {_lim('max_permission_denials')}")
+        # The denial ceiling is a conjunction, so the report has to show both
+        # halves — a reader who sees only "12 / 15" cannot tell a run that was
+        # nowhere near tripping from one held back solely by the rate.
+        denials = breaker.get("denials", 0)
+        calls = breaker.get("tool_calls", 0)
+        rate = f"{denials / calls:.0%}" if calls else "n/a"
+        rate_ceiling = _lim("max_denial_rate")
+        rate_shown = (f"{rate_ceiling:.0%}"
+                      if isinstance(rate_ceiling, (int, float)) else rate_ceiling)
+        lines.append(f"- Permission denials (harness refusals only): {denials}"
+                     f" / {_lim('max_permission_denials')}"
+                     f" · {rate} of {calls} tool calls / {rate_shown}"
+                     f" — trips only when BOTH are exceeded")
         lines.append(f"- Consecutive tool failures (high-water): "
                      f"{breaker.get('max_consecutive_seen', 0)}"
                      f" / {_lim('max_consecutive_tool_failures')}")
@@ -388,11 +399,22 @@ def _md_report(rec: dict, breaker: dict | None) -> str:
             lines.append(f"- Limits resolved from: `{breaker['limits_source']}`")
         hist = breaker.get("denied_tools") or {}
         if hist:
-            lines += ["", "**Denied tool calls:**", ""]
+            lines += ["", "**Denied tool calls** (refused by the harness):", ""]
             lines.append("| tool | denials |")
             lines.append("|---|---|")
             for name, n in sorted(hist.items(), key=lambda kv: -kv[1]):
                 lines.append(f"| `{name}` | {n} |")
+        # A harness may refuse a call without surfacing it to either hook, and
+        # then the table above is empty and an allowlist fix has nothing to
+        # work from. What was ATTEMPTED comes from PreToolUse, which always
+        # fires, so this record survives an unobservable refusal.
+        attempted = breaker.get("attempted_tools") or {}
+        if attempted:
+            lines += ["", "**Tools attempted** (every PreToolUse):", ""]
+            lines.append("| tool | calls | denied |")
+            lines.append("|---|---|---|")
+            for name, n in sorted(attempted.items(), key=lambda kv: -kv[1]):
+                lines.append(f"| `{name}` | {n} | {hist.get(name, 0)} |")
         lines.append("")
 
     if rec.get("warnings"):
