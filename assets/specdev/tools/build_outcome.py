@@ -255,15 +255,31 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
                                        since=since, author=authors)
     merged = [p for p in prs if (p.get("state") or "").upper() == "MERGED"]
 
+    attributed = bool(since or authors)
+    numbers = ", ".join("#" + str(p["number"]) for p in prs)
+
     if not prs:
         problems.append(
             f"no Implementation PR for {feat} against '{base}' was found. "
             f"The build job exited without producing its terminal state.")
     elif mode == "poc" and not merged:
-        problems.append(
-            f"mode 'poc' requires the Implementation PR for {feat} to be "
-            f"MERGED; found {len(prs)} unmerged "
-            f"({', '.join('#' + str(p['number']) for p in prs)}).")
+        # A check that cannot attribute its evidence must not state a reason
+        # that presupposes attribution. Unfiltered, `prs` may be anybody's —
+        # so "the Implementation PR ... found 1 unmerged (#101)" told a reader
+        # that THIS BUILD opened a PR and failed to merge it, and sent them to
+        # a stranger's PR to find out why. The verdict was right; the reason
+        # was false, and the reason is the part a reader acts on.
+        if attributed:
+            problems.append(
+                f"mode 'poc' requires the Implementation PR for {feat} to be "
+                f"MERGED; found {len(prs)} unmerged ({numbers}).")
+        else:
+            problems.append(
+                f"mode 'poc' requires an Implementation PR for {feat} that "
+                f"THIS RUN merged, and no PR here can be attributed to this "
+                f"run - no provenance filter (--since/--author) was supplied. "
+                f"{len(prs)} PR(s) mention {feat} and none is merged "
+                f"({numbers}); they may belong to anyone.")
 
     required = ("Implementation PR open against " + base if mode == "prod"
                 else "Implementation PR merged into " + base)
@@ -302,7 +318,12 @@ def _md_report(rec: dict, breaker: dict | None) -> str:
         "",
     ]
     prs = rec.get("implementation_prs") or []
-    lines.append("**Implementation PRs found:** " + (
+    filt = rec.get("provenance_filters") or {}
+    # Unattributed matches are not "Implementation PRs found" — calling them
+    # that is the claim the filters were never able to support.
+    label = ("**Implementation PRs found:**" if filt.get("applied")
+             else "**PRs matching on text only (NOT attributed to this run):**")
+    lines.append(label + " " + (
         ", ".join(f"[#{p['number']}]({p['url']}) ({p['state']})" for p in prs)
         if prs else "_none_"))
     lines.append("")
@@ -310,7 +331,6 @@ def _md_report(rec: dict, breaker: dict | None) -> str:
     # What the check EXCLUDED is as much the record as what it matched: without
     # it, "no PR was produced" and "the filters were off and this is a text
     # match" read identically to whoever opens this after a failure.
-    filt = rec.get("provenance_filters") or {}
     if filt:
         lines.append("**Provenance filters:** " + (
             f"created at/after `{filt.get('since')}`, "

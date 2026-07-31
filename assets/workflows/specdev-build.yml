@@ -221,8 +221,19 @@ jobs:
           fi
           if git fetch origin "refs/heads/${REF}:refs/remotes/origin/${REF}" 2>/dev/null; then
             PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
-            git checkout "origin/${REF}" -- "${PREFIX}.specdev/BUILD.md" \
-                                            "${PREFIX}.specdev/run.json" 2>/dev/null || true
+            # BUILD.md is the checkpoint body and is restored wholesale.
+            git checkout "origin/${REF}" -- "${PREFIX}.specdev/BUILD.md" 2>/dev/null || true
+            # run.json is NOT. Restoring it wholesale silently overrode THIS
+            # dispatch's feat/mode with the previous attempt's, leaving
+            # run.json's consumers (mode_of, the deploy guard) disagreeing with
+            # needs.setup.outputs.*. `resume` carries only the fields a resume
+            # should carry — today just started_at, the logical build's clock.
+            git show "origin/${REF}:${PREFIX}.specdev/run.json" \
+              > "${{ runner.temp }}/prev-run.json" 2>/dev/null || true
+            if [ -s "${{ runner.temp }}/prev-run.json" ]; then
+              python .specdev/tools/run_manifest.py --root "$UNIT" resume \
+                --from "${{ runner.temp }}/prev-run.json"
+            fi
             echo "::notice title=Resumed::Restored the checkpoint from ${REF}."
             echo "resumed=true" >> "$GITHUB_OUTPUT"
           else
@@ -405,18 +416,45 @@ jobs:
       # this build never produced. PR_AUTHORS is the identity the agent's
       # github_token resolves to; change it here (not in the tool) if you run
       # the build under a different app.
+      #
+      # --since is the LOGICAL build's start, from run.json (carried across a
+      # resume), NOT this job's. Those are the same instant on a first attempt
+      # and diverge on every re-dispatch — and with `auto_resume` a re-dispatch
+      # continues the same build, so anchoring to the job made a build that had
+      # ALREADY opened its Implementation PR unable to ever verify: the PR only
+      # gets older, so each dispatch rejects it for predating the job, forever.
+      # In poc that was worse than a false red — deploy-poc is gated on
+      # terminal_ok, so a poc build whose PR was already merged could never
+      # deploy, silently, with "no Implementation PR was found" as the reason.
+      #
+      # The window therefore widens to the earliest attempt at this unit+FEAT.
+      # That is deliberate and is not capped: the checkpoint ref is per
+      # unit+FEAT, so everything inside the window belongs to this same logical
+      # build, and --author still excludes anyone else's work. The record says
+      # which anchor was used so a reader never has to guess.
       - id: verify
         name: Assert the mode's terminal state was reached
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_AUTHORS: 'github-actions[bot]'
+          JOB_STARTED_AT: ${{ steps.start.outputs.at }}
         run: |
+          SINCE=$(python .specdev/tools/run_manifest.py --root "$UNIT" started-at || true)
+          if [ -n "$SINCE" ]; then
+            echo "Provenance window anchored to the logical build start ($SINCE)."
+          else
+            SINCE="$JOB_STARTED_AT"
+            echo "::warning title=No build clock::run.json carries no" \
+                 "started_at, so provenance is anchored to THIS JOB ($SINCE)." \
+                 "A PR opened by an earlier attempt at this feature will be" \
+                 "rejected as predating the run."
+          fi
           if python .specdev/tools/build_outcome.py --root "$UNIT" verify \
                --feat "$FEAT" --mode "$MODE" --unit "$UNIT" \
                --base "${{ github.event.repository.default_branch }}" \
                --repo "${{ github.repository }}" \
-               --since "${{ steps.start.outputs.at }}" \
+               --since "$SINCE" \
                --author "$PR_AUTHORS" \
                --json-out "${{ runner.temp }}/verify.json"; then
             echo "ok=true" >> "$GITHUB_OUTPUT"

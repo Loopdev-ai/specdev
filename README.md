@@ -133,7 +133,14 @@ properties keep an unattended run honest:
   `specdev/checkpoint/<unit>/<FEAT-###>` on success, failure, timeout and
   circuit-break alike; the runner's working tree is destroyed at teardown, so
   the push is what makes a run resumable. With `auto_resume` (default on) a
-  re-dispatch restores that ref before the agent starts.
+  re-dispatch restores that ref before the agent starts — which makes the
+  re-dispatch a continuation of the **same logical build**, not a new one. It
+  restores `BUILD.md` wholesale but takes only `started_at` from the
+  checkpoint's `run.json`, so this dispatch's own `feat`/`mode` always win, and
+  the terminal-state check's provenance window covers every attempt at the
+  feature rather than only the current job. Without that, a build that had
+  already opened its Implementation PR could never verify again: the PR only
+  gets older, so each re-dispatch would reject it for predating the run.
 - **A circuit breaker runs inside the agent loop**, as a hook — a post-run
   check cannot refund a run that has already spent the money. Limits live in
   `ci.json`:
@@ -142,8 +149,23 @@ properties keep an unattended run honest:
 |---|---|---|
 | `max_permission_denials` | 15 | cumulative denied tool calls reach it |
 | `max_consecutive_tool_failures` | 15 | that many tool calls fail in a row |
-| `max_cost_usd` | 10 | accumulated spend reaches the ceiling |
+| `max_cost_usd` | 10 | accumulated spend reaches the ceiling — **best-effort** |
+| `max_wall_minutes` | 240 | the run has been going that long |
+| `max_tool_calls` | 3000 | that many tool calls have been made |
 | `auto_resume` | `true` | — restores the checkpoint ref on re-dispatch |
+
+`max_cost_usd` is opportunistic: mid-run cost is read best-effort from the
+agent transcript, which often does not expose a cumulative figure until its
+terminal record. When it cannot be read the run says so — the outcome record
+reports *not measured (ceiling was INACTIVE)* rather than `$0` — and
+`max_wall_minutes` / `max_tool_calls` are the bounds that actually hold. Keep
+`max_wall_minutes` below `max_session_minutes`, or the job timeout fires first.
+
+Defaults are loaded from the shipped `ci.json`, so a key you never set still
+resolves. Where a value must be a *deliberate, committed* choice rather than an
+inherited default — a pinned budget, a model id, anything auditable —
+`run_manifest.py ci --get <key> --require-explicit` fails unless this repo's
+own `ci.json` sets it (`ci_explicit()` in Python).
 
 On a trip the agent is stopped, the checkpoint is pushed, and the job exits
 with a status distinct from a hard failure — the signal to re-dispatch rather
