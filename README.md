@@ -147,12 +147,27 @@ properties keep an unattended run honest:
 
 | `ci.json` key | Default | Trips when |
 |---|---|---|
-| `max_permission_denials` | 15 | cumulative denied tool calls reach it |
+| `max_permission_denials` | 15 | **floor:** cumulative *harness refusals* reach it |
+| `max_denial_rate` | 0.1 | **rate:** refusals exceed this fraction of tool calls |
 | `max_consecutive_tool_failures` | 15 | that many tool calls fail in a row |
 | `max_cost_usd` | 10 | accumulated spend reaches the ceiling — **best-effort** |
 | `max_wall_minutes` | 240 | the run has been going that long |
 | `max_tool_calls` | 3000 | that many tool calls have been made |
 | `auto_resume` | `true` | — restores the checkpoint ref on re-dispatch |
+
+The denial limbs are a **conjunction**: a run trips only when refusals clear
+the floor *and* exceed the rate. A bare count is scale-dependent — 16 refusals
+in 900 tool calls is scattered noise in a long healthy build, while 20 in 40 is
+a run that is clearly broken — and lowering the count worsens the first while
+raising it delays the second. The floor doubles as the minimum-sample guard the
+rate needs, since 2 refusals in the first 5 calls is 40%.
+
+Only **harness refusals** count toward it — a call that was not allowed to
+happen. Ordinary tool failures do not: this pipeline is TDD, so a red test run
+is the normal first half of every component and prints `Error:`, `Exception`
+and `Traceback`. Those feed `max_consecutive_tool_failures`, which is a streak
+that resets on the first success, and which stays an absolute bound (a
+percentage of a streak is not a meaningful quantity).
 
 `max_cost_usd` is opportunistic: mid-run cost is read best-effort from the
 agent transcript, which often does not expose a cumulative figure until its

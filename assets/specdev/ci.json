@@ -4,6 +4,7 @@
   "max_session_minutes": 300,
   "auto_resume": true,
   "max_permission_denials": 15,
+  "max_denial_rate": 0.1,
   "max_consecutive_tool_failures": 15,
   "max_cost_usd": 10,
   "max_wall_minutes": 240,

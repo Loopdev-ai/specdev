@@ -98,6 +98,7 @@ _FALLBACK_DEFAULTS = {
     "max_session_minutes": 300,
     "auto_resume": True,
     "max_permission_denials": 15,
+    "max_denial_rate": 0.1,
     "max_consecutive_tool_failures": 15,
     "max_cost_usd": 10,
     "max_wall_minutes": 240,
@@ -111,6 +112,7 @@ _FALLBACK_DEFAULTS = {
 # unreadable cost, and unreachable in every shipped run.
 BREAKER_ENV = {
     "max_permission_denials": "SPECDEV_MAX_DENIALS",
+    "max_denial_rate": "SPECDEV_MAX_DENIAL_RATE",
     "max_consecutive_tool_failures": "SPECDEV_MAX_CONSECUTIVE_FAILURES",
     "max_cost_usd": "SPECDEV_MAX_COST_USD",
     "max_wall_minutes": "SPECDEV_MAX_WALL_MINUTES",

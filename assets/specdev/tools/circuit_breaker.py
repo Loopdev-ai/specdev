@@ -38,6 +38,19 @@ The failure counter is likewise defensive: rather than depend on one event name
 for tool failure, anything whose event name mentions failure/error, or whose
 tool output carries an error marker, counts as a failure; a clean PostToolUse
 resets the streak.
+
+TWO PREDICATES, DELIBERATELY. `is_denial` is narrow — only a harness REFUSAL —
+and is the sole numerator of the cumulative `max_permission_denials` ceiling.
+`is_failure` stays broad, includes denials, and feeds only the consecutive
+streak, which resets on the first success. One predicate fed both, and since
+`error:`/`exception`/`traceback` are what a failing command prints and this
+pipeline is TDD, every red test spent a ceiling named for permission denials.
+
+The denial ceiling is also a CONJUNCTION, not a count: it trips only when the
+denials clear `max_permission_denials` AND exceed `max_denial_rate` of tool
+calls. A bare count is scale-dependent — 16 denials in 900 calls is noise in a
+long healthy build, 20 in 40 is a broken one — and the floor doubles as the
+minimum-sample guard the rate needs.
 """
 import json
 import os
@@ -64,10 +77,30 @@ except Exception:
 STATE_ENV = "SPECDEV_BREAKER_STATE"
 DEFAULT_STATE = ".specdev-breaker.json"
 
-_ERROR_MARKERS = re.compile(
+# A HARNESS REFUSAL — the call was not allowed to happen. These and nothing
+# else may feed the cumulative `denials` ceiling.
+_DENIAL_MARKERS = re.compile(
     r"permission denied|requested permissions|has not been granted|"
-    r"tool use was rejected|is not allowed|error:|exception|traceback",
+    r"tool use was rejected|is not allowed",
     re.I)
+
+# ANY tool failure, refusals included. `error:`, `exception` and `traceback`
+# are what a failing COMMAND prints — and this pipeline is TDD, so a red test
+# run is the normal first half of every component and prints all three. They
+# belong to the streak counter, which resets on the first success, and must
+# never reach the cumulative ceiling: a control that fires on correct
+# behaviour is the same class of bug as the allowlist that denied the agent
+# its own first instruction.
+_ERROR_MARKERS = re.compile(
+    _DENIAL_MARKERS.pattern + r"|error:|exception|traceback", re.I)
+
+# A refusal may arrive as a structured decision rather than as text, on either
+# hook event depending on the runtime.
+_DECISION_KEYS = ("permissionDecision", "permission_decision", "decision",
+                  "behavior", "behaviour")
+_DENY_VALUES = {"deny", "denied", "block", "blocked", "reject", "rejected"}
+_DECISION_CONTAINERS = ("hookSpecificOutput", "tool_response", "tool_result",
+                        "tool_output", "permission", "error")
 
 
 def state_path() -> Path:
@@ -84,6 +117,7 @@ def _load_defaults() -> tuple[dict, str, dict]:
     down, and must not pretend to a default it does not have."""
     fallback_env = {
         "max_permission_denials": "SPECDEV_MAX_DENIALS",
+        "max_denial_rate": "SPECDEV_MAX_DENIAL_RATE",
         "max_consecutive_tool_failures": "SPECDEV_MAX_CONSECUTIVE_FAILURES",
         "max_cost_usd": "SPECDEV_MAX_COST_USD",
         "max_wall_minutes": "SPECDEV_MAX_WALL_MINUTES",
@@ -132,13 +166,7 @@ def unarmed(lim: dict) -> list[str]:
     return [k for k, v in lim.items() if not v]
 
 
-def load_state() -> dict:
-    p = state_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+def fresh_state() -> dict:
     return {
         "started_at": time.time(),
         "tool_calls": 0,
@@ -146,11 +174,28 @@ def load_state() -> dict:
         "consecutive_failures": 0,
         "max_consecutive_seen": 0,
         "denied_tools": {},
+        "attempted_tools": {},
         "cost_usd": 0.0,
         "cost_source": "unavailable",
         "tripped": False,
         "trip_reason": None,
     }
+
+
+def load_state() -> dict:
+    """Always a COMPLETE state. Starting from `fresh_state` and layering the
+    file over it means a state written by an older version — or a hand-built
+    one in a test — cannot KeyError a hook that must never crash."""
+    st = fresh_state()
+    p = state_path()
+    if p.exists():
+        try:
+            saved = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                st.update(saved)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return st
 
 
 def save_state(st: dict) -> None:
@@ -196,7 +241,56 @@ def read_cost(transcript: str | None) -> float | None:
     return total if total > 0 else None
 
 
+def _denial_decision(payload: dict) -> bool:
+    """A structured deny/block anywhere the runtime plausibly puts one."""
+    containers = [payload]
+    for key in _DECISION_CONTAINERS:
+        val = payload.get(key)
+        if isinstance(val, dict):
+            containers.append(val)
+    for c in containers:
+        for k in _DECISION_KEYS:
+            v = c.get(k)
+            if isinstance(v, str) and v.strip().lower() in _DENY_VALUES:
+                return True
+    return False
+
+
+def is_denial(payload: dict) -> bool:
+    """True ONLY when the harness refused the call.
+
+    This is the numerator of the permission-denial ceiling, and it used to be
+    `is_failure` — so every red test in a TDD build spent a ceiling named
+    `max_permission_denials`, a healthy multi-wave run could trip on doing
+    exactly what it is supposed to do, the trip reason sent whoever read it to
+    audit an allowlist that was never the problem, and the outcome record's
+    "Denied tool calls" histogram listed tools that were never denied.
+
+    Checked on BOTH hook events: a runtime may surface a refusal as a
+    PreToolUse permission decision or as PostToolUse output, and which one you
+    get is runtime-dependent."""
+    if _denial_decision(payload):
+        return True
+    if re.search(r"denied|reject|blocked",
+                 str(payload.get("hook_event_name", "")), re.I):
+        return True
+    for key in ("tool_output", "tool_response", "tool_result", "error"):
+        val = payload.get(key)
+        if isinstance(val, dict):
+            val = json.dumps(val)
+        if isinstance(val, str) and _DENIAL_MARKERS.search(val):
+            return True
+    return False
+
+
 def is_failure(payload: dict) -> bool:
+    """Any tool failure, refusals included. Feeds `consecutive_failures`, which
+    resets on the first success — so a red-test streak stays bounded without
+    becoming permanent. Deliberately still broad: a streak of ANY failure is a
+    sound thrash bound, and it is only the CUMULATIVE counter that needed the
+    narrower predicate."""
+    if is_denial(payload):
+        return True
     event = str(payload.get("hook_event_name", ""))
     if re.search(r"fail|error|denied|reject", event, re.I):
         return True
@@ -211,11 +305,40 @@ def is_failure(payload: dict) -> bool:
     return False
 
 
+def denial_rate(st: dict) -> float | None:
+    """Denials as a fraction of tool calls, or None when there are no calls to
+    divide by. Denials can be counted on either hook event while `tool_calls`
+    counts only PreToolUse, so treat this as bounded at ~1.0 rather than as a
+    strict subset ratio."""
+    calls = st.get("tool_calls") or 0
+    if calls <= 0:
+        return None
+    return st.get("denials", 0) / calls
+
+
 def evaluate(st: dict, lim: dict) -> str | None:
     """The trip reason, or None. Any limit set to 0/absent is disabled."""
-    if lim["max_permission_denials"] and st["denials"] >= lim["max_permission_denials"]:
-        return (f"permission denials reached {st['denials']} "
-                f"(limit {int(lim['max_permission_denials'])})")
+    # A bare count means opposite things at different run lengths: 16 denials
+    # in 900 calls is scattered noise in a long healthy build, while 20 in 40
+    # is a run that is clearly broken. Lowering the number makes the first
+    # worse; raising it delays catching the second. So trip only when BOTH
+    # hold — a substantial number of refusals, AND refusals being a
+    # substantial fraction of what this run is doing. The floor doubles as the
+    # minimum-sample guard, without which the rate alone would fire at the
+    # start of every run (2 denials in the first 5 calls is 40%).
+    floor = lim.get("max_permission_denials")
+    rate_ceiling = lim.get("max_denial_rate")
+    if floor and st["denials"] >= floor:
+        rate = denial_rate(st)
+        if rate is None:
+            pass  # no calls to divide by; the rate limb cannot be evaluated
+        elif not rate_ceiling or rate > rate_ceiling:
+            bound = (f"floor {int(floor)}"
+                     + (f", rate ceiling {rate_ceiling:.0%}" if rate_ceiling
+                        else ", no rate ceiling armed"))
+            return (f"{st['denials']} permission denials in "
+                    f"{st['tool_calls']} tool calls ({rate:.0%} of calls) "
+                    f"({bound})")
     if (lim["max_consecutive_tool_failures"]
             and st["consecutive_failures"] >= lim["max_consecutive_tool_failures"]):
         return (f"{st['consecutive_failures']} consecutive tool failures "
@@ -273,14 +396,29 @@ def handle(payload: dict) -> tuple[dict | None, dict]:
         st["cost_usd"] = cost
         st["cost_source"] = "transcript"
 
+    # Denials are counted wherever they surface, and ONLY denials reach the
+    # cumulative ceiling. `denied_tools` is what someone reads to fix an
+    # allowlist, so it must not be padded with tools that merely failed.
+    denied = is_denial(payload)
+    if denied:
+        st["denials"] += 1
+        st["denied_tools"][tool] = st["denied_tools"].get(tool, 0) + 1
+
     if event == "PreToolUse":
         st["tool_calls"] += 1
+        # Every tool ATTEMPTED, from the one signal the design notes call
+        # certain. A harness that refuses a call outright may surface it to
+        # neither hook, and then `denied_tools` is empty and there is nothing
+        # to fix an allowlist from. This leaves a record either way.
+        st["attempted_tools"][tool] = st["attempted_tools"].get(tool, 0) + 1
+        if denied:
+            st["consecutive_failures"] += 1
+            st["max_consecutive_seen"] = max(st["max_consecutive_seen"],
+                                             st["consecutive_failures"])
     elif is_failure(payload):
         st["consecutive_failures"] += 1
         st["max_consecutive_seen"] = max(st["max_consecutive_seen"],
                                          st["consecutive_failures"])
-        st["denials"] += 1
-        st["denied_tools"][tool] = st["denied_tools"].get(tool, 0) + 1
     else:
         st["consecutive_failures"] = 0
 
