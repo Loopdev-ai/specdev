@@ -184,6 +184,198 @@ def test_verify_ignores_the_spec_pr_that_triggered_the_build(tmp_path, monkeypat
     assert rec["ok"] is False
 
 
+# ---- F16: evidence about this run must have been produced BY this run ----
+#
+# The spec-PR exclusion above was ONE enumerated contaminant. The invariant it
+# belongs to is general: any artifact this run did not create is not evidence
+# about this run. These fix the class, not the instance.
+
+RUN_START = "2026-07-31T09:00:00Z"
+BOT = "github-actions[bot]"
+
+
+@pytest.fixture
+def checkpointed(tmp_path):
+    (tmp_path / ".specdev").mkdir()
+    (tmp_path / ".specdev" / "BUILD.md").write_text(
+        "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n\nWave 1 green.\n",
+        encoding="utf-8")
+    return tmp_path
+
+
+def _pr(**over):
+    pr = {"number": 7, "title": "FEAT-002 impl", "state": "OPEN",
+          "headRefName": "impl/FEAT-002", "baseRefName": "main",
+          "url": "u", "body": "", "createdAt": "2026-07-31T10:00:00Z",
+          "author": {"login": BOT}}
+    pr.update(over)
+    return pr
+
+
+def _verified(root, prs, monkeypatch, **kw):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: prs)
+    kw.setdefault("since", RUN_START)
+    kw.setdefault("author", [BOT])
+    return bo.verify(root, "FEAT-002", kw.pop("mode", "prod"), ".", "main",
+                     None, **kw)
+
+
+def test_a_humans_pre_existing_pr_does_not_satisfy_the_terminal_state(
+        checkpointed, monkeypatch):
+    """The observed failure: two human infrastructure PRs discussing the
+    feature at length were attributed to a build that merged nothing. Merged
+    weeks earlier, by a person, mentioning the FEAT id — and in prod mode that
+    made ok=True for a run with no branch, no commit and no PR."""
+    human = _pr(number=101, title="infra: CI runners for FEAT-002",
+                state="MERGED", headRefName="infra/runners",
+                createdAt="2026-07-01T08:00:00Z",
+                author={"login": "a-human"})
+    rec = _verified(checkpointed, [human], monkeypatch)
+    assert rec["ok"] is False
+    assert any("no Implementation PR" in p for p in rec["problems"])
+    assert rec["implementation_prs"] == []
+    # ...and it must SAY what it rejected and why, or a reader cannot tell
+    # "produced nothing" from "the filters were off".
+    assert len(rec["rejected_prs"]) == 1
+    assert "a-human" in rec["rejected_prs"][0]["reason"]
+
+
+def test_a_pr_that_predates_this_run_is_not_this_runs_output(
+        checkpointed, monkeypatch):
+    """Same-author, right shape, wrong run: a re-dispatch must not verify
+    itself against the previous dispatch's PR."""
+    old = _pr(number=55, createdAt="2026-07-30T23:59:59Z")
+    rec = _verified(checkpointed, [old], monkeypatch)
+    assert rec["ok"] is False
+    assert "before this run started" in rec["rejected_prs"][0]["reason"]
+
+
+def test_poc_is_not_satisfied_by_an_unrelated_merged_pr(
+        checkpointed, monkeypatch):
+    """poc requires a MERGED PR, so an old merged PR satisfied it outright."""
+    old = _pr(number=55, state="MERGED", createdAt="2026-01-01T00:00:00Z")
+    assert _verified(checkpointed, [old], monkeypatch, mode="poc")["ok"] is False
+
+
+def test_a_neighbouring_feat_id_does_not_match(checkpointed, monkeypatch):
+    """Both text matches were unanchored substring tests, so 'FEAT-002' in
+    'FEAT-0021' was True and FEAT-0021's PR satisfied FEAT-002's terminal
+    state. Provenance filters make this less likely to fire; a same-run bot PR
+    for a neighbouring id still slips through without an anchor."""
+    neighbour = _pr(number=9, title="FEAT-0021 impl",
+                    headRefName="impl/FEAT-0021", body="closes FEAT-0021")
+    rec = _verified(checkpointed, [neighbour], monkeypatch)
+    assert rec["ok"] is False
+    assert "whole id" in rec["rejected_prs"][0]["reason"]
+
+
+def test_a_feat_id_embedded_in_a_longer_token_does_not_match(checkpointed,
+                                                             monkeypatch):
+    assert bo._token_re("FEAT-002").search("FEAT-0021") is None
+    assert bo._token_re("FEAT-002").search("xFEAT-002") is None
+    assert bo._token_re("FEAT-002").search("impl/FEAT-002/wave-1") is not None
+
+
+def test_another_units_pr_does_not_match_on_a_substring(checkpointed,
+                                                        monkeypatch):
+    """A unit named 'api' matched a branch named 'rapid-sync' — 'rapid'
+    contains 'api'. The unit must match on path/branch segments."""
+    other = _pr(number=12, title="FEAT-002 impl", headRefName="impl/rapid-sync",
+                body="FEAT-002 for the sync service")
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [other])
+    rec = bo.verify(checkpointed, "FEAT-002", "prod", "api", "main", None,
+                    since=RUN_START, author=[BOT])
+    assert rec["ok"] is False
+    assert "does not name unit" in rec["rejected_prs"][0]["reason"]
+    # ...while the unit's own PR still matches, across a '/' boundary.
+    mine = _pr(number=13, headRefName="impl/api/FEAT-002",
+               title="FEAT-002 impl")
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [mine])
+    assert bo.verify(checkpointed, "FEAT-002", "prod", "api", "main", None,
+                     since=RUN_START, author=[BOT])["ok"] is True
+
+
+def test_this_runs_own_pr_still_passes_every_filter(checkpointed, monkeypatch):
+    """The filters must not be so tight that a real build cannot verify. Both
+    bot spellings resolve to the same identity."""
+    for login in (BOT, "app/github-actions", "github-actions"):
+        rec = _verified(checkpointed, [_pr(author={"login": login})], monkeypatch)
+        assert rec["ok"] is True, f"{login} should be recognised as the builder"
+        assert rec["rejected_prs"] == []
+        assert rec["warnings"] == []
+
+
+def test_unfiltered_matching_still_reproduces_the_original_behaviour(
+        checkpointed, monkeypatch):
+    """The inverted half of the provenance test: without filters the old
+    permissive behaviour is what you get — AND you are told so. Paired with the
+    tests above so a refactor cannot quietly stop exercising the filters while
+    the regression tests stay green."""
+    human = _pr(number=101, state="MERGED", createdAt="2026-07-01T08:00:00Z",
+                author={"login": "a-human"})
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [human])
+    rec = bo.verify(checkpointed, "FEAT-002", "prod", ".", "main")
+    assert rec["ok"] is True, "unfiltered, this is still just a text match"
+    assert rec["provenance_filters"]["applied"] is False
+    assert any("TEXT MATCH" in w for w in rec["warnings"]), \
+        "an unqualified verdict must say it is unqualified"
+
+
+def test_verify_cli_warns_rather_than_implying_a_certainty_it_lacks(
+        checkpointed):
+    """The warning has to reach the RUN LOG, not just the JSON record."""
+    rc = subprocess.run(
+        [sys.executable, str(TOOLS / "build_outcome.py"), "--root",
+         str(checkpointed), "verify", "--feat", "FEAT-002", "--mode", "prod"],
+        capture_output=True, text=True)
+    assert "::warning" in rc.stdout, \
+        "a check running without provenance filters must say so"
+    with_filters = subprocess.run(
+        [sys.executable, str(TOOLS / "build_outcome.py"), "--root",
+         str(checkpointed), "verify", "--feat", "FEAT-002", "--mode", "prod",
+         "--since", RUN_START, "--author", BOT],
+        capture_output=True, text=True)
+    assert "::warning" not in with_filters.stdout, \
+        "a qualified check must not cry wolf"
+
+
+def test_a_run_that_wrote_code_but_opened_no_pr_fails_with_the_right_reason(
+        checkpointed, monkeypatch):
+    """A real checkpoint is not a terminal state. The build wrote code, waves
+    went green, and it stopped before opening the PR — that is a failure whose
+    reason must name the missing PR, not the checkpoint."""
+    rec = _verified(checkpointed, [], monkeypatch)
+    assert rec["ok"] is False
+    assert len(rec["problems"]) == 1
+    assert "no Implementation PR" in rec["problems"][0]
+    assert "BUILD.md" not in rec["problems"][0]
+
+
+def test_verify_json_carries_the_filters_and_what_they_rejected(
+        checkpointed, monkeypatch, tmp_path):
+    """so a reader can tell 'no PR was produced' from 'the filters were off'
+    without re-deriving it."""
+    out = tmp_path / "verify.json"
+    rec = _verified(checkpointed, [_pr(number=101, author={"login": "a-human"})],
+                    monkeypatch)
+    out.write_text(json.dumps(rec), encoding="utf-8")
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["provenance_filters"] == {
+        "since": RUN_START, "authors": [BOT], "applied": True}
+    assert doc["rejected_prs"][0]["number"] == 101
+    assert doc["rejected_prs"][0]["reason"]
+
+
+def test_the_build_workflow_actually_passes_the_provenance_filters():
+    """A filter the workflow never supplies is a filter that does not exist."""
+    t = wf("specdev-build.yml")
+    assert "--since" in t and "steps.start.outputs.at" in t, \
+        "verify must be told when this run started"
+    assert "--author" in t, "verify must be told whose PRs count as this run's"
+    assert re.search(r'echo "at=\$\(date -u', t), \
+        "the start instant must be captured alongside the start SHA"
+
+
 def test_poc_requires_the_pr_to_be_merged(tmp_path, monkeypatch):
     (tmp_path / ".specdev").mkdir()
     (tmp_path / ".specdev" / "BUILD.md").write_text(
@@ -328,6 +520,183 @@ def test_build_arms_the_breaker_as_a_hook_not_a_post_run_check():
     assert "circuit_breaker.py verdict" in t
 
 
+# ---- F17: bounds that cannot engage, and a report that hides it ----------
+
+def _rm():
+    return load_mod(TOOLS / "run_manifest.py", "run_manifest_ph2")
+
+
+def test_the_slow_runaway_bounds_are_configurable_and_shipped_on():
+    """The cost ceiling is opportunistic: it needs a mid-run cost the agent
+    transcript usually does not expose until the terminal record, so it may
+    never arm at all. The module docstring's answer to that was
+    max_wall_minutes and max_tool_calls — both implemented, both absent from
+    ci.json and from the arming step, both defaulting to 0/off. Of three
+    runaway bounds, only the fast one existed."""
+    cfg = json.loads((ROOT / "assets" / "specdev" / "ci.json").read_text("utf-8"))
+    for key in ("max_wall_minutes", "max_tool_calls"):
+        assert key in cfg, f"{key} is documented as a bound but not configurable"
+        assert cfg[key] > 0, f"{key} ships disabled, so the bound does not exist"
+    assert cfg["max_wall_minutes"] < cfg["max_session_minutes"], \
+        "a wall ceiling at or above the job timeout can never trip first"
+
+
+def test_every_breaker_limit_is_exported_by_the_arming_step():
+    """The arming step exported three of five limits by hand. The env mapping
+    now lives beside the defaults so a limit cannot be added and left unwired."""
+    rm = _rm()
+    assert set(rm.BREAKER_ENV) == set(cb.limits()), \
+        "circuit_breaker reads a limit set the arming step does not know about"
+    for key in rm.BREAKER_ENV:
+        assert key in rm.CI_DEFAULTS, f"{key} has no default"
+    env, sources, errors = rm.breaker_env(ROOT / "assets" / "specdev")
+    assert not errors, errors
+    assert set(env) == set(rm.BREAKER_ENV.values())
+    assert all(v > 0 for v in env.values()), \
+        "a limit resolved to 0 is a bound that will not apply"
+
+
+def test_limit_defaults_have_exactly_one_source_of_truth():
+    """ci.json, CI_DEFAULTS and circuit_breaker's literals each carried an
+    independent default for the same limits. They agreed on main, so it was a
+    drift trap rather than a bug — and the resolution path made drift silent
+    AND asymmetric. Aligning the numbers fixes the instance; this fixes the
+    class."""
+    rm = _rm()
+    shipped = json.loads((ROOT / "assets" / "specdev" / "ci.json").read_text("utf-8"))
+    shipped.pop("schema_version", None)
+    assert rm.CI_DEFAULTS_SOURCE.endswith("ci.json"), \
+        "the defaults must be LOADED from the shipped config, not restated"
+    for key, val in shipped.items():
+        assert rm.CI_DEFAULTS[key] == val
+    # The only surviving copy is the fallback for an unreadable bundle. It is
+    # not a second opinion, so it must agree key for key.
+    for key, val in rm._FALLBACK_DEFAULTS.items():
+        assert key in shipped, f"{key} is a default with no shipped config"
+        assert shipped[key] == val, (
+            f"{key}: ci.json says {shipped[key]}, the fallback says {val} - "
+            f"which one a repo gets depends on which resolution path it hit")
+    assert cb.DEFAULTS == rm.CI_DEFAULTS, \
+        "circuit_breaker must not carry its own opinion about the limits"
+
+
+def test_an_unmeasurable_cost_is_reported_as_inactive_not_as_zero(tmp_path):
+    """`- Cost: $0.0 / $10` in the one artifact whose whole purpose is being
+    read after a failure says 'this run was free'. It meant 'nothing was ever
+    measured, and the ceiling you configured never engaged'."""
+    rec = {"ok": False, "feat": "FEAT-002", "mode": "prod", "unit": ".",
+           "problems": [], "implementation_prs": []}
+    breaker = {"tripped": False, "cost_usd": 0.0, "cost_source": "unavailable",
+               "tool_calls": 900, "denials": 0,
+               "limits": {"max_cost_usd": 10, "max_wall_minutes": 240,
+                          "max_tool_calls": 3000}}
+    md = bo._md_report(rec, breaker)
+    assert "not measured" in md and "INACTIVE" in md
+    assert "$0.0 / $10" not in md, "an unread cost must never render as $0"
+    assert "total_cost_usd" in md, \
+        "point the reader at the figure that IS available"
+    known = dict(breaker, cost_usd=7.5, cost_source="transcript")
+    md2 = bo._md_report(rec, known)
+    assert "7.5" in md2 and "transcript" in md2 and "INACTIVE" not in md2
+
+
+def test_the_breaker_verdict_says_the_ceiling_never_engaged(tmp_path, monkeypatch,
+                                                            capsys):
+    monkeypatch.setenv(cb.STATE_ENV, str(tmp_path / "b.json"))
+    cb.save_state(_state(tmp_path, cost_source="unavailable",
+                         limits={"max_cost_usd": 10}))
+    cb.verdict()
+    out = capsys.readouterr().out
+    assert "::warning" in out and "Cost ceiling inactive" in out
+    assert "not $0" in out.lower()
+
+
+def test_a_disabled_bound_is_reported_rather_than_left_to_be_inferred(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(cb.STATE_ENV, str(tmp_path / "b.json"))
+    cb.save_state(_state(tmp_path, unarmed_limits=["max_tool_calls"]))
+    cb.verdict()
+    assert "max_tool_calls" in capsys.readouterr().out
+
+
+# ---- F18: an arming step that fell back to library constants in silence ---
+
+def test_arming_fails_loudly_instead_of_arming_a_guess(tmp_path):
+    """`echo "X=$(get ...)"` cannot fail: a command substitution's nonzero exit
+    does not trip `set -e`, because the compound command's status is echo's. A
+    malformed ci.json therefore wrote empty values, circuit_breaker fell
+    through to its own literals, and the run presented as configured."""
+    (tmp_path / ".specdev").mkdir()
+    (tmp_path / ".specdev" / "ci.json").write_text("{ not json", encoding="utf-8")
+    p = subprocess.run(
+        [sys.executable, str(TOOLS / "run_manifest.py"), "--root", str(tmp_path),
+         "breaker-env"], capture_output=True, text=True)
+    assert p.returncode != 0, "a broken ci.json must not arm the breaker"
+    assert not p.stdout.strip(), "nothing may be exported from a failed resolve"
+    assert "::error" in p.stderr
+
+
+def test_an_unknown_limit_key_is_an_error_not_an_empty_value(tmp_path):
+    rm = _rm()
+    _, _, errors = rm.breaker_env(tmp_path)
+    assert not errors, "the bundled defaults cover every key"
+    monkeyed = dict(rm.BREAKER_ENV, no_such_key="SPECDEV_NO_SUCH")
+    rm.BREAKER_ENV = monkeyed
+    _, _, errors = rm.breaker_env(tmp_path)
+    assert any("no such ci.json key" in e for e in errors)
+
+
+def test_an_empty_env_value_no_longer_silently_picks_a_different_number(
+        tmp_path, monkeypatch):
+    """The fallback an empty SPECDEV_MAX_COST_USD lands on must be the shipped
+    config, not a literal in the hook."""
+    monkeypatch.setenv("SPECDEV_MAX_COST_USD", "")
+    shipped = json.loads((ROOT / "assets" / "specdev" / "ci.json").read_text("utf-8"))
+    assert cb.limits()["max_cost_usd"] == float(shipped["max_cost_usd"])
+
+
+def test_the_arming_step_resolves_every_limit_in_one_checked_call():
+    t = wf("specdev-build.yml")
+    assert "breaker-env" in t, \
+        "the limits must be resolved by one call that can fail the step"
+    m = re.search(r"name: Arm the circuit breaker\n\s+run: \|\n((?:.+\n)+?)\s*- ", t)
+    assert m, "the arming step must exist"
+    body = m.group(1)
+    assert "set -euo pipefail" in body
+    assert not re.search(r'echo "SPECDEV_MAX_\w+=\$\(', body), \
+        "a $(...) inside echo cannot fail the step - that is the whole bug"
+    assert "GITHUB_STEP_SUMMARY" in body, \
+        "the resolved limits and their source must reach the run page"
+
+
+# ---- F19: the terminal state the prompt never named ----------------------
+
+def test_the_coordinator_is_told_the_terminal_state_the_workflow_asserts():
+    """The hardening added a mechanical assertion for a terminal state the
+    prompt never stated, so the two halves of the pipeline disagreed about when
+    the job was done — and only one of them was enforced. A coordinator ended
+    its turn voluntarily mid-build, well inside its turn budget, with a wave's
+    QA still in flight."""
+    for path in (ROOT / "commands" / "build.md",
+                 ROOT / "skills" / "specdev" / "SKILL.md"):
+        text = path.read_text(encoding="utf-8").lower()
+        assert "terminal state" in text, f"{path.name} never names it"
+        assert "implementation pr" in text
+        assert "merged" in text, "poc's terminal state is a MERGED PR"
+        assert "build.md" in text and "commit" in text, \
+            f"{path.name} must say to record WHY it stopped, and commit it"
+
+
+def test_the_terminal_state_is_phrased_in_the_words_verify_uses():
+    """Both halves must be recognisably the same sentence, or the prompt drifts
+    from the assertion again."""
+    required = bo.verify(ROOT, "FEAT-002", "prod", ".", "main")
+    assert required["required_terminal_state"] == \
+        "Implementation PR open against main"
+    build_md = (ROOT / "commands" / "build.md").read_text(encoding="utf-8")
+    assert "Implementation PR" in build_md and "base branch" in build_md
+
+
 # ---- F1: the allowlist that denied the agent its own first instruction ----
 
 def _allowlist():
@@ -427,7 +796,8 @@ def test_report_reaches_the_step_summary(tmp_path, monkeypatch):
     breaker_json.write_text(json.dumps({
         "tripped": True, "trip_reason": "permission denials reached 15",
         "denials": 15, "denied_tools": {"Bash": 12, "Skill": 3},
-        "cost_usd": 12.50, "max_consecutive_seen": 4}), encoding="utf-8")
+        "cost_usd": 12.50, "cost_source": "transcript",
+        "max_consecutive_seen": 4}), encoding="utf-8")
 
     rc = subprocess.run(
         [sys.executable, str(TOOLS / "build_outcome.py"), "--root", str(tmp_path),

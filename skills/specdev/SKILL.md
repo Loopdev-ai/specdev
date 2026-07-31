@@ -187,6 +187,28 @@ Turn `components.md` into a build schedule:
 Sequential or trivial single-component work can skip waves, but still goes
 through `component-builder` so its detail stays out of this thread.
 
+## Terminal state (when a build is actually over)
+
+A build ends at a **terminal state**, not when you feel finished. CI asserts it
+after your turn with `build_outcome.py verify`, in these words:
+
+- **prod:** an Implementation PR for this unit + `FEAT-###` exists against the
+  base branch — one THIS run opened, not one that merely mentions the id.
+- **poc:** that PR exists **and has been merged**.
+- **Either mode:** `<unit>/.specdev/BUILD.md` is a real checkpoint, not the
+  shipped template.
+
+Ending a turn short of that is a failed build, not a partial success —
+including ending cleanly, mid-wave, well inside the turn budget, with later
+waves untouched. If a wave's QA is still in flight, the build is not over.
+
+**If you cannot reach it** — blocked builder, denied tool, tripped breaker, a
+contract only a human can settle — stop deliberately: write what is done, what
+is outstanding and what blocked you into `BUILD.md`, commit it, and say so.
+Never end a turn short of the terminal state without that record. The CI
+checkpoint push makes stopping cheap, which is what makes stopping acceptable —
+but it can only push what you committed.
+
 ## Guardrails
 
 - Never start the build before the Spec PR is merged.

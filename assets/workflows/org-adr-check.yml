@@ -10,7 +10,8 @@ name: org-adr-check
 # with no local change at all. Filtering this workflow by changed paths would
 # yield a repo that looks green for months while its verifications rot.
 #
-# Mark the 'summary' job — NOT the matrix legs — a required status check.
+# Mark the **org-adr-check summary** check — NOT the matrix legs — a required
+# status check.
 # Matrix legs produce dynamic check names ("check (infrastructure)") that
 # branch protection cannot require, so a newly added unit would otherwise
 # arrive as a silently unrequired check. It skips cleanly before org.json is
@@ -67,6 +68,7 @@ jobs:
   # The single required status check. Matrix leg names are dynamic, so branch
   # protection cannot require them individually.
   summary:
+    name: org-adr-check summary
     needs: [discover, check]
     if: always()
     runs-on: ubuntu-latest

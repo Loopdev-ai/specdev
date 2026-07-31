@@ -1,0 +1,77 @@
+name: tests
+
+# Upstream's own gate. Until this existed, nothing in CI ran tests/ at all —
+# the only live workflow in this repo was adr-index.yml, so the 300-odd
+# regression tests protecting the shipped pipeline ran only on a contributor's
+# laptop, if at all.
+#
+# The install-smoke job is the important half. This repo ships
+# assets/specdev/** and assets/workflows/** as a TEMPLATE and never installs
+# itself, so no test has ever seen the pipeline in the shape an adopter runs
+# it. That makes a whole class of defect structurally invisible: a permissions
+# mismatch between two shipped workflow files is not a property of either file,
+# only of the pair, and only a workflow loader evaluates the pair. Such a pair
+# fails at workflow INITIALISATION — startup_failure, zero jobs, no logs — so
+# it is also the class an adopter can least afford to discover in production.
+# Installing the template into a scratch tree and checking the resulting
+# workflows costs seconds, runs no agent and spends nothing.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor the tools assert at import; 3.x is what CI installs
+        # for adopters via actions/setup-python.
+        python-version: ['3.10', '3.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: python -m pip install --quiet pytest pyyaml
+      - name: Run the test suite
+        run: python -m pytest tests/ -q
+
+  install-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install test dependencies
+        run: python -m pip install --quiet pytest pyyaml
+      # Install the template the way commands/init.md tells an adopter to, into
+      # a scratch tree, and run the checks that only make sense on the result.
+      - name: Install the template into a scratch repo
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/adopter/.github/workflows /tmp/adopter/.claude
+          cp -r assets/specdev /tmp/adopter/.specdev
+          cp assets/workflows/*.yml /tmp/adopter/.github/workflows/
+          cp -r skills /tmp/adopter/.claude/skills
+          cp -r agents /tmp/adopter/.claude/agents
+      # Parses every installed workflow and checks each `uses: ./` pair for the
+      # caller-grants-what-the-callee-requests rule. Deliberately NOT a
+      # `curl | bash` of a third-party linter: this repo's whole subject is
+      # supply-chain governance, and the check that matters here is a hundred
+      # lines of stdlib Python with no network and no new trust.
+      - name: Every installed workflow parses, and every reusable call is granted what it needs
+        run: python -m pytest tests/test_installed_layout.py -q
+      - name: The installed tools run from their installed paths
+        run: |
+          set -euo pipefail
+          cd /tmp/adopter
+          python .specdev/tools/run_manifest.py --root . breaker-env --repo-root .
+          python .specdev/tools/validate_spec.py || true
+          python .specdev/tools/build_outcome.py --root . checkpoint || true

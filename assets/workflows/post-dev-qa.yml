@@ -2,9 +2,10 @@ name: post-dev-qa
 
 # Gate 2 — runs on the Implementation PR, per governed unit. With fully-automatic
 # prod, these checks are most of what stands between a merge and production:
-# keep them strict. Mark the 'summary' job — NOT the matrix legs — a required
-# status check in branch protection; leg names are dynamic and cannot be
-# required individually.
+# keep them strict. Mark the **post-dev-qa summary** check — NOT the matrix
+# legs — a required status check in branch protection; leg names are dynamic
+# and cannot be required individually. Each gate's summary job carries a
+# distinct `name:` so branch protection can tell them apart.
 on:
   pull_request:
     branches: [main]
@@ -135,6 +136,7 @@ jobs:
   # The single required status check. Matrix leg names are dynamic, so branch
   # protection cannot require them individually.
   summary:
+    name: post-dev-qa summary
     needs: [discover, qa]
     if: always()
     runs-on: ubuntu-latest

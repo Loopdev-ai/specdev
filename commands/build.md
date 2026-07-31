@@ -20,6 +20,37 @@ full test output, or code surveys into this thread.
    filled component table with a **Depends on** column. If the table is empty,
    stop and ask the user to define components first.
 
+## Terminal state — the run is not over until you reach it
+
+**You are not done when you run out of things you feel like doing. You are done
+when this build's terminal state is reached.** CI asserts it mechanically after
+your turn ends (`build_outcome.py verify`), in these words:
+
+- **prod:** an Implementation PR for this unit + `FEAT-###` exists against the
+  base branch — opened by this run, not merely mentioned somewhere.
+- **poc:** that PR exists **and has been merged**.
+- **Either mode:** `<unit>/.specdev/BUILD.md` is a real checkpoint, not the
+  shipped template.
+
+Ending your turn short of that is a **failed build**, not a partial success —
+including ending it cleanly, mid-wave, with turns to spare. A wave whose QA is
+still in flight is not a stopping point; neither is "the interesting part is
+done". Keep going: form the next wave.
+
+**If you cannot get there** — a builder is blocked, a tool is denied, the
+circuit breaker trips, a contract needs a human — then stop deliberately and
+leave the reason behind: write what you completed, what is outstanding, and
+what blocked you into `BUILD.md`, **commit it**, and say so. That is the only
+acceptable way to end short of the terminal state. CI pushes your committed
+checkpoint to `specdev/checkpoint/<unit>/<FEAT-###>` whatever the outcome, so
+stopping is cheap and a re-dispatch resumes from it — but only for what you
+actually committed.
+
+Interactively (this command, run by a human), the terminal state is the end of
+*After the final wave* below: green QA, green org-ADR loop, `BUILD.md` at
+`qa`, and the user told the PR is ready. Opening the PR is the human's call
+here; in headless CI it is yours.
+
 ## Build loop (repeat until every component is built)
 
 1. **Plan waves.** Read the **Depends on** column of `.specdev/components.md` as

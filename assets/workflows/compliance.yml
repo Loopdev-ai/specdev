@@ -8,9 +8,11 @@ name: compliance
 # scope statement, so concatenating two units' SoAs produces a document that is
 # true of neither — each unit uploads its own.
 #
-# Mark the 'summary' job — NOT the matrix legs — a required status check once
-# you have started mapping controls (it is a no-op until compliance/ is
-# populated).
+# Mark the **compliance summary** check — NOT the matrix legs — a required
+# status check once you have started mapping controls (it is a no-op until
+# compliance/ is populated). The job's `name:` is what branch protection sees;
+# every gate's summary job carries a distinct one so they can be required
+# individually.
 on:
   pull_request:
     branches: [main]
@@ -83,6 +85,7 @@ jobs:
   # The single required status check. Matrix leg names are dynamic, so branch
   # protection cannot require them individually.
   summary:
+    name: compliance summary
     needs: [discover, controls]
     if: always()
     runs-on: ubuntu-latest

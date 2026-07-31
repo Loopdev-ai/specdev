@@ -44,9 +44,25 @@ jobs:
             echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BEFORE")" >> "$GITHUB_OUTPUT"
           fi
 
+  # The `permissions:` block is REQUIRED, and its contents are dictated by
+  # deploy-unit.yml, not by this file. A called reusable workflow may not
+  # request a permission the calling job holds — including from a job-level
+  # block INSIDE it — and GitHub validates that at workflow INITIALISATION,
+  # before any `if:` or `needs:` is evaluated. deploy-unit.yml's `rollback` job
+  # declares `issues: write` (it files the incident), which the workflow-level
+  # `contents: write` above does not grant, so without this block the entire
+  # deploy run ends as `startup_failure` with zero jobs and no logs — on every
+  # merge to main, whether or not a rollback ever happens.
+  #
+  # tests/test_installed_layout.py checks every caller/callee pair for this;
+  # if you add a permission to any job in deploy-unit.yml, it fails here until
+  # this block matches.
   chain:
     needs: discover
     if: needs.discover.outputs.units != '[]'
+    permissions:
+      contents: write   # tag releases
+      issues: write     # rollback files the incident
     strategy:
       fail-fast: false
       max-parallel: 1   # units deploy one at a time; each chain tags and pushes
