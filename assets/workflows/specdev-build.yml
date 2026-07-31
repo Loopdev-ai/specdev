@@ -3,9 +3,20 @@ name: specdev-build
 # Hands-off SpecDev build in CI, scoped to ONE governed unit. Started locally in
 # Claude Code, handed off here:
 #   - prod: merging the Spec PR (spec/** -> main) fires this; the runner builds
-#     and opens the Implementation PR, then STOPS (a human merges -> deploy.yml).
-#   - poc:  pushing a poc/** branch fires this; the runner specs + builds, opens
-#     the Implementation PR, self-merges, then deploys the isolated poc env.
+#     and PUSHES specdev/impl/<unit>/<FEAT> with a prepared PR body, then STOPS.
+#     A HUMAN opens the PR from that branch and merges it (-> deploy.yml).
+#   - poc:  pushing a poc/** branch fires this; the runner specs + builds,
+#     pushes the same branch, and deploys the isolated poc env FROM it.
+#
+# THE BUILD NEVER OPENS OR MERGES A PULL REQUEST, in either mode. Doing so
+# would require the repository setting "Allow GitHub Actions to create and
+# approve pull requests" — one switch granting create AND approve, so enabling
+# it lets Actions approve its way past the review this pipeline's merge gate
+# depends on, and leaving it off made the old terminal state unreachable (a
+# completed build with nowhere to put its result). A pushed branch needs only
+# `contents: write`, is more directly attributable than a PR, and the PR a
+# human then opens actually fires `on: pull_request` — a bot-authored one gets
+# none of the required checks and cannot merge.
 #
 # The unit comes from the branch: spec/<unit>/<name> and poc/<unit>/<name>. A
 # segment is read as a unit only when it names a REGISTERED unit, so a
@@ -20,10 +31,11 @@ name: specdev-build
 # default) a re-dispatch restores that ref before the agent starts.
 #
 # The build job is NOT green merely because the agent process exited. It ends
-# with an assertion that the mode's terminal state was actually reached (an
-# Implementation PR exists / was merged) and that the checkpoint is no longer
-# the stock template. deploy-poc is gated on that assertion, never on the exit
-# code: a build that produced nothing must not trigger a deployment.
+# with an assertion that the terminal state was actually reached — the
+# implementation branch carries commits beyond the base, the PR body is
+# prepared, and the checkpoint is no longer the stock template. deploy-poc is
+# gated on that assertion, never on the exit code: a build that produced
+# nothing must not trigger a deployment.
 on:
   pull_request:
     types: [closed]
@@ -167,7 +179,35 @@ jobs:
       UNIT: ${{ needs.setup.outputs.unit }}
       FEAT: ${{ needs.setup.outputs.feat }}
       MODE: ${{ needs.setup.outputs.mode }}
-      BREAKER_STATE: ${{ github.workspace }}/.specdev-breaker.json
+      # NOT a dotfile: actions/upload-artifact's globber skips hidden files,
+      # so `.specdev-breaker.json` never reached the artifact and
+      # if-no-files-found: warn stayed silent because the other two paths
+      # matched. Also kept under runner.temp with them, so the upload does
+      # not span two roots.
+      BREAKER_STATE: ${{ runner.temp }}/specdev-breaker-state.json
+      # The continuation prompt. Deliberately short and identical for every
+      # attempt: the checkpoint is the state, not this text.
+      CONTINUE_PROMPT: |
+        You are resuming a SpecDev build that STOPPED BEFORE ITS TERMINAL
+        STATE. A previous attempt in this same job ended its turn early; the
+        work it committed is in the tree and its ledger is in
+        <unit>/.specdev/BUILD.md.
+
+        Read that ledger first, then continue the dependency-wave loop from
+        the last GREEN wave. Do not restart from zero and do not re-verify
+        waves already recorded green.
+
+        Follow the vendored specdev skill at .claude/skills/specdev, as a
+        strict coordinator: dispatch component-builder / qa-verifier /
+        adr-checker / spec-explorer subagents, keep only their summaries.
+
+        Commit every wave as it goes green. The terminal state is: the
+        implementation branch carries your commits beyond the base branch, and
+        <unit>/.specdev/PR_BODY.md is filled in. Do NOT open, review or merge
+        a pull request in either mode - a human opens it.
+
+        If you cannot reach the terminal state, write what is done, what is
+        outstanding and what blocked you into BUILD.md, COMMIT it, and stop.
     outputs:
       terminal_ok: ${{ steps.verify.outputs.ok }}
       checkpoint_ref: ${{ steps.checkpoint.outputs.ref }}
@@ -202,6 +242,21 @@ jobs:
             echo "sha=$(git rev-parse HEAD)"
             echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
+      # Ref names come from the tool, not from string interpolation. The unit
+      # of a single-root repo is `.`, and `refs/heads/specdev/checkpoint/./F-1`
+      # is not a legal ref name — git rejects any path containing `/./`. Built
+      # by hand, the checkpoint push therefore failed on every single-root
+      # repo, into a `||` branch that only warns, so `auto_resume` had nothing
+      # to restore and no run was ever really resumable.
+      - id: refs
+        name: Resolve the ref names for this unit + FEAT
+        run: |
+          python .specdev/tools/build_outcome.py refs \
+            --unit "$UNIT" --feat "$FEAT" >> "$GITHUB_OUTPUT"
+          python .specdev/tools/build_outcome.py refs \
+            --unit "$UNIT" --feat "$FEAT" \
+            | sed 's/^impl=/IMPL_REF=/; s/^checkpoint=/CHECKPOINT_REF=/' \
+            >> "$GITHUB_ENV"
       - name: Record run manifest (mode signal for the deploy guard)
         run: |
           python .specdev/tools/run_manifest.py init \
@@ -215,7 +270,7 @@ jobs:
         name: Restore the last checkpoint (ci.json auto_resume)
         run: |
           AUTO=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get auto_resume --repo-root .)
-          REF="specdev/checkpoint/${UNIT}/${FEAT}"
+          REF="${CHECKPOINT_REF}"
           if [ "$AUTO" != "True" ] && [ "$AUTO" != "true" ]; then
             echo "auto_resume is $AUTO — starting from the branch as-is."; exit 0
           fi
@@ -259,6 +314,15 @@ jobs:
             > "${{ runner.temp }}/breaker.env"
           cat "${{ runner.temp }}/breaker.env" >> "$GITHUB_ENV"
           echo "SPECDEV_BREAKER_STATE=${BREAKER_STATE}" >> "$GITHUB_ENV"
+          # Continuation budget (U17). Resolved the same way and just as
+          # loudly — an unresolvable key fails this step rather than arming a
+          # library constant.
+          ATTEMPTS=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get max_build_attempts --repo-root .)
+          CAP=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get continuation_cap_usd --repo-root .)
+          echo "MAX_ATTEMPTS=${ATTEMPTS}" >> "$GITHUB_ENV"
+          echo "CONTINUATION_CAP_USD=${CAP}" >> "$GITHUB_ENV"
+          echo "- Continuation: up to \`${ATTEMPTS}\` attempts, start-gated at \`\$${CAP}\` (the cap bounds whether the NEXT attempt begins, not what it spends)." \
+            >> "$GITHUB_STEP_SUMMARY"
           # GITHUB_ENV only takes effect in LATER steps, so seed the state file
           # with the path exported inline here.
           SPECDEV_BREAKER_STATE="${BREAKER_STATE}" \
@@ -279,7 +343,11 @@ jobs:
             }
           }
           JSON
-      - name: Run the SpecDev build (headless Claude Code)
+      - id: head0
+        name: Record HEAD before the first attempt
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: agent1
+        name: Run the SpecDev build (headless Claude Code)
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -310,13 +378,18 @@ jobs:
             requires it.
 
             Resume from <unit>/.specdev/BUILD.md; if the build is incomplete,
-            continue the dependency-wave loop until this mode's terminal state:
-              - prod: open the Implementation PR against main, then STOP. Do NOT merge.
-              - poc:  open the Implementation PR and merge it into main.
+            continue the dependency-wave loop until the terminal state:
+              - your commits are on the branch (COMMIT every wave - this job
+                pushes them to specdev/impl/<unit>/<FEAT> for you), and
+              - <unit>/.specdev/PR_BODY.md is filled in.
+            Do NOT open, review or merge a pull request, in EITHER mode - a
+            human opens it from that branch. `gh pr create`, `gh pr review` and
+            `gh pr merge` are denied to you; that is deliberate, not an
+            allowlist gap to report as a blocker.
 
             Reaching that terminal state is ASSERTED after you finish: the job
-            fails unless the Implementation PR actually exists (and, in poc
-            mode, was merged). Exiting cleanly without one is a failed build,
+            fails unless the branch carries commits beyond the base and the PR
+            body is prepared. Exiting cleanly without them is a failed build,
             not a partial success. Do NOT end your turn while a wave's QA is
             still outstanding or later waves are untouched — having turns to
             spare is not a reason to stop. If you genuinely cannot get there,
@@ -338,7 +411,7 @@ jobs:
             useful to the human who re-dispatches.
           # Explicit tool allowlist. Without one the agent runs with the FULL
           # default surface — including WebFetch/WebSearch — on a job that
-          # writes code and, in poc mode, self-merges to main. An allowlist
+          # writes code and, in poc mode, deploys an environment. An allowlist
           # makes the surface a reviewable decision instead of a default.
           #
           # ── REQUIRED FLOOR — do not tighten below this ──────────────────
@@ -353,9 +426,19 @@ jobs:
           #                every subagent whatever its own frontmatter grants.
           #
           # Cutting below that floor does not harden the job, it breaks it.
-          # Containment comes from the scope check, the no-self-merge rule
-          # outside poc, the human PR gate, the circuit breaker and the deny
-          # list below — not from tool-prefix scarcity. Bash stays broad
+          # Containment comes from the scope check, the human PR gate (the
+          # build opens no PR in any mode), the circuit breaker and the deny
+          # list below — not from tool-prefix scarcity.
+          #
+          # `gh pr review` / `gh pr merge` / `gh pr create` are denied, and
+          # unlike the rest of that list this is a boundary rather than a speed
+          # bump. The list IS porous — broad Bash permits python3 -c, and no
+          # interpreter can be denied — but that argument applies to
+          # capabilities the build needs by another route. The coordinator has
+          # no legitimate use for these three verbs in any mode: it stops at a
+          # pushed branch, and `pull-requests: write` would otherwise let the
+          # session approve a HUMAN's open PR, which is usually exactly what is
+          # waiting for review. Bash stays broad
           # because the coordinator runs this repo's own test/lint/build
           # commands, which vary per stack; the deny list covers the egress and
           # credential paths, where the real risk is.
@@ -363,7 +446,89 @@ jobs:
             --max-turns 200
             --settings "${{ runner.temp }}/breaker-settings.json"
             --allowedTools "Task,Agent,Skill,Read,Write,Edit,Glob,Grep,Bash,TodoWrite"
-            --disallowedTools "WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),Bash(ssh:*),Bash(scp:*),Bash(aws:*),Bash(az:*),Bash(gcloud:*)"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),Bash(ssh:*),Bash(scp:*),Bash(aws:*),Bash(az:*),Bash(gcloud:*),Bash(gh pr review:*),Bash(gh pr merge:*),Bash(gh pr create:*)"
+
+      # ── BOUNDED CONTINUATION (U17) ──────────────────────────────────────
+      #
+      # A coordinator that ends its turn ends the run. One did, at turn 35 of
+      # 200, with wave 1 built, its QA still in flight and waves 2-6 untouched
+      # — no error, no breaker trip, no turn exhaustion. Sharpening the prompt
+      # did NOT fix it: the next run stopped after 6 turns and under four
+      # minutes with the corrected wording in place. What built the feature was
+      # a second invocation. A fix that depends on the model complying is not a
+      # fix, so this is mechanical.
+      #
+      # It is additional STEPS IN THIS JOB, never a self-dispatch: GitHub does
+      # not create workflow runs from events authored by the default token, so
+      # a workflow calling `gh workflow run` on itself is a silent no-op. (Same
+      # rule as bot-authored PRs not firing `on: pull_request` — see the README
+      # section "Two things GitHub will not do for a bot".)
+      #
+      # Every gate condition must hold: terminal state unreached, attempts
+      # left, spend under the cap, AND the previous attempt actually committed
+      # something. That last one is what makes the loop safe — an attempt that
+      # achieved nothing does not buy another. Cost comes from the ACTION's
+      # own output, never the breaker's (which reads "unavailable" on hosted
+      # runners by design); unreadable stops the loop rather than continuing
+      # unbudgeted.
+      - id: gate1
+        name: Decide whether to continue (attempt 1)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .specdev/tools/build_outcome.py --root "$UNIT" continue-gate \
+            --feat "$FEAT" --mode "$MODE" --unit "$UNIT" \
+            --base "${{ github.event.repository.default_branch }}" \
+            --repo-dir . --attempt 1 --max-attempts "$MAX_ATTEMPTS" \
+            --spent "${{ steps.agent1.outputs.total_cost_usd }}" \
+            --cap "$CONTINUATION_CAP_USD" \
+            --head-before "${{ steps.head0.outputs.sha }}" \
+            --head-now "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: head1
+        name: Record HEAD before attempt 2
+        if: always() && steps.gate1.outputs.go == 'true'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: agent2
+        name: Continue the SpecDev build (attempt 2)
+        if: always() && steps.gate1.outputs.go == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: ${{ env.CONTINUE_PROMPT }}
+          claude_args: >-
+            --max-turns 200
+            --settings "${{ runner.temp }}/breaker-settings.json"
+            --allowedTools "Task,Agent,Skill,Read,Write,Edit,Glob,Grep,Bash,TodoWrite"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),Bash(ssh:*),Bash(scp:*),Bash(aws:*),Bash(az:*),Bash(gcloud:*),Bash(gh pr review:*),Bash(gh pr merge:*),Bash(gh pr create:*)"
+      - id: gate2
+        name: Decide whether to continue (attempt 2)
+        if: always() && steps.gate1.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .specdev/tools/build_outcome.py --root "$UNIT" continue-gate \
+            --feat "$FEAT" --mode "$MODE" --unit "$UNIT" \
+            --base "${{ github.event.repository.default_branch }}" \
+            --repo-dir . --attempt 2 --max-attempts "$MAX_ATTEMPTS" \
+            --spent "${{ steps.agent2.outputs.total_cost_usd }}" \
+            --cap "$CONTINUATION_CAP_USD" \
+            --head-before "${{ steps.head1.outputs.sha }}" \
+            --head-now "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: agent3
+        name: Continue the SpecDev build (attempt 3)
+        if: always() && steps.gate2.outputs.go == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: ${{ env.CONTINUE_PROMPT }}
+          claude_args: >-
+            --max-turns 200
+            --settings "${{ runner.temp }}/breaker-settings.json"
+            --allowedTools "Task,Agent,Skill,Read,Write,Edit,Glob,Grep,Bash,TodoWrite"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl:*),Bash(wget:*),Bash(ssh:*),Bash(scp:*),Bash(aws:*),Bash(az:*),Bash(gcloud:*),Bash(gh pr review:*),Bash(gh pr merge:*),Bash(gh pr create:*)"
 
       # ── Everything below runs on success, failure, timeout and circuit-break
       # alike. The failing run is precisely the one whose checkpoint and denial
@@ -373,11 +538,35 @@ jobs:
       # and dies at job teardown, so "resume" was never possible and a $39
       # run was unrecoverable. Pushed to a dedicated ref — never to a release
       # branch — so a broken build can never reach one.
+      # THE DELIVERABLE. Pushed BEFORE the checkpoint commit exists, and that
+      # ordering is load-bearing: the checkpoint commit carries [skip ci], and
+      # GitHub skips EVERY workflow on a pull request whose head carries that
+      # marker — no error, no skipped-run entry, just a PR with zero checks
+      # that looks like CI has not started. If this ran after the checkpoint
+      # step, the branch a human opens the PR from would have a [skip ci] head.
+      #
+      # Mechanical on purpose: the terminal state must not depend on the agent
+      # choosing to push, any more than it should depend on it choosing to
+      # stop. `contents: write` is all this needs — no create-PR capability.
+      - id: impl
+        name: Push the implementation branch
+        if: always()
+        run: |
+          echo "ref=${IMPL_REF}" >> "$GITHUB_OUTPUT"
+          if git rev-parse --verify --quiet HEAD >/dev/null; then
+            if git push --force origin "HEAD:refs/heads/${IMPL_REF}"; then
+              echo "::notice title=Implementation branch pushed::${IMPL_REF} —" \
+                   "open the PR from it; the body is in ${UNIT}/.specdev/PR_BODY.md."
+            else
+              echo "::warning title=Push failed::Could not push ${IMPL_REF}."
+            fi
+          fi
+
       - id: checkpoint
         name: Push the checkpoint
         if: always()
         run: |
-          REF="specdev/checkpoint/${UNIT}/${FEAT}"
+          REF="${CHECKPOINT_REF}"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
           git add -A -- "${PREFIX}.specdev/" || true
@@ -483,11 +672,15 @@ jobs:
           path: |
             ${{ runner.temp }}/build-outcome.md
             ${{ runner.temp }}/verify.json
-            ${{ env.BREAKER_STATE }}
-          if-no-files-found: warn
+            ${{ runner.temp }}/specdev-breaker-state.json
+          if-no-files-found: error
 
-  # poc only: after the build self-merges, deploy the isolated poc environment
-  # by CALLING the reusable workflow directly (no push event, no PAT).
+  # poc only: deploy the isolated poc environment FROM THE BUILT BRANCH, by
+  # CALLING the reusable workflow directly (no push event, no PAT). There is no
+  # self-merge any more: poc used to require the create-and-approve switch AND
+  # autonomous merging into main — the riskier half of the two modes. Deploying
+  # from the branch removes both, and a poc environment is isolated by
+  # definition, so nothing is lost.
   # Gated on the terminal-state ASSERTION, not on the build job's exit code.
   # `needs.build.result == 'success'` was satisfied by a run that produced no
   # branch, no commit and no PR — which would have deployed nothing, as

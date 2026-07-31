@@ -103,6 +103,11 @@ _FALLBACK_DEFAULTS = {
     "max_cost_usd": 10,
     "max_wall_minutes": 240,
     "max_tool_calls": 3000,
+    # U17 bounded continuation - NOT breaker limits, so deliberately not in
+    # BREAKER_ENV. The cap is a START GATE: it bounds whether the next attempt
+    # begins, not what it spends, so true exposure is "cap plus one attempt".
+    "max_build_attempts": 3,
+    "continuation_cap_usd": 25,
 }
 
 # ci.json key -> the environment variable circuit_breaker.py reads it from.

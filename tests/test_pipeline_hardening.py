@@ -158,234 +158,235 @@ def test_a_real_checkpoint_passes(tmp_path):
     assert bo.checkpoint_problems(tmp_path) == []
 
 
-# ---- F13: success that meant nothing -------------------------------------
-
-def test_verify_fails_when_no_implementation_pr_exists(tmp_path, monkeypatch):
-    (tmp_path / ".specdev").mkdir()
-    (tmp_path / ".specdev" / "BUILD.md").write_text(
-        "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n", encoding="utf-8")
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
-    rec = bo.verify(tmp_path, "FEAT-002", "prod", ".", "main")
-    assert rec["ok"] is False
-    assert any("no Implementation PR" in p for p in rec["problems"])
-
-
-def test_verify_ignores_the_spec_pr_that_triggered_the_build(tmp_path, monkeypatch):
-    """A prod build is TRIGGERED by the Spec PR merging. Counting that PR as the
-    terminal state would let a build verify itself against its own trigger."""
-    (tmp_path / ".specdev").mkdir()
-    (tmp_path / ".specdev" / "BUILD.md").write_text(
-        "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n", encoding="utf-8")
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [
-        {"number": 1, "title": "FEAT-002 spec", "state": "MERGED",
-         "headRefName": "spec/FEAT-002", "baseRefName": "main",
-         "url": "u", "body": ""}])
-    rec = bo.verify(tmp_path, "FEAT-002", "prod", ".", "main")
-    assert rec["ok"] is False
-
-
-# ---- F16: evidence about this run must have been produced BY this run ----
+# ---- F13/U15: success that meant nothing, and what "success" now means ---
 #
-# The spec-PR exclusion above was ONE enumerated contaminant. The invariant it
-# belongs to is general: any artifact this run did not create is not evidence
-# about this run. These fix the class, not the instance.
+# The terminal state is REVIEWABLE WORK — an implementation branch this run
+# pushed, carrying commits beyond the base, with a prepared PR body — not "a
+# PR exists".
+#
+# Asserting a PR forced every prod adopter to enable "Allow GitHub Actions to
+# create and approve pull requests", a single switch granting create AND
+# approve. Off, the coordinator got a 403 and the terminal state was
+# unreachable — a completed build with nowhere to put its result. On, Actions
+# could approve PRs, bypassing the review the merge gate rests on. The hazard
+# and the capability are the same switch, so the ASSERTION had to change.
 
 RUN_START = "2026-07-31T09:00:00Z"
+BUILD_START = "2026-07-31T08:00:00Z"   # attempt 1 began here
+WORK_PUSHED = "2026-07-31T10:00:00Z"   # attempt 1 pushed the branch, then died
+JOB_START = "2026-07-31T12:00:00Z"     # attempt 2 (the re-dispatch) begins
 BOT = "github-actions[bot]"
+BOT_EMAIL = "specdev-bot@users.noreply.github.com"
+
+
+def git_at(root, when, *args, name="specdev-bot", email=BOT_EMAIL):
+    env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when,
+           "GIT_AUTHOR_NAME": name, "GIT_COMMITTER_NAME": name,
+           "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_EMAIL": email}
+    subprocess.run(["git", *args], cwd=str(root), check=True,
+                   capture_output=True, text=True, env=env)
 
 
 @pytest.fixture
-def checkpointed(tmp_path):
-    (tmp_path / ".specdev").mkdir()
-    (tmp_path / ".specdev" / "BUILD.md").write_text(
+def built(tmp_path):
+    """A repo where a build has run: a real checkpoint, a prepared PR body,
+    and the implementation branch pushed."""
+    root = tmp_path / "repo"
+    (root / ".specdev").mkdir(parents=True)
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.email", BOT_EMAIL)
+    git(root, "config", "user.name", "specdev-bot")
+    (root / "seed.txt").write_text("seed", encoding="utf-8")
+    (root / ".specdev" / "BUILD.md").write_text(
         "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n\nWave 1 green.\n",
         encoding="utf-8")
-    return tmp_path
+    (root / ".specdev" / "PR_BODY.md").write_text(
+        "# FEAT-002 - Widget\n\nImplements REQ-001.\n", encoding="utf-8")
+    git_at(root, BUILD_START, "add", "-A")
+    git_at(root, BUILD_START, "commit", "-m", "seed")
+    return root
 
 
-def _pr(**over):
-    pr = {"number": 7, "title": "FEAT-002 impl", "state": "OPEN",
-          "headRefName": "impl/FEAT-002", "baseRefName": "main",
-          "url": "u", "body": "", "createdAt": "2026-07-31T10:00:00Z",
-          "author": {"login": BOT}}
-    pr.update(over)
-    return pr
+def push_impl(root, feat="FEAT-002", unit=".", when=WORK_PUSHED,
+              msg="feat(widget): REQ-001", name="specdev-bot",
+              email=BOT_EMAIL, body="widget"):
+    """Create the implementation ref the workflow pushes, with a commit."""
+    ref = bo.implementation_ref(unit, feat)
+    git(root, "checkout", "-q", "-B", ref, "main")
+    (root / "widget.py").write_text(body, encoding="utf-8")
+    git_at(root, when, "add", "-A", name=name, email=email)
+    git_at(root, when, "commit", "-m", msg, name=name, email=email)
+    git(root, "checkout", "-q", "main")
+    return ref
 
 
-def _verified(root, prs, monkeypatch, **kw):
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: prs)
-    kw.setdefault("since", RUN_START)
+def _verify(root, mode="prod", **kw):
+    kw.setdefault("since", BUILD_START)
     kw.setdefault("author", [BOT])
-    return bo.verify(root, "FEAT-002", kw.pop("mode", "prod"), ".", "main",
-                     None, **kw)
+    return bo.verify(root, "FEAT-002", mode, ".", "main", None,
+                     repo_dir=root, **kw)
 
 
-def test_a_humans_pre_existing_pr_does_not_satisfy_the_terminal_state(
-        checkpointed, monkeypatch):
-    """The observed failure: two human infrastructure PRs discussing the
-    feature at length were attributed to a build that merged nothing. Merged
-    weeks earlier, by a person, mentioning the FEAT id — and in prod mode that
-    made ok=True for a run with no branch, no commit and no PR."""
-    human = _pr(number=101, title="infra: CI runners for FEAT-002",
-                state="MERGED", headRefName="infra/runners",
-                createdAt="2026-07-01T08:00:00Z",
-                author={"login": "a-human"})
-    rec = _verified(checkpointed, [human], monkeypatch)
+def test_verify_fails_when_the_run_pushed_no_branch(built, monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    rec = _verify(built)
     assert rec["ok"] is False
-    assert any("no Implementation PR" in p for p in rec["problems"])
-    assert rec["implementation_prs"] == []
-    # ...and it must SAY what it rejected and why, or a reader cannot tell
-    # "produced nothing" from "the filters were off".
-    assert len(rec["rejected_prs"]) == 1
-    assert "a-human" in rec["rejected_prs"][0]["reason"]
+    assert any("no implementation branch" in p for p in rec["problems"])
 
 
-def test_a_pr_that_predates_this_run_is_not_this_runs_output(
-        checkpointed, monkeypatch):
-    """Same-author, right shape, wrong run: a re-dispatch must not verify
-    itself against the previous dispatch's PR."""
-    old = _pr(number=55, createdAt="2026-07-30T23:59:59Z")
-    rec = _verified(checkpointed, [old], monkeypatch)
+def test_a_pushed_branch_with_real_commits_is_the_terminal_state(built,
+                                                                 monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built)
+    rec = _verify(built)
+    assert rec["ok"] is True, rec["problems"]
+    assert rec["implementation_branch"]["commits_ahead"] == 1
+    assert "human opens the PR" in rec["required_terminal_state"]
+
+
+def test_a_branch_with_no_commits_beyond_base_is_not_work(built, monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    git(built, "branch", "-f", bo.implementation_ref(".", "FEAT-002"), "main")
+    rec = _verify(built)
     assert rec["ok"] is False
-    assert "before this run started" in rec["rejected_prs"][0]["reason"]
+    assert any("no commits beyond" in p for p in rec["problems"])
 
 
-def test_poc_is_not_satisfied_by_an_unrelated_merged_pr(
-        checkpointed, monkeypatch):
-    """poc requires a MERGED PR, so an old merged PR satisfied it outright."""
-    old = _pr(number=55, state="MERGED", createdAt="2026-01-01T00:00:00Z")
-    assert _verified(checkpointed, [old], monkeypatch, mode="poc")["ok"] is False
+def test_no_pr_is_required_and_no_pr_can_satisfy_the_assertion(built,
+                                                               monkeypatch):
+    """The switch is never needed: with a branch and no PR at all, prod and
+    poc both pass. And a PR alone, without a branch, never passes."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built)
+    assert _verify(built, "prod")["ok"] is True
+    assert _verify(built, "poc")["ok"] is True
+
+    root2 = built.parent / "nobranch"
+    subprocess.run(["cp", "-r", str(built), str(root2)], check=True)
+    git(root2, "branch", "-D", bo.implementation_ref(".", "FEAT-002"))
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [
+        {"number": 7, "title": "FEAT-002 impl", "state": "MERGED",
+         "headRefName": "impl/FEAT-002", "baseRefName": "main", "url": "u",
+         "body": "", "createdAt": WORK_PUSHED, "author": {"login": BOT}}])
+    assert _verify(root2, "prod")["ok"] is False
+    assert _verify(root2, "poc")["ok"] is False
 
 
-def test_a_neighbouring_feat_id_does_not_match(checkpointed, monkeypatch):
-    """Both text matches were unanchored substring tests, so 'FEAT-002' in
-    'FEAT-0021' was True and FEAT-0021's PR satisfied FEAT-002's terminal
-    state. Provenance filters make this less likely to fire; a same-run bot PR
-    for a neighbouring id still slips through without an anchor."""
-    neighbour = _pr(number=9, title="FEAT-0021 impl",
-                    headRefName="impl/FEAT-0021", body="closes FEAT-0021")
-    rec = _verified(checkpointed, [neighbour], monkeypatch)
+def test_poc_no_longer_requires_a_merged_pr(built, monkeypatch):
+    """poc's terminal state was a MERGED PR, which needed the same switch AND
+    autonomous merging to main - the riskier half. It now deploys from the
+    branch."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built)
+    rec = _verify(built, "poc")
+    assert rec["ok"] is True
+    assert "deploys from this branch" in rec["required_terminal_state"]
+
+
+def test_a_stock_pr_body_is_not_a_prepared_one(built, monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built)
+    stock = (ROOT / "assets" / "specdev" / "PR_BODY.md").read_text("utf-8")
+    (built / ".specdev" / "PR_BODY.md").write_text(stock, encoding="utf-8")
+    rec = _verify(built)
     assert rec["ok"] is False
-    assert "whole id" in rec["rejected_prs"][0]["reason"]
+    assert any("stock template" in p for p in rec["problems"])
+    (built / ".specdev" / "PR_BODY.md").unlink()
+    assert any("prepared no PR body" in p for p in _verify(built)["problems"])
 
 
-def test_a_feat_id_embedded_in_a_longer_token_does_not_match(checkpointed,
-                                                             monkeypatch):
-    assert bo._token_re("FEAT-002").search("FEAT-0021") is None
-    assert bo._token_re("FEAT-002").search("xFEAT-002") is None
-    assert bo._token_re("FEAT-002").search("impl/FEAT-002/wave-1") is not None
+# ---- U18: a [skip ci] head produces a PR with no checks, silently --------
 
-
-def test_another_units_pr_does_not_match_on_a_substring(checkpointed,
-                                                        monkeypatch):
-    """A unit named 'api' matched a branch named 'rapid-sync' — 'rapid'
-    contains 'api'. The unit must match on path/branch segments."""
-    other = _pr(number=12, title="FEAT-002 impl", headRefName="impl/rapid-sync",
-                body="FEAT-002 for the sync service")
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [other])
-    rec = bo.verify(checkpointed, "FEAT-002", "prod", "api", "main", None,
-                    since=RUN_START, author=[BOT])
+def test_a_skip_ci_commit_may_not_be_the_head_of_the_work_branch(built,
+                                                                 monkeypatch):
+    """The checkpoint commit carries [skip ci] - correct on the checkpoint
+    ref, poisonous at the head of a work branch. GitHub skips every workflow
+    on a PR whose head carries it: no error, no skipped-run entry, just a PR
+    with zero checks that looks like CI has not started."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built, msg="chore(specdev): checkpoint FEAT-002 on . [skip ci]")
+    rec = _verify(built)
     assert rec["ok"] is False
-    assert "does not name unit" in rec["rejected_prs"][0]["reason"]
-    # ...while the unit's own PR still matches, across a '/' boundary.
-    mine = _pr(number=13, headRefName="impl/api/FEAT-002",
-               title="FEAT-002 impl")
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [mine])
-    assert bo.verify(checkpointed, "FEAT-002", "prod", "api", "main", None,
-                     since=RUN_START, author=[BOT])["ok"] is True
+    problem = " ".join(rec["problems"])
+    assert "[skip ci]" in problem and "no checks" in problem
 
 
-def test_this_runs_own_pr_still_passes_every_filter(checkpointed, monkeypatch):
-    """The filters must not be so tight that a real build cannot verify. Both
-    bot spellings resolve to the same identity."""
-    for login in (BOT, "app/github-actions", "github-actions"):
-        rec = _verified(checkpointed, [_pr(author={"login": login})], monkeypatch)
-        assert rec["ok"] is True, f"{login} should be recognised as the builder"
-        assert rec["rejected_prs"] == []
-        assert rec["warnings"] == []
+@pytest.mark.parametrize("marker", ["[skip ci]", "[ci skip]", "[no ci]"])
+def test_every_skip_marker_github_honours_is_refused(built, monkeypatch,
+                                                     marker):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built, msg=f"chore: checkpoint {marker}")
+    assert _verify(built)["ok"] is False
 
 
-def test_unfiltered_matching_still_reproduces_the_original_behaviour(
-        checkpointed, monkeypatch):
-    """The inverted half of the provenance test: without filters the old
-    permissive behaviour is what you get — AND you are told so. Paired with the
-    tests above so a refactor cannot quietly stop exercising the filters while
-    the regression tests stay green."""
-    human = _pr(number=101, state="MERGED", createdAt="2026-07-01T08:00:00Z",
-                author={"login": "a-human"})
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [human])
-    rec = bo.verify(checkpointed, "FEAT-002", "prod", ".", "main")
-    assert rec["ok"] is True, "unfiltered, this is still just a text match"
-    assert rec["provenance_filters"]["applied"] is False
-    assert any("TEXT MATCH" in w for w in rec["warnings"]), \
-        "an unqualified verdict must say it is unqualified"
+def test_an_ordinary_commit_subject_is_not_mistaken_for_a_skip_marker(
+        built, monkeypatch):
+    """The inverted half - 'skip' in prose must not fail a real build."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built, msg="feat(widget): skip empty rows when parsing")
+    assert _verify(built)["ok"] is True
 
 
-def test_verify_cli_warns_rather_than_implying_a_certainty_it_lacks(
-        checkpointed):
-    """The warning has to reach the RUN LOG, not just the JSON record."""
-    rc = subprocess.run(
-        [sys.executable, str(TOOLS / "build_outcome.py"), "--root",
-         str(checkpointed), "verify", "--feat", "FEAT-002", "--mode", "prod"],
-        capture_output=True, text=True)
-    assert "::warning" in rc.stdout, \
-        "a check running without provenance filters must say so"
-    with_filters = subprocess.run(
-        [sys.executable, str(TOOLS / "build_outcome.py"), "--root",
-         str(checkpointed), "verify", "--feat", "FEAT-002", "--mode", "prod",
-         "--since", RUN_START, "--author", BOT],
-        capture_output=True, text=True)
-    assert "::warning" not in with_filters.stdout, \
-        "a qualified check must not cry wolf"
+# ---- F16/U7: evidence about this build must have been produced BY it -----
+#
+# The spec-PR exclusion was ONE enumerated contaminant. The invariant is
+# general: any artifact this build did not create is not evidence about it.
 
-
-def test_a_run_that_wrote_code_but_opened_no_pr_fails_with_the_right_reason(
-        checkpointed, monkeypatch):
-    """A real checkpoint is not a terminal state. The build wrote code, waves
-    went green, and it stopped before opening the PR — that is a failure whose
-    reason must name the missing PR, not the checkpoint."""
-    rec = _verified(checkpointed, [], monkeypatch)
+def test_a_branch_left_by_an_earlier_build_is_not_this_ones_output(built,
+                                                                   monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built, when="2026-07-01T08:00:00Z")
+    rec = _verify(built, since=BUILD_START)
     assert rec["ok"] is False
-    assert len(rec["problems"]) == 1
-    assert "no Implementation PR" in rec["problems"][0]
-    assert "BUILD.md" not in rec["problems"][0]
+    assert any("before this build started" in p for p in rec["problems"])
 
 
-def test_verify_json_carries_the_filters_and_what_they_rejected(
-        checkpointed, monkeypatch, tmp_path):
-    """so a reader can tell 'no PR was produced' from 'the filters were off'
-    without re-deriving it."""
-    out = tmp_path / "verify.json"
-    rec = _verified(checkpointed, [_pr(number=101, author={"login": "a-human"})],
-                    monkeypatch)
-    out.write_text(json.dumps(rec), encoding="utf-8")
-    doc = json.loads(out.read_text(encoding="utf-8"))
-    assert doc["provenance_filters"] == {
-        "since": RUN_START, "authors": [BOT], "applied": True}
-    assert doc["rejected_prs"][0]["number"] == 101
-    assert doc["rejected_prs"][0]["reason"]
+def test_a_resumed_dispatch_still_recognises_the_branch_it_already_pushed(
+        built, monkeypatch):
+    """auto_resume makes a re-dispatch the same LOGICAL build. Anchored to the
+    job instead, a build that had already pushed its work could never verify:
+    the branch only gets older, so each dispatch rejects it, terminally."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built, when=WORK_PUSHED)
+    assert _verify(built, since=BUILD_START)["ok"] is True
+    assert _verify(built, since=JOB_START)["ok"] is False, \
+        "this is what anchoring to the attempt did - kept as the inverted half"
 
 
-def test_the_build_workflow_actually_passes_the_provenance_filters():
-    """A filter the workflow never supplies is a filter that does not exist."""
-    t = wf("specdev-build.yml")
-    assert "--since" in t and "steps.start.outputs.at" in t, \
-        "verify must be told when this run started"
-    assert "--author" in t, "verify must be told whose PRs count as this run's"
-    assert re.search(r'echo "at=\$\(date -u', t), \
-        "the start instant must be captured alongside the start SHA"
+def test_authorship_that_does_not_match_is_a_warning_not_a_verdict(built,
+                                                                   monkeypatch):
+    """A ref and its timing are checkable; a committer identity is weaker
+    evidence, so a mismatch is reported rather than failing a real build."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built, name="a-human", email="human@example.com")
+    rec = _verify(built)
+    assert rec["ok"] is True
+    assert any("does not match this run" in w for w in rec["warnings"])
 
 
-def test_poc_requires_the_pr_to_be_merged(tmp_path, monkeypatch):
-    (tmp_path / ".specdev").mkdir()
-    (tmp_path / ".specdev" / "BUILD.md").write_text(
-        "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n", encoding="utf-8")
-    open_pr = [{"number": 7, "title": "FEAT-002 impl", "state": "OPEN",
-                "headRefName": "impl/FEAT-002", "baseRefName": "main",
-                "url": "u", "body": ""}]
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: open_pr)
-    assert bo.verify(tmp_path, "FEAT-002", "prod", ".", "main")["ok"] is True
-    assert bo.verify(tmp_path, "FEAT-002", "poc", ".", "main")["ok"] is False
+def test_existing_prs_are_reported_but_never_required(built, monkeypatch):
+    """The provenance work is preserved as INFORMATION: 'a PR already exists
+    for this work' is useful to whoever reads the record."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [
+        {"number": 7, "title": "FEAT-002 impl", "state": "OPEN",
+         "headRefName": "specdev/impl/./FEAT-002", "baseRefName": "main",
+         "url": "u", "body": "", "createdAt": WORK_PUSHED,
+         "author": {"login": BOT}}])
+    push_impl(built)
+    rec = _verify(built)
+    assert rec["ok"] is True
+    assert rec["implementation_prs"][0]["number"] == 7
+    md = bo._md_report(rec, None)
+    assert "informational" in md and "not the terminal state" in md
+
+
+def test_the_report_points_the_human_at_the_branch_to_open(built, monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built)
+    md = bo._md_report(_verify(built), None)
+    assert "specdev/impl/root/FEAT-002" in md
+    assert "Open the PR from" in md
+    assert "PR_BODY.md" in md
 
 
 def test_deploy_poc_is_gated_on_the_assertion_not_the_exit_code():
@@ -533,7 +534,20 @@ def test_red_tests_do_not_spend_the_permission_denial_ceiling(tmp_path,
 
 
 def test_a_real_refusal_still_counts_as_a_denial(tmp_path, monkeypatch):
-    """The inverted half of the test above."""
+    """The inverted half of the test above: an AUTHORITATIVE refusal — a
+    structured decision — is what the ceiling counts."""
+    _breaker(tmp_path, monkeypatch)
+    for _ in range(4):
+        cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                   "tool_response": {"permissionDecision": "deny"}})
+    assert cb.load_state()["denials"] == 4
+    assert cb.load_state()["denied_tools"] == {"Bash": 4}
+
+
+def test_refusal_shaped_text_is_a_hint_not_a_denial(tmp_path, monkeypatch):
+    """Text cannot answer the only question a cumulative denial ceiling
+    exists to answer. A 403 from a remote API reads exactly like a harness
+    refusal, and a checkpoint quoting one reads like it forever after."""
     _breaker(tmp_path, monkeypatch)
     for output in ("Error: permission denied",
                    "This tool has not been granted to this session",
@@ -541,8 +555,104 @@ def test_a_real_refusal_still_counts_as_a_denial(tmp_path, monkeypatch):
                    "tool use was rejected"):
         cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
                    "tool_output": output})
-    assert cb.load_state()["denials"] == 4
-    assert cb.load_state()["denied_tools"] == {"Bash": 4}
+    st = cb.load_state()
+    assert st["denials"] == 0, "text must not spend the ceiling"
+    assert st["denied_tools"] == {}
+    assert st["denial_text_hints"] == {"Bash": 4}, \
+        "the uncertain case must be measurable, not discarded"
+    assert st["consecutive_failures"] == 4, \
+        "a hint is still a failure, so a genuinely stuck agent stalls out"
+
+
+def test_the_403_that_aborted_a_finished_build_is_not_a_denial(tmp_path,
+                                                               monkeypatch):
+    """The real run: a remote 403 was written into BUILD.md, and every
+    subsequent Read of that file scored another 'denial'. 15 in 865 calls
+    aborted a six-wave build whose work was complete."""
+    _breaker(tmp_path, monkeypatch)
+    api_403 = ("403: GitHub Actions is not permitted to create or approve "
+               "pull requests")
+    cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+               "tool_output": api_403})
+    # ...and then read back out of the checkpoint, over and over.
+    for _ in range(20):
+        cb.handle({"hook_event_name": "PreToolUse", "tool_name": "Read"})
+        cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Read",
+                   "tool_output": f"# BUILD.md\n\nBlocked: {api_403}\n"})
+    st = cb.load_state()
+    assert st["denials"] == 0
+    assert not st["tripped"], \
+        "a remote service refusing an API call says nothing about --allowedTools"
+
+
+# ---- U14: a rate limit is the opposite of a stuck agent ------------------
+
+def _throttled(tool="Task"):
+    """A realistic 429 tool result. Deliberately NOT a bare string matched
+    against the regex: `429` alone does not match the error markers — it
+    matched via a literal `Error:` when one happened to be present, so a
+    regex-shaped fixture can pass for the wrong reason and stop protecting
+    anything the moment the payload shape changes."""
+    return {"hook_event_name": "PostToolUse", "tool_name": tool,
+            "tool_response": {"is_error": True, "status": 429,
+                              "error": {"type": "rate_limit_error",
+                                        "message": "Number of requests has "
+                                                   "exceeded your rate limit"}}}
+
+
+def test_a_throttle_does_not_extend_the_consecutive_failure_streak(
+        tmp_path, monkeypatch):
+    """Fanning out to subagents is precisely when 429s arrive, so an
+    unclassified throttle made the control fire hardest when nothing was
+    wrong."""
+    _breaker(tmp_path, monkeypatch)
+    for _ in range(30):
+        cb.handle(_throttled())
+    st = cb.load_state()
+    assert st["consecutive_failures"] == 0
+    assert st["transient_events"] == 30, "counted and reported, not ignored"
+    assert st["transient_tools"] == {"Task": 30}
+    assert st["denials"] == 0
+
+
+def test_a_throttle_does_not_reset_a_genuine_failure_streak(tmp_path,
+                                                            monkeypatch):
+    """It must not HIDE a streak either: a throttle sprinkled through a real
+    failure run tells you nothing in either direction."""
+    _breaker(tmp_path, monkeypatch)
+    real = {"hook_event_name": "PostToolUse", "tool_name": "Bash",
+            "tool_response": {"is_error": True, "output": "E   assert False"}}
+    cb.handle(real)
+    cb.handle(real)
+    assert cb.load_state()["consecutive_failures"] == 2
+    cb.handle(_throttled("Bash"))
+    assert cb.load_state()["consecutive_failures"] == 2, \
+        "the throttle must neither extend nor reset the streak"
+    cb.handle(real)
+    assert cb.load_state()["consecutive_failures"] == 3
+
+
+def test_a_red_test_is_still_a_failure(tmp_path, monkeypatch):
+    """The inverted half. `E   assert False` matches no error-marker pattern,
+    so this only works because is_failure honours the is_error flag — which is
+    exactly why the fixture carries one."""
+    _breaker(tmp_path, monkeypatch)
+    cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
+               "tool_response": {"is_error": True,
+                                 "output": "E   assert False\n1 failed"}})
+    st = cb.load_state()
+    assert st["consecutive_failures"] == 1, "that is the streak's actual job"
+    assert st["transient_events"] == 0
+    assert st["denials"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "429 Too Many Requests", "Error: rate limit exceeded",
+    "503 Service Unavailable", "upstream connect error: ECONNRESET",
+    "Overloaded", "504 Gateway Timeout",
+])
+def test_the_usual_transient_spellings_are_classified(text):
+    assert cb.is_transient({"tool_output": text}), text
 
 
 def test_a_structured_deny_counts_on_either_hook_event(tmp_path, monkeypatch):
@@ -624,7 +734,7 @@ def test_breaker_hook_denies_and_stops_the_session(tmp_path, monkeypatch):
     monkeypatch.setenv("SPECDEV_MAX_COST_USD", "0")
     monkeypatch.setenv("SPECDEV_MAX_CONSECUTIVE_FAILURES", "0")
     cb.handle({"hook_event_name": "PostToolUse", "tool_name": "Bash",
-               "tool_output": "Error: permission denied"})
+               "tool_response": {"permissionDecision": "deny"}})
     out, st = cb.handle({"hook_event_name": "PreToolUse", "tool_name": "Bash"})
     assert out is not None
     assert out["continue"] is False, "the breaker must stop the session, not just deny"
@@ -640,7 +750,7 @@ def test_breaker_records_a_denied_tool_histogram(tmp_path, monkeypatch):
     monkeypatch.setenv("SPECDEV_MAX_COST_USD", "0")
     for tool in ("Bash", "Bash", "Skill"):
         cb.handle({"hook_event_name": "PostToolUse", "tool_name": tool,
-                   "tool_output": "Error: permission denied"})
+                   "tool_response": {"permissionDecision": "deny"}})
     st = cb.load_state()
     assert st["denied_tools"] == {"Bash": 2, "Skill": 1}
 
@@ -683,62 +793,14 @@ def test_build_arms_the_breaker_as_a_hook_not_a_post_run_check():
     assert "circuit_breaker.py verdict" in t
 
 
-# ---- U7/U10: provenance must anchor to the BUILD, not to the attempt -----
+# ---- U7/U10: the provenance anchor is the BUILD, not the attempt ---------
 #
-# `auto_resume` makes a re-dispatch a continuation of the same logical build.
-# Anchoring the provenance window to the job's own start instant therefore
-# contradicted it: a build that had already opened its Implementation PR could
-# never verify again, because the PR only gets older and each dispatch rejected
-# it for predating the job. Terminal, not transient — and in poc, where
-# deploy-poc is gated on terminal_ok, a build whose PR was already merged could
-# never deploy, silently, with "no Implementation PR was found" as the reason.
+# `auto_resume` makes a re-dispatch a continuation of the same logical build,
+# so the window has to span every attempt at this unit+FEAT. The branch-based
+# half of this lives with the terminal-state tests above
+# (test_a_resumed_dispatch_still_recognises_the_branch_it_already_pushed);
+# what follows is the run.json plumbing that carries the clock across.
 
-BUILD_START = "2026-07-31T08:00:00Z"   # attempt 1 began here
-PR_OPENED = "2026-07-31T10:00:00Z"     # attempt 1 opened the PR, then died
-JOB_START = "2026-07-31T12:00:00Z"     # attempt 2 (the re-dispatch) begins
-
-
-def test_a_resumed_dispatch_still_recognises_the_pr_an_earlier_attempt_opened(
-        checkpointed, monkeypatch):
-    pr = _pr(createdAt=PR_OPENED)
-    rec = _verified(checkpointed, [pr], monkeypatch, since=BUILD_START)
-    assert rec["ok"] is True, (
-        "anchored to the logical build, the build's own PR must still count - "
-        "otherwise no re-dispatch of this feature can ever reach green")
-    assert rec["rejected_prs"] == []
-
-
-def test_anchoring_to_the_attempt_rejects_the_builds_own_pr(checkpointed,
-                                                            monkeypatch):
-    """The inverted half: this is what the job-anchored window did, kept as an
-    executable statement of why the anchor moved."""
-    pr = _pr(createdAt=PR_OPENED)
-    rec = _verified(checkpointed, [pr], monkeypatch, since=JOB_START)
-    assert rec["ok"] is False
-    assert "before this run started" in rec["rejected_prs"][0]["reason"]
-
-
-def test_a_poc_build_whose_pr_was_already_merged_can_still_deploy(
-        checkpointed, monkeypatch):
-    """The worst limb: deploy-poc is gated on terminal_ok, so this failed
-    closed AND silently, forever, for a build that had fully succeeded."""
-    merged = _pr(state="MERGED", createdAt=PR_OPENED)
-    rec = _verified(checkpointed, [merged], monkeypatch, mode="poc",
-                    since=BUILD_START)
-    assert rec["ok"] is True
-    assert _verified(checkpointed, [merged], monkeypatch, mode="poc",
-                     since=JOB_START)["ok"] is False
-
-
-def test_a_humans_older_pr_is_still_rejected_under_the_build_anchor(
-        checkpointed, monkeypatch):
-    """Widening the window to the logical build must not reopen U1: a PR that
-    predates the BUILD, or belongs to someone else, is still not evidence."""
-    human = _pr(number=101, state="MERGED", createdAt="2026-07-01T08:00:00Z",
-                author={"login": "a-human"})
-    rec = _verified(checkpointed, [human], monkeypatch, since=BUILD_START)
-    assert rec["ok"] is False
-    assert rec["rejected_prs"][0]["reason"]
 
 
 def test_init_stamps_the_logical_builds_clock(tmp_path):
@@ -796,46 +858,26 @@ def test_the_workflow_does_not_restore_run_json_wholesale():
 
 
 # ---- U8: a control that cannot attribute must not claim attribution ------
+#
+# The poc limb that named a stranger's PR as "the Implementation PR ... found
+# 1 unmerged" is gone entirely with U15 - no limb reads PRs for a verdict any
+# more. What survives is the rule it stood for, applied to the listing that
+# remains: an unattributed match is never labelled as this run's output.
 
-def test_an_unattributed_poc_failure_does_not_accuse_a_strangers_pr(
-        checkpointed, monkeypatch):
-    """The verdict was right and the stated reason was false: it told a reader
-    the build had opened a PR and failed to merge it, and sent them to a
-    stranger's PR to find out why. That is the part a reader acts on."""
-    human = _pr(number=101, state="OPEN", headRefName="infra/runners",
-                title="infra: CI runners", body="needed for FEAT-002",
-                author={"login": "a-human"})
-    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [human])
-    rec = bo.verify(checkpointed, "FEAT-002", "poc", ".", "main")
-    assert rec["ok"] is False
-    reason = " ".join(rec["problems"])
-    assert "cannot be attributed" in reason or "no PR" in reason
-    assert "may belong to anyone" in reason
-    assert not re.search(r"found \d+ unmerged", reason), \
-        "that phrasing presupposes the PRs are this build's output"
-
-
-def test_an_attributed_poc_failure_still_names_the_pr(checkpointed, monkeypatch):
-    """The inverted half: when the check CAN attribute, the specific, named
-    claim is exactly right and must not be softened away."""
-    rec = _verified(checkpointed, [_pr(number=7, state="OPEN")], monkeypatch,
-                    mode="poc", since=BUILD_START)
-    assert rec["ok"] is False
-    reason = " ".join(rec["problems"])
-    assert "found 1 unmerged (#7)" in reason
-    assert "may belong to anyone" not in reason
-
-
-def test_the_report_does_not_call_unattributed_matches_implementation_prs():
+def test_the_report_does_not_call_unattributed_matches_this_runs_output():
     rec = {"ok": True, "feat": "FEAT-002", "mode": "prod", "unit": ".",
            "problems": [], "provenance_filters": {"applied": False},
            "implementation_prs": [{"number": 101, "url": "u", "state": "OPEN"}]}
     md = bo._md_report(rec, None)
     assert "NOT attributed to this run" in md
-    assert "**Implementation PRs found:**" not in md
+    assert "Existing PRs for this feature" not in md
     rec["provenance_filters"] = {"applied": True, "since": BUILD_START,
                                  "authors": [BOT]}
-    assert "**Implementation PRs found:**" in bo._md_report(rec, None)
+    md2 = bo._md_report(rec, None)
+    assert "Existing PRs for this feature" in md2
+    assert "not the terminal state" in md2, \
+        "a PR listing must never read as the thing being asserted"
+
 
 
 # ---- U9: the resolver must be able to say "configured" vs "inherited" ----
@@ -1092,14 +1134,23 @@ def test_the_coordinator_is_told_the_terminal_state_the_workflow_asserts():
             f"{path.name} must say to record WHY it stopped, and commit it"
 
 
-def test_the_terminal_state_is_phrased_in_the_words_verify_uses():
-    """Both halves must be recognisably the same sentence, or the prompt drifts
-    from the assertion again."""
-    required = bo.verify(ROOT, "FEAT-002", "prod", ".", "main")
-    assert required["required_terminal_state"] == \
-        "Implementation PR open against main"
-    build_md = (ROOT / "commands" / "build.md").read_text(encoding="utf-8")
-    assert "Implementation PR" in build_md and "base branch" in build_md
+def test_the_terminal_state_is_phrased_in_the_words_verify_uses(built,
+                                                                monkeypatch):
+    """Both halves must be recognisably the same sentence, or the prompt
+    drifts from the assertion again."""
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    push_impl(built)
+    required = _verify(built)["required_terminal_state"]
+    assert "implementation branch" in required and "PR body" in required
+    build_md = " ".join(
+        (ROOT / "commands" / "build.md").read_text(encoding="utf-8").split()).lower()
+    for phrase in ("implementation branch", "pr_body.md",
+                   "a human opens the pr", "do not open the pr"):
+        assert phrase in build_md, \
+            f"commands/build.md must state the terminal state: {phrase!r}"
+    skill = " ".join(
+        (ROOT / "skills" / "specdev" / "SKILL.md").read_text("utf-8").split()).lower()
+    assert "never opens or merges a pr" in skill
 
 
 # ---- F1: the allowlist that denied the agent its own first instruction ----
@@ -1217,3 +1268,149 @@ def test_report_reaches_the_step_summary(tmp_path, monkeypatch):
     assert "12.5" in text
     assert "`Bash`" in text and "12" in text, "the denial histogram is the missing datum"
     assert "specdev/checkpoint" in text
+
+
+# ---- U16: the session could approve and merge PRs it did not author ------
+
+def test_the_build_may_not_review_or_merge_pull_requests():
+    """`pull-requests: write` plus bare Bash put `gh pr review --approve` on
+    somebody else's PR inside the granted surface — and a human PR awaiting
+    review is usually exactly what is open. Unlike the rest of the deny list
+    this is a boundary, not a speed bump: the coordinator has no legitimate
+    use for these verbs in ANY mode, so removing them removes a capability
+    rather than inconveniencing one."""
+    m = re.search(r'--disallowedTools\s+"([^"]+)"', wf("specdev-build.yml"))
+    assert m
+    denied = m.group(1)
+    for verb in ("Bash(gh pr review:*)", "Bash(gh pr merge:*)",
+                 "Bash(gh pr create:*)"):
+        assert verb in denied, f"{verb} must be denied to the build session"
+
+
+def test_no_poc_carve_out_is_needed_because_poc_no_longer_merges():
+    """The carve-out that would have been required for poc is unnecessary:
+    with U15, poc deploys from the branch instead of merging a PR."""
+    t = wf("specdev-build.yml")
+    m = re.search(r'--disallowedTools\s+"([^"]+)"', t)
+    assert "Bash(gh pr merge:*)" in m.group(1), \
+        "poc would have needed a carve-out here; it does not, because it no " \
+        "longer merges anything"
+    assert "FROM THE BUILT BRANCH" in t
+    # ...and the prompt must not tell poc to merge, in any wording.
+    prompt = t.split("prompt: |")[1].split("claude_args")[0]
+    assert "merge it into main" not in prompt
+    assert "self-merge" not in prompt.lower()
+
+
+# ---- U17: the coordinator ends its turn and the run ends with it ---------
+
+def _gate(ok=False, attempt=1, max_attempts=3, spent="1.50", cap="25",
+          before="aaa", now="bbb"):
+    return bo.continuation_gate({"ok": ok}, attempt, max_attempts, spent, cap,
+                                before, now)
+
+
+def test_an_unfinished_build_gets_another_attempt(tmp_path):
+    """One run stopped at turn 35 of 200 with five waves untouched: no error,
+    no trip, no turn exhaustion. Sharpening the prompt did not fix it — the
+    next run stopped after 6 turns with the corrected wording in place. What
+    built the feature was a second invocation."""
+    g = _gate()
+    assert g["go"] is True and g["next_attempt"] == 2, g["reasons"]
+
+
+def test_a_finished_build_does_not_get_another_attempt(tmp_path):
+    assert _gate(ok=True)["go"] is False
+
+
+def test_an_attempt_that_committed_nothing_does_not_buy_another(tmp_path):
+    """The condition that makes the loop safe: no new information, same
+    checkpoint, same context - another attempt is just spend."""
+    g = _gate(before="same", now="same")
+    assert g["go"] is False
+    assert any("committed nothing" in r for r in g["reasons"])
+
+
+def test_an_unreadable_cost_stops_the_loop_rather_than_continuing(tmp_path):
+    """The breaker's figure reads 'unavailable' on hosted runners by design,
+    so cost must come from the action's own output — and treating unknown as
+    $0 is the mistake the cost reporting already refuses to make."""
+    g = _gate(spent="")
+    assert g["go"] is False
+    assert any("could not be read" in r for r in g["reasons"])
+    assert any("treating unknown as $0" in r for r in g["reasons"])
+
+
+def test_the_spend_cap_is_a_start_gate_not_a_ceiling(tmp_path):
+    assert _gate(spent="24.99", cap="25")["go"] is True
+    assert _gate(spent="25.00", cap="25")["go"] is False
+    assert _gate()["cap_is_a_start_gate"] is True, \
+        "the cap bounds whether the NEXT attempt begins, not what it spends"
+
+
+def test_the_attempt_ceiling_is_honoured(tmp_path):
+    assert _gate(attempt=3, max_attempts=3)["go"] is False
+    assert _gate(attempt=1, max_attempts=1)["go"] is False
+
+
+def test_continuation_is_steps_in_one_job_never_a_self_dispatch():
+    """GitHub does not create workflow runs from events authored by the
+    default token, so a workflow calling `gh workflow run` on itself is a
+    silent no-op — the same rule that stops bot-authored PRs firing
+    on: pull_request."""
+    t = wf("specdev-build.yml")
+    code = "\n".join(l for l in t.split("\n") if not l.strip().startswith("#"))
+    assert "gh workflow run" not in code, "self-dispatch is a silent no-op"
+    assert t.count("uses: anthropics/claude-code-action@v1") >= 2, \
+        "continuation must be additional steps in the same job"
+    assert "continue-gate" in t
+    assert "steps.agent1.outputs.total_cost_usd" in t, \
+        "cost must come from the action's own output, not the breaker's"
+
+
+def test_continuation_is_configurable_and_shipped_on():
+    cfg = json.loads((ROOT / "assets" / "specdev" / "ci.json").read_text("utf-8"))
+    assert cfg["max_build_attempts"] >= 2
+    assert cfg["continuation_cap_usd"] > 0
+    assert cfg["continuation_cap_usd"] > cfg["max_cost_usd"], \
+        "a continuation cap below one run's own ceiling could never continue"
+
+
+# ---- U18: the checkpoint's [skip ci] must never head the work branch -----
+
+def test_the_implementation_branch_is_pushed_before_the_checkpoint_commit():
+    """Ordering is load-bearing: the checkpoint commit carries [skip ci], and
+    a PR whose head carries it gets no checks at all, silently."""
+    t = wf("specdev-build.yml")
+    impl = t.index("id: impl")
+    ckpt = t.index("id: checkpoint")
+    assert impl < ckpt, \
+        "pushing the work branch after the checkpoint commit gives it a " \
+        "[skip ci] head"
+    assert "[skip ci]" in t[ckpt:], "the checkpoint commit still carries it"
+
+
+# ---- U20: the breaker state never reached the artifact -------------------
+
+def test_the_breaker_state_is_not_a_dotfile_and_is_uploaded():
+    """upload-artifact's globber skips hidden files, so `.specdev-breaker.json`
+    silently never arrived — and if-no-files-found: warn stayed quiet because
+    the other two paths matched."""
+    t = wf("specdev-build.yml")
+    m = re.search(r"BREAKER_STATE:\s*(\S+)", t)
+    assert m, "the breaker state path must be declared"
+    assert not Path(m.group(1)).name.startswith("."), \
+        "a dotfile is skipped by the artifact globber"
+    assert "if-no-files-found: error" in t, \
+        "a missing artifact path must not stay silent"
+
+
+# ---- U19: the GitHub rule that produces two different surprises ----------
+
+def test_the_readme_documents_the_bot_identity_rule_once():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Two things GitHub will not do for a bot" in readme
+    for topic in ("on: pull_request", "workflow run", "PAT"):
+        assert topic in readme, f"the rule's consequences must name {topic!r}"
+    assert "close" in readme and "reopen" in readme, \
+        "the safe nudge must be documented alongside it"
