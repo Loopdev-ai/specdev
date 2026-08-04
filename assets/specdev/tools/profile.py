@@ -141,3 +141,82 @@ def compose(values, axes: dict) -> dict:
         out = dict(STRICTEST)
     out.update(FLOOR)
     return out
+
+
+def _fallback(reason: str) -> dict:
+    """Fail closed, and say why. A silent strict fallback is indistinguishable
+    from a correctly-resolved prod profile at the point of failure."""
+    print(f"NOTE: falling back to full production governance — {reason}",
+          file=sys.stderr)
+    return {**STRICTEST, **FLOOR}
+
+
+def _load_index(root: Path):
+    """Reuse check_org_adrs' single fetcher rather than adding a second one, so
+    exactly one code path decides which ref the org's policy is read at.
+    fetch_index() exits the process on failure; for profiles that must be a
+    fail-closed fallback instead, so SystemExit is caught."""
+    link = cch.resolve_link(root)
+    if link is None:
+        return None, "governance not adopted (no org.json / registry link)"
+    if "REPLACE_ME" in json.dumps(link.get("governance_repo", "")):
+        return None, "governance link still holds REPLACE_ME"
+    try:
+        return cch.fetch_index(link), None
+    except SystemExit:
+        return None, "org ADR index could not be fetched"
+
+
+def _declared(root: Path, entries, axes) -> dict:
+    """{unit: {axis: set(values)}} for every unit with a usable classification.
+    A unit whose classification is absent, REPLACE_ME, or invalid is simply
+    omitted, which lands it in the fail-closed path."""
+    out = {}
+    for e in entries:
+        p = root / e["path"] / ".specdev" / "org.json"
+        if not p.exists():
+            continue
+        raw = cch.load_json(p).get("classification")
+        if raw is None or "REPLACE_ME" in json.dumps(raw):
+            continue
+        norm, errors = cch.normalize_classification(raw, axes)
+        if errors:
+            for err in errors:
+                print(f"WARNING: {e['path']}: {err}", file=sys.stderr)
+            continue
+        out[e["path"]] = norm
+    return out
+
+
+def resolve_all(root=".", index=None) -> dict:
+    """{unit path: profile} for every registered unit."""
+    root = Path(root)
+    entries = units.unit_entries(root)
+    if index is None:
+        index, why = _load_index(root)
+        if index is None:
+            return {e["path"]: _fallback(why) for e in entries}
+    axes = index.get("axes", {})
+    declared = _declared(root, entries, axes)
+    if not declared:
+        return {e["path"]: _fallback("no unit declares a classification")
+                for e in entries}
+    eff = units.effective(entries, axes, declared)
+    out = {}
+    for e in entries:
+        u = e["path"]
+        if u not in declared:
+            out[u] = _fallback(f"unit '{u}' declares no usable classification")
+            continue
+        values = eff.get(u, {}).get(MATURITY_AXIS) or set()
+        out[u] = compose(values, axes) if values else _fallback(
+            f"unit '{u}' resolves to no '{MATURITY_AXIS}' value")
+    return out
+
+
+def resolve(root=".", unit=".", index=None) -> dict:
+    """One unit's profile. Unknown units fail closed rather than KeyError."""
+    allp = resolve_all(root, index)
+    if unit not in allp:
+        return _fallback(f"unit '{unit}' is not registered")
+    return allp[unit]

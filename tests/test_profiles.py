@@ -134,3 +134,97 @@ def test_invalid_spec_bar_value_falls_back_to_strictest():
     axes = json.loads(json.dumps(AXES))
     axes["maturity"]["values"]["poc"]["profile"]["spec_bar"] = "sloppy"
     assert _pf().compose({"poc"}, axes)["spec_bar"] == "full"
+
+
+def write_index(tmp_path, axes=None):
+    idx = tmp_path / "index.json"
+    idx.write_text(json.dumps({"axes": axes or AXES, "adrs": []}), encoding="utf-8")
+    return idx
+
+
+def make_unit(root, name, classification=None, depends_on=None):
+    d = root / name / ".specdev"
+    d.mkdir(parents=True, exist_ok=True)
+    if classification is not None:
+        (d / "org.json").write_text(
+            json.dumps({"classification": classification}), encoding="utf-8")
+    entry = {"path": name}
+    if depends_on:
+        entry["depends_on"] = depends_on
+    return entry
+
+
+def write_registry(root, units_list):
+    (root / ".specdev").mkdir(parents=True, exist_ok=True)
+    (root / ".specdev" / "units.json").write_text(json.dumps({
+        "schema_version": 1,
+        "governance_repo": "org/governance",
+        "ref": "main",
+        "path": "governance/adr",
+        "units": units_list,
+    }), encoding="utf-8")
+
+
+def test_poc_unit_resolves_to_the_poc_profile(tmp_path):
+    e = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    p = _pf().resolve(tmp_path, "spike", index=json.loads(
+        write_index(tmp_path).read_text(encoding="utf-8")))
+    assert p["per_wave_qa"] is False
+    assert p["spec_bar"] == "charter"
+
+
+def test_poc_unit_a_prod_unit_depends_on_resolves_to_prod(tmp_path):
+    """THE escape-hatch regression. Moving risky code into a poc unit that a
+    prod unit imports must NOT buy a lighter pipeline."""
+    a = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    b = make_unit(tmp_path, "api", {"maturity": "prod", "audience": "customer"},
+                  depends_on=["spike"])
+    write_registry(tmp_path, [a, b])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    p = _pf().resolve(tmp_path, "spike", index=idx)
+    assert p["per_wave_qa"] is True
+    assert p["coverage_gate"] is True
+    assert p["traceability"] is True
+    assert p["spec_bar"] == "full"
+
+
+def test_prod_unit_depending_on_poc_is_not_lowered(tmp_path):
+    a = make_unit(tmp_path, "lib", {"maturity": "prod", "audience": "internal"})
+    b = make_unit(tmp_path, "demo", {"maturity": "poc", "audience": "internal"},
+                  depends_on=["lib"])
+    write_registry(tmp_path, [a, b])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert _pf().resolve(tmp_path, "demo", index=idx)["per_wave_qa"] is False
+    assert _pf().resolve(tmp_path, "lib", index=idx)["per_wave_qa"] is True
+
+
+def test_unconfigured_repo_fails_closed(tmp_path):
+    p = _pf().resolve(tmp_path, ".")
+    assert p == {**_pf().STRICTEST, **_pf().FLOOR}
+
+
+def test_replace_me_classification_fails_closed(tmp_path):
+    e = make_unit(tmp_path, "u", {"maturity": "REPLACE_ME (poc | dev | prod)",
+                                  "audience": "internal"})
+    write_registry(tmp_path, [e])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert _pf().resolve(tmp_path, "u", index=idx)["per_wave_qa"] is True
+
+
+def test_unparseable_classification_fails_closed(tmp_path):
+    e = make_unit(tmp_path, "u", {"maturity": "nonsense", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert _pf().resolve(tmp_path, "u", index=idx)["per_wave_qa"] is True
+
+
+def test_resolve_all_covers_every_registered_unit(tmp_path):
+    a = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    b = make_unit(tmp_path, "api", {"maturity": "prod", "audience": "customer"})
+    write_registry(tmp_path, [a, b])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    allp = _pf().resolve_all(tmp_path, index=idx)
+    assert set(allp) == {"spike", "api"}
+    assert allp["spike"]["coverage_gate"] is False
+    assert allp["api"]["coverage_gate"] is True
