@@ -187,6 +187,112 @@ def next_id(adrs: list[dict], mode: str) -> str:
     return f"ADR-{max(nums, default=0) + 1:0{width}d}"
 
 
+PLACEHOLDER = re.compile(r"<[^<>\n]{2,}>|\bTBD\b|\bTODO\b")
+LOCAL_REQUIRED = ("id", "title", "status", "date", "relates_to")
+ORG_REQUIRED = ("id", "title", "status", "applies_to", "summary")
+OPTION_RE = re.compile(r"^\s*\d+\.\s+\*\*(.+?)\*\*", re.M)
+CONFORMANCE_ITEM = re.compile(r"^\s*-\s*\[[ xX]\]\s*(.*)$", re.M)
+
+
+def spec_req_ids(root: Path, unit: str) -> set[str]:
+    """Every REQ id declared by the unit's active + archived specs."""
+    base = root / unit / ".specdev"
+    paths = [base / "spec.md"]
+    if (base / "specs").is_dir():
+        paths += sorted((base / "specs").glob("*.md"))
+    ids: set[str] = set()
+    for p in paths:
+        if p.exists():
+            ids |= set(REQ_RE.findall(p.read_text(encoding="utf-8-sig")))
+    return ids
+
+
+def _option_blocks(text: str) -> list[str]:
+    """Split an '## Options' body into one string per numbered option."""
+    starts = [m.start() for m in OPTION_RE.finditer(text)]
+    return [text[s:e] for s, e in zip(starts, starts[1:] + [len(text)])]
+
+
+def _labelled(text: str, label: str) -> str:
+    """Content following 'Label:' on its bullet, '' when absent or empty."""
+    m = re.search(rf"{label}\s*:\s*(.*)", text, re.I)
+    return m.group(1).strip() if m else ""
+
+
+def lint_one(a: dict, mode: str, req_ids: set[str]) -> list[str]:
+    """Structural quality gate for one ADR. Empty list = clean."""
+    errs: list[str] = []
+    name = a["file"]
+
+    if a["is_template"]:
+        return [f"{name}: unfilled template — fill it in or delete it"]
+
+    required = ORG_REQUIRED if mode == "org" else LOCAL_REQUIRED
+    if not a["has_fm"]:
+        errs.append(f"{name}: no YAML frontmatter — new ADRs must declare "
+                    f"{', '.join(required)}")
+    else:
+        for key in required:
+            if not a["fm"].get(key):
+                errs.append(f"{name}: frontmatter key '{key}' is missing or empty")
+
+    stem = a["path"].stem
+    if a["id"] and not (stem == a["id"] or stem.startswith(a["id"] + "-")):
+        errs.append(f"{name}: id '{a['id']}' disagrees with the filename")
+
+    if a["status"] and a["status"] not in STATUSES:
+        errs.append(f"{name}: status '{a['status']}' not in {sorted(STATUSES)}")
+
+    for m in PLACEHOLDER.finditer(a["text"]):
+        errs.append(f"{name}: placeholder text left in — '{m.group(0)}'")
+        break
+
+    secs = a["sections"]
+    options = _option_blocks(secs.get("options", ""))
+    if len(options) < 2:
+        errs.append(f"{name}: '## Options' needs at least two options — an ADR "
+                    "with nothing rejected records no decision")
+    for block in options:
+        title = OPTION_RE.search(block).group(1)
+        for label in ("Pros", "Cons"):
+            if not _labelled(block, label):
+                errs.append(f"{name}: option '{title}' has an empty {label}")
+
+    if not secs.get("decision", "").strip():
+        errs.append(f"{name}: '## Decision' is empty")
+
+    consequences = secs.get("consequences", "")
+    if not _labelled(consequences, "Positive"):
+        errs.append(f"{name}: '## Consequences' has no Positive entry")
+    if not _labelled(consequences, r"Negative(?: / risks)?"):
+        errs.append(f"{name}: '## Consequences' has no Negative / risks entry — "
+                    "a decision with no cost has not been thought through")
+
+    if mode == "local":
+        unknown = [r for r in a["relates_to"] if req_ids and r not in req_ids]
+        for r in unknown:
+            errs.append(f"{name}: relates_to names {r}, which is in no spec")
+        if a["has_fm"]:
+            if a["prose_status"] and a["prose_status"] != a["status"]:
+                errs.append(f"{name}: status drift — frontmatter says "
+                            f"'{a['status']}', the '**Status:**' line says "
+                            f"'{a['prose_status']}'")
+            if set(a["prose_relates_to"]) != set(a["relates_to"]):
+                errs.append(f"{name}: relates_to drift — frontmatter has "
+                            f"{sorted(a['relates_to'])}, the 'Relates to:' line "
+                            f"has {sorted(a['prose_relates_to'])}")
+    else:
+        items = [i.strip() for i in CONFORMANCE_ITEM.findall(secs.get("conformance", ""))]
+        if not items:
+            errs.append(f"{name}: '## Conformance' has no '- [ ]' items — org "
+                        "ADRs must state what a conforming repo looks like")
+        for item in items:
+            if not item or PLACEHOLDER.search(item):
+                errs.append(f"{name}: Conformance item is a placeholder: '{item}'")
+
+    return errs
+
+
 def resolve_mode(args) -> str:
     if args.mode != "auto":
         return args.mode
@@ -209,6 +315,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="SpecDev ADR authoring support")
     sub = ap.add_subparsers(dest="cmd", required=True)
     add_common(sub.add_parser("next-id", help="print the next free ADR id"))
+    lint_p = sub.add_parser("lint", help="structural quality gate")
+    add_common(lint_p)
+    lint_p.add_argument("--file", help="lint one ADR instead of the directory")
     args = ap.parse_args(argv)
 
     root = Path(args.root)
@@ -216,6 +325,19 @@ def main(argv=None) -> int:
 
     if args.cmd == "next-id":
         print(next_id(load_adrs(adr_dir(root, args.unit, mode)), mode))
+        return 0
+
+    if args.cmd == "lint":
+        req_ids = spec_req_ids(root, args.unit) if mode == "local" else set()
+        targets = ([load_adr(Path(args.file))] if args.file
+                   else load_adrs(adr_dir(root, args.unit, mode)))
+        errs = [e for a in targets for e in lint_one(a, mode, req_ids)]
+        for e in errs:
+            print(f"ERROR: {e}")
+        if errs:
+            print(f"\nADR lint FAILED: {len(errs)} error(s) in {len(targets)} ADR(s)")
+            return 1
+        print(f"ADR lint passed ({len(targets)} ADR(s)).")
         return 0
     return 1
 

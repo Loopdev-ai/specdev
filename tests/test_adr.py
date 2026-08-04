@@ -177,3 +177,185 @@ def test_next_id_cli(tmp_path, capsys):
     rc = adr.main(["next-id", "--root", str(tmp_path)])
     assert rc == 0
     assert capsys.readouterr().out.strip() == "ADR-004"
+
+
+GOOD_ORG = """---
+id: ADR-0002
+title: Customer data stays in the EU
+status: accepted
+applies_to: [customer & dev+]
+scopes: [data-handling]
+summary: Any repo holding customer data pins its storage and compute to EU regions.
+---
+
+# ADR-0002 — Customer data stays in the EU
+
+## Context
+
+Customer contracts commit us to EU-only processing of personal data.
+
+## Options
+
+1. **EU-only regions everywhere**
+   - Pros: one rule, easy to audit
+   - Cons: higher latency for non-EU users
+2. **Per-tenant region pinning**
+   - Pros: latency follows the customer
+   - Cons: a routing bug becomes a contractual breach
+
+## Decision
+
+EU-only regions for every repo that stores or processes customer data.
+
+## Consequences
+
+- Positive: a single auditable rule; no per-tenant routing to get wrong.
+- Negative / risks: non-EU users see higher latency.
+
+## Conformance
+
+- [ ] Every region value in `.specdev/architecture-config.json` starts with `eu-`.
+- [ ] No `us-` or `ap-` region appears in deployment manifests.
+"""
+
+
+def drop_section(text: str, heading: str) -> str:
+    """Remove one '## Heading' block from an ADR fixture."""
+    out, skipping = [], False
+    for line in text.splitlines(keepends=True):
+        if line.startswith("## "):
+            skipping = line.strip().lower() == f"## {heading}".lower()
+        if not skipping:
+            out.append(line)
+    return "".join(out)
+
+
+def lint_text(tmp_path, text, mode="local", name=None, req_ids=frozenset()):
+    d = tmp_path / ("governance/adr" if mode == "org" else ".specdev/adr")
+    d.mkdir(parents=True, exist_ok=True)
+    name = name or ("ADR-0002-eu.md" if mode == "org" else "ADR-003.md")
+    p = d / name
+    p.write_text(text, encoding="utf-8")
+    return adr.lint_one(adr.load_adr(p), mode, set(req_ids))
+
+
+def test_lint_accepts_a_good_local_adr(tmp_path):
+    assert lint_text(tmp_path, GOOD_LOCAL, req_ids={"REQ-002", "REQ-005"}) == []
+
+
+def test_lint_accepts_a_good_org_adr(tmp_path):
+    assert lint_text(tmp_path, GOOD_ORG, mode="org") == []
+
+
+def test_lint_requires_frontmatter(tmp_path):
+    errs = lint_text(tmp_path, PROSE_ONLY_LOCAL, name="ADR-001.md")
+    assert any("frontmatter" in e for e in errs)
+
+
+def test_lint_rejects_id_filename_mismatch(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL, name="ADR-004.md",
+                     req_ids={"REQ-002", "REQ-005"})
+    assert any("filename" in e for e in errs)
+
+
+def test_lint_rejects_bad_status(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace("status: accepted", "status: agreed"),
+                     req_ids={"REQ-002", "REQ-005"})
+    assert any("status" in e for e in errs)
+
+
+def test_lint_rejects_placeholder_text(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace("Postgres", "TBD").replace(
+        "Stateless signed JWTs, with a 15-minute access token lifetime.", "TBD"),
+        req_ids={"REQ-002", "REQ-005"})
+    assert any("placeholder" in e for e in errs)
+
+
+def test_lint_requires_two_options(tmp_path):
+    one_option = GOOD_LOCAL.split("2. **Stateless signed JWTs**")[0] + "\n## Decision\n\nJWTs.\n"
+    errs = lint_text(tmp_path, one_option, req_ids={"REQ-002", "REQ-005"})
+    assert any("at least two options" in e for e in errs)
+
+
+def test_lint_requires_pros_and_cons_on_each_option(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace(
+        "   - Cons: revocation is only as fast as the token lifetime", "   - Cons:"),
+        req_ids={"REQ-002", "REQ-005"})
+    assert any("Cons" in e for e in errs)
+
+
+def test_lint_requires_non_empty_decision(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace(
+        "Stateless signed JWTs, with a 15-minute access token lifetime.", ""),
+        req_ids={"REQ-002", "REQ-005"})
+    assert any("Decision" in e for e in errs)
+
+
+def test_lint_requires_both_consequence_directions(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace(
+        "- Negative / risks: a stolen token stays valid for up to 15 minutes.", ""),
+        req_ids={"REQ-002", "REQ-005"})
+    assert any("Negative" in e for e in errs)
+
+
+def test_lint_rejects_unknown_req(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL, req_ids={"REQ-002"})
+    assert any("REQ-005" in e for e in errs)
+
+
+def test_lint_skips_req_check_when_no_spec_exists(tmp_path):
+    assert lint_text(tmp_path, GOOD_LOCAL, req_ids=set()) == []
+
+
+def test_lint_detects_status_drift(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace("**Status:** accepted",
+                                                  "**Status:** proposed"),
+                     req_ids={"REQ-002", "REQ-005"})
+    assert any("drift" in e for e in errs)
+
+
+def test_lint_detects_relates_to_drift(tmp_path):
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace("**Relates to:** REQ-002, REQ-005",
+                                                  "**Relates to:** REQ-002"),
+                     req_ids={"REQ-002", "REQ-005"})
+    assert any("drift" in e for e in errs)
+
+
+def test_lint_org_requires_conformance_items(tmp_path):
+    errs = lint_text(tmp_path, drop_section(GOOD_ORG, "Conformance"), mode="org")
+    assert any("Conformance" in e for e in errs)
+
+
+def test_lint_org_rejects_placeholder_conformance_item(tmp_path):
+    errs = lint_text(tmp_path, GOOD_ORG.replace(
+        "- [ ] Every region value in `.specdev/architecture-config.json` starts with `eu-`.",
+        "- [ ] <checkable statement 1>"), mode="org")
+    assert any("placeholder" in e or "Conformance" in e for e in errs)
+
+
+def test_lint_reports_unfilled_template(tmp_path):
+    errs = lint_text(
+        tmp_path,
+        "---\nid: ADR-003\n---\n\n# ADR-003 — <decision title>\n\n"
+        "**Status:** proposed | accepted | superseded\n",
+    )
+    assert any("template" in e for e in errs)
+
+
+def test_spec_req_ids_reads_active_and_archived_specs(tmp_path):
+    base = tmp_path / ".specdev"
+    (base / "specs").mkdir(parents=True)
+    (base / "spec.md").write_text("REQ-001 and REQ-002", encoding="utf-8")
+    (base / "specs" / "FEAT-001-old.md").write_text("REQ-009", encoding="utf-8")
+    assert adr.spec_req_ids(tmp_path, ".") == {"REQ-001", "REQ-002", "REQ-009"}
+
+
+def test_lint_cli_returns_1_on_a_bad_adr(tmp_path):
+    write_local(tmp_path, "ADR-003.md", GOOD_LOCAL.replace("status: accepted",
+                                                           "status: agreed"))
+    assert adr.main(["lint", "--root", str(tmp_path)]) == 1
+
+
+def test_lint_cli_returns_0_on_a_clean_directory(tmp_path):
+    write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
+    assert adr.main(["lint", "--root", str(tmp_path)]) == 0
