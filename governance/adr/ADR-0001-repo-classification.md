@@ -37,10 +37,10 @@ Each repo initialized with SpecDev declares its classification in
 identity, and a repo declares one value per axis — seeded axes are `maturity`
 (`poc < dev < prod`, ordered) and `audience` (`internal`, `customer`);
 both axes and values are extensible. Org ADRs declare `applies_to` in
-frontmatter: list entries are OR, `&` within an entry is AND, and `<value>+`
-means that rank and above on an ordered axis — e.g. `[prod]`, `[customer]`,
-or `[customer & dev+]` — binding exactly the repos whose classification
-matches.
+frontmatter: list entries are OR, `&` within an entry is AND, and appending
+`+` to a value means that rank and above on an ordered axis — e.g. `[prod]`,
+`[customer]`, or `[customer & dev+]` — binding exactly the repos whose
+classification matches.
 
 ## Consequences
 

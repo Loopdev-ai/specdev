@@ -1,3 +1,14 @@
+---
+id: ADR-deployment-platform
+title: Deployment platform
+status: proposed          # proposed | accepted | superseded
+date: <YYYY-MM-DD>
+relates_to: []            # REQs with hosting/scale/compliance implications
+scopes: [deployment]
+supersedes: []            # ADR ids this replaces (optional)
+superseded_by:            # set together with status: superseded (optional)
+---
+
 # ADR-### — Deployment platform
 
 **Status:** proposed | accepted | superseded by ADR-###

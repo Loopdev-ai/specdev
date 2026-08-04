@@ -536,3 +536,47 @@ def test_conflicts_cli_json_shape(tmp_path, capsys):
     assert payload["hard_errors"] == []
     assert payload["shortlist"][0]["id"] == "ADR-003"
     assert payload["shortlist"][0]["reasons"]
+
+
+def load_tool(name):
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "assets" / "specdev" / "tools" / f"{name}.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_new_format_is_still_read_by_gen_traceability(tmp_path):
+    """The prose 'Relates to:' line is what the traceability matrix scrapes."""
+    gt = load_tool("gen_traceability")
+    write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
+    by_req = gt.parse_adrs(tmp_path / ".specdev" / "adr")
+    assert by_req["REQ-002"] == {"ADR-003"}
+    assert by_req["REQ-005"] == {"ADR-003"}
+
+
+def test_new_format_counts_as_accepted_for_validate_spec():
+    """validate_spec.py greps the prose '**Status:** accepted' line."""
+    import re as _re
+    assert _re.search(r"\*\*Status:\*\*\s*accepted", GOOD_LOCAL, _re.I)
+    assert not _re.search(
+        r"\*\*Status:\*\*\s*proposed \| accepted \| superseded", GOOD_LOCAL)
+
+
+def test_shipped_local_templates_are_still_skipped_as_templates():
+    for name in ("ADR-001.md", "ADR-deployment-platform.md"):
+        p = ROOT / "assets" / "specdev" / "adr" / name
+        a = adr.load_adr(p)
+        assert a["is_template"] is True, f"{name} must keep its placeholder Status line"
+        assert a["has_fm"] is True, f"{name} must ship the frontmatter block"
+
+
+def test_shipped_org_template_documents_supersession():
+    text = (ROOT / "governance" / "adr" / "TEMPLATE.md").read_text(encoding="utf-8-sig")
+    assert "supersedes:" in text
+    assert "superseded_by:" in text
+
+
+def test_existing_org_adr_still_lints_clean():
+    p = ROOT / "governance" / "adr" / "ADR-0001-repo-classification.md"
+    assert adr.lint_one(adr.load_adr(p), "org", set()) == []
