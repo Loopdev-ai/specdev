@@ -219,6 +219,26 @@ def test_unparseable_classification_fails_closed(tmp_path):
     assert _pf().resolve(tmp_path, "u", index=idx)["per_wave_qa"] is True
 
 
+def test_invalid_classification_still_propagates_strictness_to_dependencies(tmp_path):
+    """THE escape-hatch regression via a broken file, not a declared value.
+    A prod unit with a corrupt (present-but-invalid) classification must still
+    pull the poc unit it depends on up to strict, exactly as a valid prod
+    declaration would -- a corrupt org.json must not be a lighter-touch
+    stand-in for one."""
+    a = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    b = make_unit(tmp_path, "api", {"maturity": "nonsense", "audience": "bogus"},
+                  depends_on=["spike"])
+    write_registry(tmp_path, [a, b])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    p = _pf().resolve(tmp_path, "spike", index=idx)
+    assert p["per_wave_qa"] is True
+    assert p["coverage_gate"] is True
+    assert p["traceability"] is True
+    assert p["spec_bar"] == "full"
+    # api itself still fails closed on its own broken classification.
+    assert _pf().resolve(tmp_path, "api", index=idx)["per_wave_qa"] is True
+
+
 def test_resolve_all_covers_every_registered_unit(tmp_path):
     a = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
     b = make_unit(tmp_path, "api", {"maturity": "prod", "audience": "customer"})

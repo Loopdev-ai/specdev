@@ -167,10 +167,41 @@ def _load_index(root: Path):
         return None, "org ADR index could not be fetched"
 
 
+def _max_strict(axes: dict) -> dict:
+    """{axis: set(values)} at the strictest possible point of every axis.
+
+    Used when a unit's classification is present but INVALID: that unit must
+    still propagate maximal strictness to whatever depends on it via
+    units.effective(), so a corrupt file can never be a lighter-touch stand-in
+    for a declared value. Ordered axes collapse to their highest-rank value
+    (mirroring units.combine()); unordered axes contribute every value, since
+    there is no single "strictest" member to pick. Value names are read from
+    the index rather than hardcoded, so this holds for any org's scheme."""
+    out = {}
+    for axis, adef in axes.items():
+        values = adef.get("values", {})
+        if not values:
+            continue
+        if adef.get("ordered"):
+            top = max(values, key=lambda v: values[v].get("rank", -1))
+            out[axis] = {top}
+        else:
+            out[axis] = set(values)
+    return out
+
+
 def _declared(root: Path, entries, axes) -> dict:
-    """{unit: {axis: set(values)}} for every unit with a usable classification.
-    A unit whose classification is absent, REPLACE_ME, or invalid is simply
-    omitted, which lands it in the fail-closed path."""
+    """{unit: {axis: set(values)}} for every unit governance has an opinion on.
+
+    A unit whose org.json is absent, or whose classification is missing or
+    still REPLACE_ME, means governance isn't adopted there — it is omitted,
+    which lands it in the fail-closed path.
+
+    A unit whose classification is PRESENT but invalid (normalize_classification
+    reports errors) is a misconfiguration, not an absence: it is included at
+    the strictest point of every axis so units.effective() propagates that
+    strictness to whatever depends on it, instead of silently contributing
+    nothing."""
     out = {}
     for e in entries:
         p = root / e["path"] / ".specdev" / "org.json"
@@ -183,6 +214,7 @@ def _declared(root: Path, entries, axes) -> dict:
         if errors:
             for err in errors:
                 print(f"WARNING: {e['path']}: {err}", file=sys.stderr)
+            out[e["path"]] = _max_strict(axes)
             continue
         out[e["path"]] = norm
     return out
