@@ -252,3 +252,46 @@ def resolve(root=".", unit=".", index=None) -> dict:
     if unit not in allp:
         return _fallback(f"unit '{unit}' is not registered")
     return allp[unit]
+
+
+def _emit(value) -> str:
+    """Render one key for shell/YAML consumption: JSON booleans lowercase,
+    strings bare (no quotes), so `if:` expressions read naturally."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--root", default=".")
+    ap.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    ps = sub.add_parser("show", help="one unit's resolved profile")
+    ps.add_argument("--unit", default=".")
+    ps.add_argument("--key", help="print just this key")
+    ps.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
+    pm = sub.add_parser("matrix", help="{unit: profile} for every unit, one JSON line")
+    pm.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
+    args = ap.parse_args()
+
+    index = cch.load_json(Path(args.index)) if args.index else None
+
+    if args.cmd == "matrix":
+        print(json.dumps(resolve_all(args.root, index), sort_keys=True))
+        return 0
+
+    prof = resolve(args.root, args.unit, index)
+    if args.key:
+        if args.key not in prof:
+            print(f"ERROR: unknown profile key '{args.key}' — one of "
+                  f"{sorted(prof)}", file=sys.stderr)
+            return 1
+        print(_emit(prof[args.key]))
+        return 0
+    print(json.dumps(prof, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

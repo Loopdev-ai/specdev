@@ -248,3 +248,49 @@ def test_resolve_all_covers_every_registered_unit(tmp_path):
     assert set(allp) == {"spike", "api"}
     assert allp["spike"]["coverage_gate"] is False
     assert allp["api"]["coverage_gate"] is True
+
+
+def run_cli(tmp_path, *args):
+    return subprocess.run(
+        [sys.executable, str(PROFILE_PATH), "--root", str(tmp_path), *args],
+        capture_output=True, text=True)
+
+
+def test_cli_show_key_prints_a_yaml_truthy_literal(tmp_path):
+    e = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    idx = write_index(tmp_path)
+    r = run_cli(tmp_path, "show", "--unit", "spike",
+                "--index", str(idx), "--key", "coverage_gate")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "false"
+
+
+def test_cli_show_key_prints_string_values_bare(tmp_path):
+    e = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    idx = write_index(tmp_path)
+    r = run_cli(tmp_path, "show", "--unit", "spike",
+                "--index", str(idx), "--key", "spec_bar")
+    assert r.stdout.strip() == "charter"
+
+
+def test_cli_matrix_emits_one_json_line_for_every_unit(tmp_path):
+    a = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    b = make_unit(tmp_path, "api", {"maturity": "prod", "audience": "customer"})
+    write_registry(tmp_path, [a, b])
+    idx = write_index(tmp_path)
+    r = run_cli(tmp_path, "matrix", "--index", str(idx))
+    assert r.returncode == 0, r.stderr
+    assert len(r.stdout.strip().splitlines()) == 1, "must be one line for $GITHUB_OUTPUT"
+    doc = json.loads(r.stdout)
+    assert doc["spike"]["traceability"] is False
+    assert doc["api"]["traceability"] is True
+
+
+def test_cli_unknown_key_exits_nonzero(tmp_path):
+    e = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    r = run_cli(tmp_path, "show", "--unit", "spike",
+                "--index", str(write_index(tmp_path)), "--key", "bogus")
+    assert r.returncode != 0
