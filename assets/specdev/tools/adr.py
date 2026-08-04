@@ -201,6 +201,24 @@ def next_id(adrs: list[dict], mode: str) -> str:
 
 
 PLACEHOLDER = re.compile(r"<[^<>\n]{2,}>|\bTBD\b|\bTODO\b")
+# Placeholder scanning must ignore code spans: `<value>+` and `` `<owner/name>` ``
+# are syntax documentation (e.g. governance/adr/ADR-0001-repo-classification.md),
+# not a leftover template stub like a bare <decision title> in prose. Strip
+# fenced code blocks first (they may themselves contain single backticks), then
+# double-backtick spans, then single-backtick spans, replacing each with spaces
+# so surrounding offsets/line structure are preserved for any later matching.
+FENCED_CODE_BLOCK = re.compile(r"```.*?```", re.S)
+DOUBLE_BACKTICK_SPAN = re.compile(r"``.*?``", re.S)
+SINGLE_BACKTICK_SPAN = re.compile(r"`[^`\n]*`")
+
+
+def strip_code_spans(text: str) -> str:
+    """Blank out fenced code blocks and backtick-delimited code spans (single
+    and double backtick) so placeholder scanning only sees prose."""
+    text = FENCED_CODE_BLOCK.sub(lambda m: " " * len(m.group(0)), text)
+    text = DOUBLE_BACKTICK_SPAN.sub(lambda m: " " * len(m.group(0)), text)
+    text = SINGLE_BACKTICK_SPAN.sub(lambda m: " " * len(m.group(0)), text)
+    return text
 LOCAL_REQUIRED = ("id", "title", "status", "date", "relates_to")
 ORG_REQUIRED = ("id", "title", "status", "applies_to", "summary")
 OPTION_RE = re.compile(r"^\s*\d+\.\s+\*\*(.+?)\*\*", re.M)
@@ -256,7 +274,7 @@ def lint_one(a: dict, mode: str, req_ids: set[str]) -> list[str]:
     if a["status"] and a["status"] not in STATUSES:
         errs.append(f"{name}: status '{a['status']}' not in {sorted(STATUSES)}")
 
-    for m in PLACEHOLDER.finditer(a["text"]):
+    for m in PLACEHOLDER.finditer(strip_code_spans(a["text"])):
         errs.append(f"{name}: placeholder text left in — '{m.group(0)}'")
         break
 
@@ -300,7 +318,7 @@ def lint_one(a: dict, mode: str, req_ids: set[str]) -> list[str]:
             errs.append(f"{name}: '## Conformance' has no '- [ ]' items — org "
                         "ADRs must state what a conforming repo looks like")
         for item in items:
-            if not item or PLACEHOLDER.search(item):
+            if not item or PLACEHOLDER.search(strip_code_spans(item)):
                 errs.append(f"{name}: Conformance item is a placeholder: '{item}'")
 
     return errs

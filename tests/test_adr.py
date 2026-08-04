@@ -580,3 +580,26 @@ def test_shipped_org_template_documents_supersession():
 def test_existing_org_adr_still_lints_clean():
     p = ROOT / "governance" / "adr" / "ADR-0001-repo-classification.md"
     assert adr.lint_one(adr.load_adr(p), "org", set()) == []
+
+
+def test_lint_ignores_placeholder_syntax_inside_code_spans(tmp_path):
+    """A backticked `<value>+` is syntax documentation, not a leftover template
+    stub — the real-world case is governance/adr/ADR-0001-repo-classification.md."""
+    text = GOOD_LOCAL.replace(
+        "Two services must both authenticate the same caller without a shared store.",
+        "Two services must both authenticate the same caller without a shared "
+        "store. Config syntax like `<value>+` and `<owner/name>` is documented "
+        "here for reference.",
+    )
+    assert lint_text(tmp_path, text, req_ids={"REQ-002", "REQ-005"}) == []
+
+
+def test_lint_still_flags_bare_placeholder_outside_code_spans(tmp_path):
+    """A bare, un-backticked placeholder in the same spot must still be caught."""
+    text = GOOD_LOCAL.replace(
+        "Two services must both authenticate the same caller without a shared store.",
+        "Two services must both authenticate the same caller without a shared "
+        "store. Fill in <decision title> here.",
+    )
+    errs = lint_text(tmp_path, text, req_ids={"REQ-002", "REQ-005"})
+    assert any("placeholder" in e for e in errs)
