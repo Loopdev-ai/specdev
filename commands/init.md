@@ -70,9 +70,10 @@ Do this:
    the current platform; show the target, rollback strategy, and any
    `REPLACE_ME`/placeholder values to confirm. For a **new** product nothing is
    detected (target `manual`) — that is expected: the platform is an architecture
-   decision. Point the user to `.specdev/deploy-platforms.md` and
-   `adr/ADR-deployment-platform.md`, help them pick the simplest fit (not
-   Kubernetes by default), then set `target` + `params` + `"locked": true`.
+   decision. Point the user to `.specdev/deploy-platforms.md`, help them
+   pick the simplest fit (not Kubernetes by default), record the decision via
+   the **`/specdev:adr`** skill (scope tag `deployment`), then set
+   `target` + `params` + `"locked": true`.
 4b. **Single governed unit by default.** A freshly initialized repo is ONE
    governed unit rooted at the repo root — there is no `units.json` and none is
    needed. If the repo actually holds several projects at different maturities
