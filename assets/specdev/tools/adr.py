@@ -24,6 +24,8 @@ Usage:
     python .specdev/tools/adr.py conflicts [--root .] [--unit .] [--file F] [--json]
 """
 import argparse
+import itertools
+import json
 import re
 import sys
 from pathlib import Path
@@ -40,6 +42,17 @@ if sys.version_info < (3, 10):
         "a virtualenv. In CI, actions/setup-python with python-version '3.x' "
         "satisfies this."
     )
+
+# entry_matches / build_value_map are the SAME applies_to semantics the org-ADR
+# CI gate uses. Importing rather than reimplementing keeps the shortlist and the
+# gate from ever disagreeing. check_org_adrs.py sits beside this file in both
+# layouts: .specdev/tools/ in a product repo, assets/specdev/tools/ in the
+# governance repo.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_org_adrs  # noqa: E402  (vendored sibling module)
+
+build_value_map = check_org_adrs.build_value_map
+entry_matches = check_org_adrs.entry_matches
 
 STATUSES = {"proposed", "accepted", "superseded"}
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
@@ -340,6 +353,62 @@ def hard_conflicts(adrs: list[dict]) -> list[str]:
     return errs
 
 
+def all_classifications(axes: dict):
+    """Every concrete classification the scheme can express, one axis value
+    each. Schemes are tiny (a handful of values per axis), so enumerating is
+    exact and cheaper to reason about than interval arithmetic."""
+    names = sorted(axes)
+    value_lists = [sorted(axes[n].get("values", {})) for n in names]
+    for combo in itertools.product(*value_lists):
+        yield {n: {v} for n, v in zip(names, combo)}
+
+
+def applies_to_overlap(a_entries, b_entries, axes, vmap) -> dict | None:
+    """A classification bound by BOTH ADRs, or None. The witness is returned so
+    the message can name who is caught by both."""
+    for cls in all_classifications(axes):
+        if (any(entry_matches(e, cls, axes, vmap) for e in a_entries)
+                and any(entry_matches(e, cls, axes, vmap) for e in b_entries)):
+            return cls
+    return None
+
+
+def _summary(a: dict) -> str:
+    if a.get("summary"):
+        return a["summary"]
+    decision = a["sections"].get("decision", "").strip().splitlines()
+    return decision[0] if decision else ""
+
+
+def shortlist(target: dict, adrs: list[dict], mode: str, axes: dict | None) -> list[dict]:
+    """Accepted ADRs that could contradict `target`. Judgment happens upstream —
+    this only narrows the field the skill has to read."""
+    vmap = build_value_map(axes) if (mode == "org" and axes) else {}
+    out = []
+    for other in adrs:
+        if other["id"] == target["id"] or other["status"] != "accepted":
+            continue
+        reasons = []
+        shared_scopes = sorted(set(target["scopes"]) & set(other["scopes"]))
+        if shared_scopes:
+            reasons.append(f"shares scope(s): {', '.join(shared_scopes)}")
+        if mode == "local":
+            shared_reqs = sorted(set(target["relates_to"]) & set(other["relates_to"]))
+            if shared_reqs:
+                reasons.append(f"both decide {', '.join(shared_reqs)}")
+        elif axes:
+            witness = applies_to_overlap(target["applies_to"], other["applies_to"],
+                                         axes, vmap)
+            if witness:
+                where = ", ".join(f"{a}: {next(iter(witness[a]))}" for a in sorted(witness))
+                reasons.append(f"both bind ({where})")
+        if reasons:
+            out.append({"id": other["id"], "file": other["file"],
+                        "title": other["title"], "summary": _summary(other),
+                        "reasons": reasons})
+    return out
+
+
 def resolve_mode(args) -> str:
     if args.mode != "auto":
         return args.mode
@@ -394,12 +463,41 @@ def main(argv=None) -> int:
     if args.cmd == "conflicts":
         adrs = load_adrs(adr_dir(root, args.unit, mode))
         errs = hard_conflicts(adrs)
+        axes = None
+        if mode == "org":
+            scheme = root / "governance" / "classification.json"
+            if scheme.exists():
+                axes = json.loads(scheme.read_text(encoding="utf-8-sig"))["axes"]
+
+        items = []
+        if args.file:
+            target = load_adr(Path(args.file))
+            items = shortlist(target, adrs, mode, axes)
+
+        if args.json:
+            print(json.dumps({"hard_errors": errs, "shortlist": items}, indent=2))
+            return 1 if errs else 0
+
         for e in errs:
             print(f"ERROR: {e}")
         if errs:
             print(f"\nADR conflicts FAILED: {len(errs)} structural error(s)")
             return 1
-        print(f"No structural conflicts ({len(adrs)} ADR(s)).")
+        if not args.file:
+            print(f"No structural conflicts ({len(adrs)} ADR(s)). "
+                  "Pass --file to shortlist overlap candidates.")
+            return 0
+        if not items:
+            print(f"No structural conflicts and an empty shortlist "
+                  f"({len(adrs)} ADR(s) checked).")
+            return 0
+        print(f"Shortlist — {len(items)} accepted ADR(s) overlap this one; "
+              "read their Decision sections and rule on each:")
+        for i in items:
+            print(f"  {i['id']} ({i['file']}) — {i['title']}")
+            print(f"      why: {'; '.join(i['reasons'])}")
+            if i["summary"]:
+                print(f"      says: {i['summary']}")
         return 0
     return 1
 

@@ -444,3 +444,95 @@ def test_conflicts_cli_returns_1_on_hard_error(tmp_path):
         "scopes: [auth, session]", "scopes: [auth, session]\nsupersedes: [ADR-099]"),
         encoding="utf-8")
     assert adr.main(["conflicts", "--root", str(tmp_path)]) == 1
+
+
+AXES = {
+    "maturity": {"ordered": True,
+                 "values": {"poc": {"rank": 0}, "dev": {"rank": 1}, "prod": {"rank": 2}}},
+    "audience": {"ordered": False, "values": {"internal": {}, "customer": {}}},
+}
+
+
+def test_shortlist_flags_shared_scope():
+    target = rec("ADR-005", scopes=["auth"])
+    out = adr.shortlist(target, [rec("ADR-003", scopes=["auth", "session"])], "local", None)
+    assert [i["id"] for i in out] == ["ADR-003"]
+    assert "auth" in out[0]["reasons"][0]
+
+
+def test_shortlist_flags_shared_req():
+    target = rec("ADR-005", relates_to=["REQ-002"])
+    out = adr.shortlist(target, [rec("ADR-003", relates_to=["REQ-002"])], "local", None)
+    assert any("REQ-002" in r for r in out[0]["reasons"])
+
+
+def test_shortlist_ignores_disjoint_adrs():
+    target = rec("ADR-005", scopes=["billing"], relates_to=["REQ-009"])
+    others = [rec("ADR-003", scopes=["auth"], relates_to=["REQ-002"])]
+    assert adr.shortlist(target, others, "local", None) == []
+
+
+def test_shortlist_ignores_non_accepted_adrs():
+    target = rec("ADR-005", scopes=["auth"])
+    others = [rec("ADR-003", status="superseded", superseded_by="ADR-004", scopes=["auth"]),
+              rec("ADR-004", status="proposed", scopes=["auth"])]
+    assert adr.shortlist(target, others, "local", None) == []
+
+
+def test_shortlist_ignores_itself():
+    target = rec("ADR-005", scopes=["auth"])
+    assert adr.shortlist(target, [rec("ADR-005", scopes=["auth"])], "local", None) == []
+
+
+def test_applies_to_overlap_rank_semantics():
+    vmap = adr.build_value_map(AXES)
+    # 'dev+' covers dev and prod; 'prod' is inside it
+    assert adr.applies_to_overlap(["dev+"], ["prod"], AXES, vmap) is not None
+    # 'poc' alone never overlaps 'dev+'
+    assert adr.applies_to_overlap(["poc"], ["dev+"], AXES, vmap) is None
+
+
+def test_applies_to_overlap_conjunction_semantics():
+    vmap = adr.build_value_map(AXES)
+    assert adr.applies_to_overlap(["customer & dev+"], ["customer"], AXES, vmap) is not None
+    assert adr.applies_to_overlap(["customer & dev+"], ["internal"], AXES, vmap) is None
+
+
+def test_applies_to_overlap_all_matches_everything():
+    vmap = adr.build_value_map(AXES)
+    assert adr.applies_to_overlap(["all"], ["internal & poc"], AXES, vmap) is not None
+
+
+def test_shortlist_org_uses_applies_to():
+    target = rec("ADR-0005", applies_to=["prod"], scopes=["deployment"])
+    others = [rec("ADR-0002", applies_to=["customer & dev+"], scopes=["data-handling"]),
+              rec("ADR-0003", applies_to=["poc"], scopes=["deployment"])]
+    out = adr.shortlist(target, others, "org", AXES)
+    ids = [i["id"] for i in out]
+    # ADR-0002 overlaps on classification; ADR-0003 shares a scope tag only
+    assert set(ids) == {"ADR-0002", "ADR-0003"}
+
+
+def test_conflicts_cli_prints_shortlist_and_exits_0(tmp_path, capsys):
+    write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
+    new = (GOOD_LOCAL.replace("id: ADR-003", "id: ADR-005")
+                     .replace("# ADR-003", "# ADR-005"))
+    p = write_local(tmp_path, "ADR-005.md", new)
+    rc = adr.main(["conflicts", "--root", str(tmp_path), "--file", str(p)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ADR-003" in out
+    assert "shortlist" in out.lower()
+
+
+def test_conflicts_cli_json_shape(tmp_path, capsys):
+    import json as _json
+    write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
+    new = (GOOD_LOCAL.replace("id: ADR-003", "id: ADR-005")
+                     .replace("# ADR-003", "# ADR-005"))
+    p = write_local(tmp_path, "ADR-005.md", new)
+    adr.main(["conflicts", "--root", str(tmp_path), "--file", str(p), "--json"])
+    payload = _json.loads(capsys.readouterr().out)
+    assert payload["hard_errors"] == []
+    assert payload["shortlist"][0]["id"] == "ADR-003"
+    assert payload["shortlist"][0]["reasons"]
