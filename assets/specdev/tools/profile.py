@@ -24,8 +24,12 @@ Three rules, in order, and all three are load-bearing:
 The FLOOR is applied after the table and cannot be disabled by it.
 
 Usage:
-    profile.py show   [--root .] [--unit .] [--index FILE] [--key KEY]
-    profile.py matrix [--root .] [--index FILE]
+    profile.py --root . show   [--unit .] [--index FILE] [--key KEY]
+    profile.py --root . matrix [--index FILE]
+
+NOTE: --root is a top-level argument and must precede the subcommand. --index
+belongs to the subcommand and must follow it. Using --index before the
+subcommand is a usage error.
 """
 import argparse
 import json
@@ -265,7 +269,6 @@ def _emit(value) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", default=".")
-    ap.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     ps = sub.add_parser("show", help="one unit's resolved profile")
     ps.add_argument("--unit", default=".")

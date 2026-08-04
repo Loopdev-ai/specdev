@@ -294,3 +294,20 @@ def test_cli_unknown_key_exits_nonzero(tmp_path):
     r = run_cli(tmp_path, "show", "--unit", "spike",
                 "--index", str(write_index(tmp_path)), "--key", "bogus")
     assert r.returncode != 0
+
+
+def test_cli_index_before_subcommand_exits_nonzero(tmp_path):
+    """Regression test for argparse clobber: --index on top-level parser was
+    being overwritten by subparser's None default. With the fix, --index must
+    come AFTER the subcommand or argparse exits non-zero."""
+    e = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    idx = write_index(tmp_path)
+    # --index BEFORE subcommand should fail: argparse will either reject it as
+    # an unrecognized argument or treat the file path as an invalid subcommand.
+    r = subprocess.run(
+        [sys.executable, str(PROFILE_PATH), "--root", str(tmp_path),
+         "--index", str(idx), "show", "--unit", "spike"],
+        capture_output=True, text=True)
+    assert r.returncode != 0, f"Expected exit code != 0, got {r.returncode}: {r.stderr}"
+    assert "error:" in r.stderr
