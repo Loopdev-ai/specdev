@@ -3,10 +3,50 @@
   "axes": {
     "maturity": {
       "ordered": true,
+      "$comment": "'profile' scales how much of the SpecDev pipeline runs at this maturity. Resolved by .specdev/tools/profile.py from a unit's EFFECTIVE classification. It can only remove ceremony: the floor (secret scan, scope check, SAST, findings, smoke test, poc-scoped org ADRs) is applied after this table and cannot be disabled here.",
       "values": {
-        "poc": { "rank": 0, "description": "Proof of concept / spike. Disposable code; minimal governance." },
-        "dev": { "rank": 1, "description": "Active development, not yet serving production traffic or real data." },
-        "prod": { "rank": 2, "description": "Production: serves real users or handles real data. Full governance applies." }
+        "poc": {
+          "rank": 0,
+          "description": "Proof of concept / spike. Disposable code; minimal governance.",
+          "profile": {
+            "spec_bar": "charter",
+            "spec_pr": false,
+            "adrs": false,
+            "per_wave_qa": false,
+            "coverage_gate": false,
+            "traceability": false,
+            "compliance": false,
+            "prod_promotion": false
+          }
+        },
+        "dev": {
+          "rank": 1,
+          "description": "Active development, not yet serving production traffic or real data.",
+          "profile": {
+            "spec_bar": "full",
+            "spec_pr": true,
+            "adrs": true,
+            "per_wave_qa": true,
+            "coverage_gate": true,
+            "traceability": true,
+            "compliance": false,
+            "prod_promotion": true
+          }
+        },
+        "prod": {
+          "rank": 2,
+          "description": "Production: serves real users or handles real data. Full governance applies.",
+          "profile": {
+            "spec_bar": "full",
+            "spec_pr": true,
+            "adrs": true,
+            "per_wave_qa": true,
+            "coverage_gate": true,
+            "traceability": true,
+            "compliance": true,
+            "prod_promotion": true
+          }
+        }
       }
     },
     "audience": {
