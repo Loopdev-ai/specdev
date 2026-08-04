@@ -293,6 +293,53 @@ def lint_one(a: dict, mode: str, req_ids: set[str]) -> list[str]:
     return errs
 
 
+def hard_conflicts(adrs: list[dict]) -> list[str]:
+    """Structural conflicts needing no judgment. Empty list = clean."""
+    errs: list[str] = []
+    by_id: dict[str, dict] = {}
+    for a in adrs:
+        if a["id"] in by_id:
+            errs.append(f"duplicate id {a['id']}: {by_id[a['id']]['file']} and {a['file']}")
+            continue
+        by_id[a["id"]] = a
+
+    successors: dict[str, list[str]] = {}
+    for a in adrs:
+        for target in a["supersedes"]:
+            successors.setdefault(target, []).append(a["id"])
+
+    for a in adrs:
+        for target_id in a["supersedes"]:
+            target = by_id.get(target_id)
+            if target is None:
+                errs.append(f"{a['file']}: supersedes {target_id}, which does not exist")
+                continue
+            claimants = [c for c in successors.get(target_id, []) if c != a["id"]]
+            if claimants:
+                errs.append(f"{a['file']}: {target_id} is already superseded by "
+                            f"{', '.join(sorted(claimants))} — an ADR is replaced once")
+            elif target["status"] != "superseded":
+                errs.append(f"{a['file']}: supersedes {target_id}, but {target_id} is "
+                            f"still '{target['status']}' — set it to 'superseded'")
+            elif target["superseded_by"] != a["id"]:
+                errs.append(f"{a['file']}: supersession is not reciprocal — "
+                            f"{target_id}.superseded_by is "
+                            f"'{target['superseded_by'] or '(unset)'}', expected {a['id']}")
+
+        if a["status"] == "superseded" and not a["superseded_by"]:
+            errs.append(f"{a['file']}: status is 'superseded' with no superseded_by — "
+                        "record which ADR replaced it")
+        if a["superseded_by"]:
+            if a["superseded_by"] not in by_id:
+                errs.append(f"{a['file']}: superseded_by {a['superseded_by']}, "
+                            "which does not exist")
+            elif a["status"] != "superseded":
+                errs.append(f"{a['file']}: superseded_by is set but status is "
+                            f"'{a['status']}' — it must be 'superseded'")
+
+    return errs
+
+
 def resolve_mode(args) -> str:
     if args.mode != "auto":
         return args.mode
@@ -318,6 +365,10 @@ def main(argv=None) -> int:
     lint_p = sub.add_parser("lint", help="structural quality gate")
     add_common(lint_p)
     lint_p.add_argument("--file", help="lint one ADR instead of the directory")
+    conf_p = sub.add_parser("conflicts", help="structural + candidate conflicts")
+    add_common(conf_p)
+    conf_p.add_argument("--file", help="the ADR being written or changed")
+    conf_p.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
     root = Path(args.root)
@@ -338,6 +389,17 @@ def main(argv=None) -> int:
             print(f"\nADR lint FAILED: {len(errs)} error(s) in {len(targets)} ADR(s)")
             return 1
         print(f"ADR lint passed ({len(targets)} ADR(s)).")
+        return 0
+
+    if args.cmd == "conflicts":
+        adrs = load_adrs(adr_dir(root, args.unit, mode))
+        errs = hard_conflicts(adrs)
+        for e in errs:
+            print(f"ERROR: {e}")
+        if errs:
+            print(f"\nADR conflicts FAILED: {len(errs)} structural error(s)")
+            return 1
+        print(f"No structural conflicts ({len(adrs)} ADR(s)).")
         return 0
     return 1
 

@@ -261,11 +261,11 @@ def test_lint_rejects_id_filename_mismatch(tmp_path):
 def test_lint_rejects_bad_status(tmp_path):
     errs = lint_text(tmp_path, GOOD_LOCAL.replace("status: accepted", "status: agreed"),
                      req_ids={"REQ-002", "REQ-005"})
-    assert any("status" in e for e in errs)
+    assert any("status 'agreed' not in" in e for e in errs)
 
 
 def test_lint_rejects_placeholder_text(tmp_path):
-    errs = lint_text(tmp_path, GOOD_LOCAL.replace("Postgres", "TBD").replace(
+    errs = lint_text(tmp_path, GOOD_LOCAL.replace(
         "Stateless signed JWTs, with a 15-minute access token lifetime.", "TBD"),
         req_ids={"REQ-002", "REQ-005"})
     assert any("placeholder" in e for e in errs)
@@ -359,3 +359,88 @@ def test_lint_cli_returns_1_on_a_bad_adr(tmp_path):
 def test_lint_cli_returns_0_on_a_clean_directory(tmp_path):
     write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
     assert adr.main(["lint", "--root", str(tmp_path)]) == 0
+
+
+def rec(aid, status="accepted", supersedes=(), superseded_by="", scopes=(),
+        relates_to=(), applies_to=(), title="t", summary="s"):
+    """A minimal in-memory ADR record, as load_adr would produce."""
+    return {
+        "id": aid, "file": f"{aid}.md", "title": title, "status": status,
+        "supersedes": list(supersedes), "superseded_by": superseded_by,
+        "scopes": list(scopes), "relates_to": list(relates_to),
+        "applies_to": list(applies_to), "summary": summary,
+        "sections": {"decision": "d"},
+    }
+
+
+def test_hard_conflicts_clean_set():
+    assert adr.hard_conflicts([rec("ADR-001"), rec("ADR-002")]) == []
+
+
+def test_hard_conflicts_duplicate_id():
+    errs = adr.hard_conflicts([rec("ADR-001"), rec("ADR-001")])
+    assert any("duplicate id" in e for e in errs)
+
+
+def test_hard_conflicts_dangling_supersedes():
+    errs = adr.hard_conflicts([rec("ADR-002", supersedes=["ADR-099"])])
+    assert any("ADR-099" in e for e in errs)
+
+
+def test_hard_conflicts_target_still_accepted():
+    errs = adr.hard_conflicts([
+        rec("ADR-001", status="accepted"),
+        rec("ADR-002", supersedes=["ADR-001"]),
+    ])
+    assert any("still 'accepted'" in e for e in errs)
+
+
+def test_hard_conflicts_non_reciprocal_pair():
+    errs = adr.hard_conflicts([
+        rec("ADR-001", status="superseded", superseded_by="ADR-003"),
+        rec("ADR-002", supersedes=["ADR-001"]),
+    ])
+    assert any("reciprocal" in e for e in errs)
+
+
+def test_hard_conflicts_already_superseded_by_another():
+    errs = adr.hard_conflicts([
+        rec("ADR-001", status="superseded", superseded_by="ADR-002"),
+        rec("ADR-002", supersedes=["ADR-001"]),
+        rec("ADR-003", supersedes=["ADR-001"]),
+    ])
+    assert any("already superseded" in e for e in errs)
+
+
+def test_hard_conflicts_superseded_without_successor():
+    errs = adr.hard_conflicts([rec("ADR-001", status="superseded")])
+    assert any("superseded_by" in e for e in errs)
+
+
+def test_hard_conflicts_successor_without_superseded_status():
+    errs = adr.hard_conflicts([
+        rec("ADR-001", status="accepted", superseded_by="ADR-002"),
+        rec("ADR-002", supersedes=["ADR-001"]),
+    ])
+    assert any("status" in e for e in errs)
+
+
+def test_hard_conflicts_valid_supersession_chain_is_clean():
+    assert adr.hard_conflicts([
+        rec("ADR-001", status="superseded", superseded_by="ADR-002"),
+        rec("ADR-002", supersedes=["ADR-001"]),
+    ]) == []
+
+
+def test_conflicts_cli_returns_1_on_hard_error(tmp_path):
+    write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
+    write_local(tmp_path, "ADR-004.md",
+                GOOD_LOCAL.replace("id: ADR-003", "id: ADR-004")
+                          .replace("# ADR-003", "# ADR-004")
+                + "\nsupersedes noise\n")
+    # ADR-004 declares a supersession of an id that does not exist
+    p = tmp_path / ".specdev" / "adr" / "ADR-004.md"
+    p.write_text(p.read_text(encoding="utf-8").replace(
+        "scopes: [auth, session]", "scopes: [auth, session]\nsupersedes: [ADR-099]"),
+        encoding="utf-8")
+    assert adr.main(["conflicts", "--root", str(tmp_path)]) == 1
