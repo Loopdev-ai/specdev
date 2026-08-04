@@ -33,5 +33,6 @@ Do this:
    the next step is to push and open a Spec PR (Gate 1), and remind them not to
    start the build until that PR is merged.
 
-Then for non-trivial architecture, offer to draft an `ADR-###` under
-`.specdev/adr/` with `Relates to:` the affected REQs.
+Then for non-trivial architecture, offer to draft an ADR — invoke the `adr`
+skill (or `/specdev:adr`) rather than writing the file directly, so the
+decision is interviewed, linted, and checked against the ADRs already accepted.

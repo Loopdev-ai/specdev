@@ -4,6 +4,8 @@ title: <decision title>
 status: proposed        # proposed | accepted | superseded
 applies_to: [all]       # who this binds. Entries are OR; '&' inside an entry is AND. Values come from ../classification.json (any axis): all | prod | customer | dev+ ('+' = that rank and above, ordered axes only) | customer & dev+
 scopes: []              # free tags, e.g. [deployment, auth, data-handling]
+supersedes: []          # ADR ids this replaces (optional)
+superseded_by:          # the ADR that replaced this one; set with status: superseded
 summary: <one sentence — this line is what repos read first, keep it self-contained>
 ---
 
