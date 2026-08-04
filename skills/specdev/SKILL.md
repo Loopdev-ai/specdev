@@ -54,14 +54,19 @@ Run `python .specdev/tools/units.py list`.
    `REQ-###` per requirement, each with a testable **Acceptance** line, and a
    concrete **Out of Scope**. Use `/specdev:new-feature` to start this on a
    `spec/<feature>` branch.
-4. **Architecture.** Record decisions as `.specdev/adr/ADR-###.md` with
-   `Relates to: REQ-###`. Skip only if the change fits existing architecture.
+4. **Architecture.** Record every decision by invoking the **`adr`** skill —
+   it runs the decision interview, allocates the id, lints the result, and
+   proves the ADR does not conflict with an already-accepted one. **Do not
+   hand-write a file into `.specdev/adr/`**: a hand-written ADR skips the
+   conflict check, which is the whole point of the artifact. Skip the step
+   entirely only if the change fits existing architecture.
    **The deployment platform is one of these decisions, not a detection result:**
    - *New product:* there is nothing to detect. Choose the platform using
      `.specdev/deploy-platforms.md` — bias to the simplest option that meets the
-     spec's real needs (do not default to Kubernetes). Record it in
-     `adr/ADR-deployment-platform.md`, then set `deploy.profile.json` `target` +
-     `params` and `"locked": true` so detection won't override the decision.
+     spec's real needs (do not default to Kubernetes). Record it via the
+     **`adr`** skill (scope tag `deployment`), then set
+     `deploy.profile.json` `target` + `params` and `"locked": true` so
+     detection won't override the decision.
      Scaffold whatever platform config the choice needs (Dockerfile, fly.toml,
      manifests, …) so build/deploy have inputs.
    - *Existing product:* `detect_deploy.py` reads the current target; only write
@@ -107,13 +112,14 @@ Run `python .specdev/tools/units.py list`.
    green.** With org governance configured, run this fully automatic loop
    first (no user prompts between iterations): dispatch **`adr-checker`** →
    on red, dispatch a `component-builder` to fix each named violation (or
-   amend the local ADRs for a justified deviation) → re-run `qa-verifier` →
-   re-run `adr-checker` — repeat until green. **Do not open the PR while the
-   checker reports violations.** Then `post-dev-qa.yml` runs tests, security
-   scan, coverage, and `gen_traceability.py --check-gaps` (fails if any REQ
-   has no test), and `org-adr-check.yml` deterministically re-proves the
-   manifest against the org index. These are required status checks. Get
-   review + green, merge.
+   amend the local ADRs for a justified deviation — via the **`adr`** skill,
+   so the deviation ADR is linted and conflict-checked like any other) →
+   re-run `qa-verifier` → re-run `adr-checker` — repeat until green. **Do not
+   open the PR while the checker reports violations.** Then `post-dev-qa.yml`
+   runs tests, security scan, coverage, and `gen_traceability.py
+   --check-gaps` (fails if any REQ has no test), and `org-adr-check.yml`
+   deterministically re-proves the manifest against the org index. These are
+   required status checks. Get review + green, merge.
 8. **Merge is the deploy trigger.** `deploy.yml` builds, tags an immutable
    release, deploys staging, then runs `post-deploy-qa.yml` against staging.
    **Staging QA is the promotion gate** (prod is fully automatic, no human

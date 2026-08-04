@@ -72,6 +72,7 @@ gated flow or when a repo contains `.specdev/`.
 | Agent `qa-verifier` | local Gate-2 dry run; returns only actionable failures |
 | Agent `adr-checker` | verifies the repo against applicable org ADRs; writes the compliance manifest; gates every PR |
 | Skill `arch-config` | capture/edit/delete a product's runtime hosting config (10 categories) as per-environment, reference-only records in `.specdev/architecture-config.json` |
+| Skill `adr` | interviews, allocates the id, lints, and conflict-checks an architecture decision record (local or org) — the only supported way to write one |
 | `governance/` (this repo) | the org's **architectural repo of record**: tier-scoped org ADRs, classification scheme, generated index |
 | Assets `.specdev/` | spec, ADR, component-map, BUILD, traceability templates + Python tools |
 | Assets `.specdev/compliance/` | optional control-framework layer (ISO 27001/42001, SOC 2, NIST 800-53) — catalogs, crosswalk, SoA/risk/DPIA templates, `gen_compliance.py` |
@@ -250,6 +251,29 @@ repos):
 A repo that cannot conform records a local ADR plus a justified
 `superseded-by-local` manifest entry — visible to humans at PR review, never
 silent.
+
+## Writing ADRs
+
+`/specdev:adr` (skill: `adr`) authors both kinds of decision record — local
+`.specdev/adr/ADR-###.md` and org `governance/adr/ADR-####-<slug>.md` — and is
+the only supported way to write one. It interviews for the parts an ADR is
+actually for (what you rejected, and what the decision costs you), then runs
+`.specdev/tools/adr.py`:
+
+| Command | What it decides |
+|---------|-----------------|
+| `adr.py next-id` | the next free id, per layer |
+| `adr.py lint --file F` | structure: two real options, non-empty consequences, a linked REQ, no placeholder text, no frontmatter/prose drift |
+| `adr.py conflicts --file F` | hard errors (duplicate ids, broken supersession chains) plus a **shortlist** of accepted ADRs that overlap this one on scope, REQ, or `applies_to` |
+
+The tool narrows; the skill judges. A real contradiction is resolved by
+revising the new ADR, superseding the old one, or narrowing scope — never by
+writing it anyway.
+
+Local ADRs written this way carry YAML frontmatter *and* the older prose
+`**Status:**` / `**Relates to:**` lines, so `gen_traceability.py` and
+`validate_spec.py` keep working unchanged; `lint` fails if the two ever drift
+apart.
 
 ## Compliance (control frameworks)
 
