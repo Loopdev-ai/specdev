@@ -219,6 +219,8 @@ def strip_code_spans(text: str) -> str:
     text = DOUBLE_BACKTICK_SPAN.sub(lambda m: " " * len(m.group(0)), text)
     text = SINGLE_BACKTICK_SPAN.sub(lambda m: " " * len(m.group(0)), text)
     return text
+
+
 LOCAL_REQUIRED = ("id", "title", "status", "date", "relates_to")
 ORG_REQUIRED = ("id", "title", "status", "applies_to", "summary")
 OPTION_RE = re.compile(r"^\s*\d+\.\s+\*\*(.+?)\*\*", re.M)
@@ -245,8 +247,14 @@ def _option_blocks(text: str) -> list[str]:
 
 
 def _labelled(text: str, label: str) -> str:
-    """Content following 'Label:' on its bullet, '' when absent or empty."""
-    m = re.search(rf"{label}\s*:\s*(.*)", text, re.I)
+    r"""Content following 'Label:' on its bullet, '' when absent or empty.
+
+    The whitespace after the colon must be horizontal-only (`[ \t]*`, not
+    `\s*`): `\s*` also matches newlines, so an empty '- Pros:' bullet
+    followed by a '- Cons: ...' line would consume the newline and read the
+    NEXT label's text as its own content, silently passing lint.
+    """
+    m = re.search(rf"{label}\s*:[ \t]*(.*)", text, re.I)
     return m.group(1).strip() if m else ""
 
 
@@ -324,6 +332,22 @@ def lint_one(a: dict, mode: str, req_ids: set[str]) -> list[str]:
     return errs
 
 
+def lint_target(a: dict, mode: str, req_ids: set[str],
+                 single_file: bool) -> tuple[list[str], list[str]]:
+    """CLI-facing wrapper around lint_one: (errors, warnings).
+
+    A pre-existing prose-only ADR (no YAML frontmatter) is explicitly NOT
+    migrated per the design's Non-goals, and remains valid — sweeping a whole
+    directory must not hard-fail on one. Linting a single --file means you
+    are authoring/editing that ADR right now, so the same gap there is a real
+    ERROR, not a warning.
+    """
+    if not single_file and not a["has_fm"]:
+        return [], [f"{a['file']}: no YAML frontmatter — legacy ADR, left as-is "
+                     "(pass --file to hold it to the current structure)"]
+    return lint_one(a, mode, req_ids), []
+
+
 def hard_conflicts(adrs: list[dict]) -> list[str]:
     """Structural conflicts needing no judgment. Empty list = clean."""
     errs: list[str] = []
@@ -374,7 +398,17 @@ def hard_conflicts(adrs: list[dict]) -> list[str]:
 def all_classifications(axes: dict):
     """Every concrete classification the scheme can express, one axis value
     each. Schemes are tiny (a handful of values per axis), so enumerating is
-    exact and cheaper to reason about than interval arithmetic."""
+    exact and cheaper to reason about than interval arithmetic.
+
+    LIMITATION, deliberately unaddressed: this yields exactly one value per
+    axis, so it never generates a classification bound by TWO values on the
+    SAME axis at once (e.g. an applies_to pulled up to cover both `internal`
+    and `customer` on an `audience` axis simultaneously). An overlap that
+    only exists for that multi-value combination would be missed. In
+    practice a repo's own classification is single-valued per axis; the
+    multi-value case only arises from a defensive pull-up across dependents,
+    which is rare enough that exact single-value enumeration remains the
+    right precision/cost trade-off over interval arithmetic."""
     names = sorted(axes)
     value_lists = [sorted(axes[n].get("values", {})) for n in names]
     for combo in itertools.product(*value_lists):
@@ -391,11 +425,21 @@ def applies_to_overlap(a_entries, b_entries, axes, vmap) -> dict | None:
     return None
 
 
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+SUMMARY_MAX = 160
+
+
 def _summary(a: dict) -> str:
     if a.get("summary"):
         return a["summary"]
-    decision = a["sections"].get("decision", "").strip().splitlines()
-    return decision[0] if decision else ""
+    decision = a["sections"].get("decision", "").strip()
+    if not decision:
+        return ""
+    paragraph = " ".join(decision.split("\n\n", 1)[0].split())
+    text = SENTENCE_END.split(paragraph, maxsplit=1)[0]
+    if len(text) > SUMMARY_MAX:
+        text = text[:SUMMARY_MAX - 3].rstrip() + "..."
+    return text
 
 
 def shortlist(target: dict, adrs: list[dict], mode: str, axes: dict | None) -> list[dict]:
@@ -427,6 +471,9 @@ def shortlist(target: dict, adrs: list[dict], mode: str, axes: dict | None) -> l
     return out
 
 
+UNIT_UNSET = object()  # sentinel: distinguishes "--unit not passed" from "--unit ."
+
+
 def resolve_mode(args) -> str:
     if args.mode != "auto":
         return args.mode
@@ -436,12 +483,46 @@ def resolve_mode(args) -> str:
             return "org"
         if "/.specdev/adr/" in parts:
             return "local"
-    return detect_mode(Path(args.root), args.unit)
+    unit = args.unit if args.unit is not UNIT_UNSET else "."
+    return detect_mode(Path(args.root), unit)
+
+
+def infer_unit_from_file(file_path: Path, root: Path) -> str | None:
+    """When `file_path` lives under `<unit>/.specdev/adr/`, return `<unit>`
+    relative to `root` (posix-style, "." if the unit IS the root). None if
+    the file isn't under a recognisable local ADR directory."""
+    resolved = file_path.resolve()
+    adr_directory = resolved.parent
+    if adr_directory.name != "adr" or adr_directory.parent.name != ".specdev":
+        return None
+    unit_root = adr_directory.parent.parent
+    try:
+        rel = unit_root.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return rel.as_posix() if str(rel) != "." else "."
+
+
+def resolve_unit(args, root: Path, mode: str) -> str:
+    """--unit, if the caller passed it, always wins. Otherwise, when --file
+    is given, the ADR set compared against (and, for lint, the spec whose
+    REQ ids are checked) must come from the FILE'S OWN unit — not the '.'
+    default — or a monorepo run silently checks the wrong (often empty)
+    directory and reports a false green."""
+    if args.unit is not UNIT_UNSET:
+        return args.unit
+    if mode == "local" and getattr(args, "file", None):
+        inferred = infer_unit_from_file(Path(args.file), root)
+        if inferred is not None:
+            return inferred
+    return "."
 
 
 def add_common(p):
     p.add_argument("--root", default=".")
-    p.add_argument("--unit", default=".")
+    p.add_argument("--unit", default=UNIT_UNSET,
+                    help="governed unit (default: '.', or the --file's own "
+                         "unit when --file is given and --unit is omitted)")
     p.add_argument("--mode", default="auto", choices=["auto", "local", "org"])
 
 
@@ -460,26 +541,38 @@ def main(argv=None) -> int:
 
     root = Path(args.root)
     mode = resolve_mode(args)
+    unit = resolve_unit(args, root, mode)
 
     if args.cmd == "next-id":
-        print(next_id(load_adrs(adr_dir(root, args.unit, mode)), mode))
+        print(next_id(load_adrs(adr_dir(root, unit, mode)), mode))
         return 0
 
     if args.cmd == "lint":
-        req_ids = spec_req_ids(root, args.unit) if mode == "local" else set()
-        targets = ([load_adr(Path(args.file))] if args.file
-                   else load_adrs(adr_dir(root, args.unit, mode)))
-        errs = [e for a in targets for e in lint_one(a, mode, req_ids)]
+        req_ids = spec_req_ids(root, unit) if mode == "local" else set()
+        if args.file:
+            targets = [load_adr(Path(args.file))]
+            single_file = True
+        else:
+            targets = load_adrs(adr_dir(root, unit, mode))
+            single_file = False
+        errs, warns = [], []
+        for a in targets:
+            e, w = lint_target(a, mode, req_ids, single_file)
+            errs += e
+            warns += w
+        for w in warns:
+            print(f"WARN: {w}")
         for e in errs:
             print(f"ERROR: {e}")
         if errs:
             print(f"\nADR lint FAILED: {len(errs)} error(s) in {len(targets)} ADR(s)")
             return 1
-        print(f"ADR lint passed ({len(targets)} ADR(s)).")
+        suffix = f", {len(warns)} warning(s)" if warns else ""
+        print(f"ADR lint passed ({len(targets)} ADR(s){suffix}).")
         return 0
 
     if args.cmd == "conflicts":
-        adrs = load_adrs(adr_dir(root, args.unit, mode))
+        adrs = load_adrs(adr_dir(root, unit, mode))
         errs = hard_conflicts(adrs)
         axes = None
         if mode == "org":

@@ -78,6 +78,14 @@ def write_local(root: Path, name: str, text: str) -> Path:
     return p
 
 
+def write_unit_local(root: Path, unit: str, name: str, text: str) -> Path:
+    d = root / unit / ".specdev" / "adr"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
 def write_org_repo(root: Path) -> Path:
     d = root / "governance" / "adr"
     d.mkdir(parents=True, exist_ok=True)
@@ -298,6 +306,35 @@ def test_lint_requires_both_consequence_directions(tmp_path):
     assert any("Negative" in e for e in errs)
 
 
+def test_lint_catches_empty_pros_followed_by_cons(tmp_path):
+    """Regression: an empty 'Pros:' immediately followed by a 'Cons:' line must
+    not swallow the Cons line's text as if it were the Pros content. Before the
+    fix, _labelled's post-colon `\\s*` matched the newline plus the next line's
+    leading whitespace, so 'Pros:' read as 'Cons: revocation is only ...'."""
+    text = GOOD_LOCAL.replace(
+        "   - Pros: no shared store; either service verifies alone\n"
+        "   - Cons: revocation is only as fast as the token lifetime",
+        "   - Pros:\n"
+        "   - Cons: revocation is only as fast as the token lifetime",
+    )
+    errs = lint_text(tmp_path, text, req_ids={"REQ-002", "REQ-005"})
+    assert any("empty Pros" in e for e in errs)
+
+
+def test_lint_catches_empty_positive_followed_by_negative(tmp_path):
+    """Same bug in the Consequences block: an empty 'Positive:' before a
+    'Negative / risks:' line must not read the Negative line's text as the
+    Positive content."""
+    text = GOOD_LOCAL.replace(
+        "- Positive: no Redis to operate; either service verifies a caller alone.\n"
+        "- Negative / risks: a stolen token stays valid for up to 15 minutes.",
+        "- Positive:\n"
+        "- Negative / risks: a stolen token stays valid for up to 15 minutes.",
+    )
+    errs = lint_text(tmp_path, text, req_ids={"REQ-002", "REQ-005"})
+    assert any("no Positive entry" in e for e in errs)
+
+
 def test_lint_rejects_unknown_req(tmp_path):
     errs = lint_text(tmp_path, GOOD_LOCAL, req_ids={"REQ-002"})
     assert any("REQ-005" in e for e in errs)
@@ -359,6 +396,29 @@ def test_lint_cli_returns_1_on_a_bad_adr(tmp_path):
 def test_lint_cli_returns_0_on_a_clean_directory(tmp_path):
     write_local(tmp_path, "ADR-003.md", GOOD_LOCAL)
     assert adr.main(["lint", "--root", str(tmp_path)]) == 0
+
+
+def test_lint_directory_warns_not_errors_on_legacy_adr(tmp_path, capsys):
+    """A pre-existing prose-only ADR (no frontmatter) is explicitly NOT
+    migrated per the design's Non-goals, and remains valid. Sweeping a
+    directory must warn, not fail, on it."""
+    write_local(tmp_path, "ADR-001.md", PROSE_ONLY_LOCAL)
+    rc = adr.main(["lint", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARN:" in out
+    assert "ERROR:" not in out
+
+
+def test_lint_file_still_errors_on_legacy_adr_without_frontmatter(tmp_path, capsys):
+    """Linting a single --file means you are authoring/editing it now, so
+    missing frontmatter there is a real ERROR, not a warning."""
+    p = write_local(tmp_path, "ADR-001.md", PROSE_ONLY_LOCAL)
+    rc = adr.main(["lint", "--root", str(tmp_path), "--file", str(p)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "ERROR:" in out
+    assert "frontmatter" in out
 
 
 def rec(aid, status="accepted", supersedes=(), superseded_by="", scopes=(),
@@ -538,6 +598,51 @@ def test_conflicts_cli_json_shape(tmp_path, capsys):
     assert payload["shortlist"][0]["reasons"]
 
 
+def test_conflicts_file_infers_unit_from_path_in_monorepo(tmp_path, capsys):
+    """Regression: --file must resolve the ADR set it's checked against (and,
+    for lint, the spec whose REQ ids are checked) from the file's OWN unit,
+    not from --unit's untouched default '.'. Before the fix this silently
+    reported an empty shortlist / 0 ADR(s) checked against the wrong (empty)
+    directory, a false green in any monorepo."""
+    write_unit_local(tmp_path, "svc-a", "ADR-003.md", GOOD_LOCAL)
+    b_new = (GOOD_LOCAL.replace("id: ADR-003", "id: ADR-005")
+                       .replace("# ADR-003", "# ADR-005"))
+    write_unit_local(tmp_path, "svc-b", "ADR-005.md", b_new)
+    # Same scopes/relates_to as svc-a's ADR-003 -> should shortlist against it,
+    # and must NOT be compared against svc-b's unrelated ADR-005.
+    target_text = (GOOD_LOCAL.replace("id: ADR-003", "id: ADR-004")
+                             .replace("# ADR-003", "# ADR-004"))
+    target_path = write_unit_local(tmp_path, "svc-a", "ADR-004.md", target_text)
+
+    rc = adr.main(["conflicts", "--root", str(tmp_path), "--file", str(target_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ADR-003" in out
+    assert "ADR-005" not in out
+
+
+def test_lint_file_infers_unit_for_req_ids_in_monorepo(tmp_path):
+    """Regression: lint --file must check relates_to against ITS OWN unit's
+    spec, not --unit's default '.' (which has no spec.md in a monorepo, so
+    the unknown-REQ check would have silently no-opped)."""
+    (tmp_path / "svc-a" / ".specdev").mkdir(parents=True)
+    (tmp_path / "svc-a" / ".specdev" / "spec.md").write_text(
+        "REQ-002 and REQ-005", encoding="utf-8")
+    (tmp_path / "svc-b" / ".specdev").mkdir(parents=True)
+    (tmp_path / "svc-b" / ".specdev" / "spec.md").write_text(
+        "REQ-999 only", encoding="utf-8")
+
+    p = write_unit_local(tmp_path, "svc-a", "ADR-003.md", GOOD_LOCAL)
+    assert adr.main(["lint", "--root", str(tmp_path), "--file", str(p)]) == 0
+
+    bad = (GOOD_LOCAL.replace("relates_to: [REQ-002, REQ-005]", "relates_to: [REQ-999]")
+                     .replace("**Relates to:** REQ-002, REQ-005", "**Relates to:** REQ-999")
+                     .replace("id: ADR-003", "id: ADR-006")
+                     .replace("# ADR-003", "# ADR-006"))
+    p2 = write_unit_local(tmp_path, "svc-a", "ADR-006.md", bad)
+    assert adr.main(["lint", "--root", str(tmp_path), "--file", str(p2)]) == 1
+
+
 def load_tool(name):
     spec = importlib.util.spec_from_file_location(
         name, ROOT / "assets" / "specdev" / "tools" / f"{name}.py")
@@ -575,6 +680,85 @@ def test_shipped_org_template_documents_supersession():
     text = (ROOT / "governance" / "adr" / "TEMPLATE.md").read_text(encoding="utf-8-sig")
     assert "supersedes:" in text
     assert "superseded_by:" in text
+
+
+def _fill_deployment_platform_template() -> str:
+    """Take the shipped ADR-deployment-platform.md template as-is and
+    mechanically replace its placeholders with plausible content, preserving
+    its actual guidance shape (headings, labels, the extra Consequences
+    bullets) exactly as authored. Reads from disk so a structural regression
+    in the real template (e.g. reverting '## Options' to '## Options
+    considered') fails this test."""
+    p = ROOT / "assets" / "specdev" / "adr" / "ADR-deployment-platform.md"
+    text = p.read_text(encoding="utf-8-sig")
+    text = (text
+        .replace("id: ADR-deployment-platform", "id: ADR-005")
+        .replace("status: proposed          # proposed | accepted | superseded",
+                 "status: accepted")
+        .replace("date: <YYYY-MM-DD>", "date: 2026-08-03")
+        .replace("relates_to: []            # REQs with hosting/scale/compliance implications",
+                 "relates_to: [REQ-010]")
+        .replace("# ADR-### — Deployment platform", "# ADR-005 — Deployment platform")
+        .replace("**Status:** proposed | accepted | superseded by ADR-###",
+                 "**Status:** accepted")
+        .replace("**Date:**", "**Date:** 2026-08-03")
+        .replace("**Relates to:** <REQs with hosting/scale/compliance implications>",
+                 "**Relates to:** REQ-010")
+        .replace("- Server-side logic vs static/frontend only:",
+                 "- Server-side logic vs static/frontend only: a small API plus a static frontend.")
+        .replace("- One service or several interdependent:",
+                 "- One service or several interdependent: one service.")
+        .replace("- Traffic shape (steady / spiky / near-zero):",
+                 "- Traffic shape (steady / spiky / near-zero): near-zero at launch.")
+        .replace("- Stateful or stateless:",
+                 "- Stateful or stateless: stateless.")
+        .replace("- Existing infra/accounts the org runs:",
+                 "- Existing infra/accounts the org runs: an existing Fly.io account.")
+        .replace("- Team ops capacity (who operates it):",
+                 "- Team ops capacity (who operates it): one engineer, part-time.")
+        .replace("- Compliance / data-residency constraints:",
+                 "- Compliance / data-residency constraints: none beyond standard SaaS terms.")
+        .replace("1. **<Option A>** — fit / ongoing ops cost",
+                 "1. **Fly.io** — fits a small stateless service; pay-per-use; minimal ops")
+        .replace("2. **<Option B>** — fit / ongoing ops cost",
+                 "2. **AWS ECS Fargate** — fits containerized workloads at any scale")
+        .replace("3. **<Option C>** — …",
+                 "3. **Kubernetes (EKS)** — fits large multi-service systems")
+        .replace("   - Pros: <why it fits>\n   - Cons: <why it doesn't, or the cost>",
+                  "   - Pros: near-zero idle cost, one-command deploy\n"
+                  "   - Cons: fewer managed add-ons than a hyperscaler", 1)
+        .replace("   - Pros: <why it fits>\n   - Cons: <why it doesn't, or the cost>",
+                  "   - Pros: deep integration with existing AWS services\n"
+                  "   - Cons: meaningfully more ops surface for a near-zero-traffic service", 1)
+        .replace("   - Pros: <why it fits>\n   - Cons: <why it doesn't, or the cost>",
+                  "   - Pros: maximum flexibility for future growth\n"
+                  "   - Cons: disproportionate ops burden for one stateless service", 1)
+        .replace("**Chosen:** <platform>  → `deploy.profile.json` target: `<target>`",
+                 "**Chosen:** Fly.io  → `deploy.profile.json` target: `fly`")
+        .replace("- Positive: <what this choice buys — cost, simplicity, speed to ship>",
+                 "- Positive: near-zero idle cost and a one-command deploy path.")
+        .replace("- Negative / risks: <ongoing ops burden — who operates it, and what could go wrong>",
+                 "- Negative / risks: fewer managed add-ons than a hyperscaler if the product grows.")
+        .replace("- Config to scaffold: <Dockerfile / fly.toml / manifests / serverless.yml / …>",
+                 "- Config to scaffold: Dockerfile, fly.toml")
+        .replace("- Revisit if: <traffic, team, or topology changes that would change the call>",
+                 "- Revisit if: traffic grows enough to need multiple regions or services")
+    )
+    return text
+
+
+def test_filled_deployment_platform_template_lints_clean(tmp_path):
+    """Regression: the shipped ADR-deployment-platform.md template, once
+    filled in with the SAME section headings/labels it ships with, must pass
+    its own quality gate. Before the fix it failed with 3 errors: '## Options
+    considered' (lint wants '## Options') and Consequences bullets that were
+    not 'Positive:' / 'Negative / risks:'."""
+    text = _fill_deployment_platform_template()
+    for placeholder in ("<Option", "<platform>", "<target>", "<YYYY-MM-DD>",
+                        "<why it fits>", "<what this choice buys"):
+        assert placeholder not in text, f"fixture still has unfilled {placeholder!r}"
+    errs = lint_text(tmp_path, text, name="ADR-005.md", req_ids={"REQ-010"})
+    assert errs == []
 
 
 def test_existing_org_adr_still_lints_clean():
@@ -638,3 +822,30 @@ def test_lint_double_backtick_spans_are_line_bounded(tmp_path):
         "Should catch <decision title> in Decision even when it lies between "
         "unclosed `` on different lines (the regex must be line-bounded)"
     )
+
+
+def test_summary_falls_back_to_decisions_first_sentence():
+    a = rec("ADR-010", summary="")
+    a["sections"] = {"decision": "We chose X because it is simplest. It also costs less."}
+    assert adr._summary(a) == "We chose X because it is simplest."
+
+
+def test_summary_falls_back_to_whole_decision_when_no_sentence_break():
+    a = rec("ADR-011", summary="")
+    a["sections"] = {"decision": "Stateless signed JWTs"}
+    assert adr._summary(a) == "Stateless signed JWTs"
+
+
+def test_summary_truncates_long_text_with_ellipsis():
+    long_text = "This decision " + ("really " * 30) + "matters a lot"
+    a = rec("ADR-012", summary="")
+    a["sections"] = {"decision": long_text}
+    out = adr._summary(a)
+    assert len(out) <= 160
+    assert out.endswith("...")
+
+
+def test_summary_prefers_explicit_summary_field():
+    a = rec("ADR-013", summary="explicit summary wins")
+    a["sections"] = {"decision": "Something else entirely. More text."}
+    assert adr._summary(a) == "explicit summary wins"

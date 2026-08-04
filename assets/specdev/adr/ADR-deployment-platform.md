@@ -31,11 +31,17 @@ Answer the selection questions (see the guide):
 - Team ops capacity (who operates it):
 - Compliance / data-residency constraints:
 
-## Options considered
+## Options
 
-1. **<Option A>** — fit / pros / cons / ongoing ops cost
-2. **<Option B>** — fit / pros / cons / ongoing ops cost
+1. **<Option A>** — fit / ongoing ops cost
+   - Pros: <why it fits>
+   - Cons: <why it doesn't, or the cost>
+2. **<Option B>** — fit / ongoing ops cost
+   - Pros: <why it fits>
+   - Cons: <why it doesn't, or the cost>
 3. **<Option C>** — …
+   - Pros: <why it fits>
+   - Cons: <why it doesn't, or the cost>
 
 ## Decision
 
@@ -46,7 +52,8 @@ sufficient, and explicitly why not something heavier like Kubernetes):
 
 ## Consequences
 
-- Ongoing ops burden:
+- Positive: <what this choice buys — cost, simplicity, speed to ship>
+- Negative / risks: <ongoing ops burden — who operates it, and what could go wrong>
 - Rollback strategy: native | redeploy-previous-tag (per the target)
 - Config to scaffold: <Dockerfile / fly.toml / manifests / serverless.yml / …>
 - Revisit if: <traffic, team, or topology changes that would change the call>

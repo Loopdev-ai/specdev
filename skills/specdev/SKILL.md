@@ -223,6 +223,8 @@ python .specdev/tools/validate_spec.py --strict      # Gate 1 check
 python .specdev/tools/gen_traceability.py            # write the matrix
 python .specdev/tools/gen_traceability.py --check-gaps  # Gate 2 test-coverage check
 python .specdev/tools/check_org_adrs.py              # org-ADR gate (inert until org.json is configured)
+python .specdev/tools/adr.py lint                    # ADR quality gate (mode auto-detected)
+python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shortlist check for one ADR
 ```
 
 In a monorepo add `--root <unit>` to each (the tools stay at the repo root),
@@ -232,5 +234,6 @@ and:
 python .specdev/tools/units.py list                  # the repo's governed units
 python .specdev/tools/units.py check                 # registry drift + validation
 python .specdev/tools/check_org_adrs.py --unit <u>   # one unit's org-ADR gate
+python .specdev/tools/adr.py lint --unit <u>         # one unit's ADR quality gate
 python .specdev/tools/units.py migrate --unit <path> # single-root -> multi-unit
 ```

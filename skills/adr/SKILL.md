@@ -30,7 +30,9 @@ Mode is detected by the tool:
 
 If the tool reports both layers exist, ask which one this decision belongs to.
 A decision that binds only this product is local; one that binds other repos is
-org.
+org. Once you know, pass `--mode local|org` on every `adr.py` command below —
+the tool refuses to guess when both layers are present, and every example
+command in this skill accepts it.
 
 ## The interview — one question at a time
 
@@ -64,20 +66,29 @@ apply.
 
 ## Write it
 
-1. `python .specdev/tools/adr.py next-id [--unit <u>]` for the id.
-2. Copy the matching template — `.specdev/adr/ADR-001.md` (local) or
-   `governance/adr/TEMPLATE.md` (org) — and fill every field from the
-   interview. Never invent a different shape.
+In a monorepo add `--unit <unit>` to every command below; if the repo holds
+both ADR layers, add `--mode local|org` too (see above) — omit either and the
+tool infers what it safely can, but refuses to guess the layer.
+
+1. `python .specdev/tools/adr.py next-id [--unit <u>] [--mode local|org]` for
+   the id.
+2. Copy the matching template's shape. Org: `governance/adr/TEMPLATE.md`.
+   Local: whichever ADR in `.specdev/adr/` still carries the unfilled
+   `**Status:** proposed | accepted | superseded` line — on a fresh unit
+   that's `ADR-001.md`, until `next-id` allocates that very id to the first
+   real decision; once none remain, copy the shape from the plugin's own
+   `${CLAUDE_PLUGIN_ROOT}/assets/specdev/adr/ADR-001.md`. Fill every field
+   from the interview. Never invent a different shape.
 3. **Local ADRs carry the frontmatter AND the prose `**Status:**` /
    `**Relates to:**` lines.** Both, always, saying the same thing:
    `gen_traceability.py` and `validate_spec.py` read the prose, and `lint`
    fails on drift between the two.
-4. `python .specdev/tools/adr.py lint --file <path>`. Fix what it reports.
-   **Do not hand the user a file that has not passed lint.**
+4. `python .specdev/tools/adr.py lint --file <path> [--unit <u>] [--mode local|org]`.
+   Fix what it reports. **Do not hand the user a file that has not passed lint.**
 
 ## Prove it does not conflict
 
-Run `python .specdev/tools/adr.py conflicts --file <path> --json`.
+Run `python .specdev/tools/adr.py conflicts --file <path> --json [--unit <u>] [--mode local|org]`.
 
 **Hard errors** (exit 1) are structural: duplicate ids, a `supersedes` pointing
 nowhere, a half-finished supersession. Fix them; they are never acceptable.
