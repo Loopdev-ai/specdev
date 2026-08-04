@@ -311,3 +311,104 @@ def test_cli_index_before_subcommand_exits_nonzero(tmp_path):
         capture_output=True, text=True)
     assert r.returncode != 0, f"Expected exit code != 0, got {r.returncode}: {r.stderr}"
     assert "error:" in r.stderr
+
+
+def git(tmp_path, *args):
+    return subprocess.run(["git", *args], cwd=str(tmp_path),
+                          capture_output=True, text=True, check=True)
+
+
+def init_repo(tmp_path):
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "t@example.com")
+    git(tmp_path, "config", "user.name", "t")
+
+
+def set_maturity(tmp_path, unit, maturity):
+    p = tmp_path / unit / ".specdev" / "org.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(
+        {"classification": {"maturity": maturity, "audience": "internal"}}),
+        encoding="utf-8")
+
+
+def test_promoting_a_unit_with_poc_history_is_rejected(tmp_path):
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "poc")
+    (tmp_path / "spike" / ".specdev" / "run.json").write_text(
+        json.dumps({"mode": "poc", "feat": "FEAT-001"}), encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "poc")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    set_maturity(tmp_path, "spike", "prod")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "promote")
+
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    errs = _pf().promotion_errors(tmp_path, base=base, index=idx)
+    assert len(errs) == 1
+    assert "spike" in errs[0]
+    assert "spec-explorer" in errs[0]
+
+
+def test_promoting_a_unit_without_poc_history_is_allowed(tmp_path):
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "svc"}])
+    set_maturity(tmp_path, "svc", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    set_maturity(tmp_path, "svc", "prod")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "promote")
+
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert _pf().promotion_errors(tmp_path, base=base, index=idx) == []
+
+
+def test_demotion_is_allowed(tmp_path):
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "prod")
+    (tmp_path / "spike" / ".specdev" / "run.json").write_text(
+        json.dumps({"mode": "poc"}), encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    set_maturity(tmp_path, "spike", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "demote")
+
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert _pf().promotion_errors(tmp_path, base=base, index=idx) == []
+
+
+def test_poc_release_tag_counts_as_poc_history(tmp_path):
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    git(tmp_path, "tag", "poc-spike-20260804-abc1234")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    set_maturity(tmp_path, "spike", "dev")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "promote")
+
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert len(_pf().promotion_errors(tmp_path, base=base, index=idx)) == 1
+
+
+def test_promotion_check_with_no_base_is_inert(tmp_path):
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    assert _pf().promotion_errors(tmp_path, base=None, index=idx) == []

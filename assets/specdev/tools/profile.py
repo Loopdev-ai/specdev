@@ -33,6 +33,7 @@ subcommand is a usage error.
 """
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -266,6 +267,83 @@ def _emit(value) -> str:
     return str(value)
 
 
+def maturity_at(root, unit: str, ref: str) -> str | None:
+    """This unit's declared maturity at a git ref, or None if unreadable.
+
+    Reads via `git show` rather than the worktree so the BASE side of the
+    comparison is the committed state, not whatever is checked out."""
+    rel = ".specdev/org.json" if unit == "." else f"{unit}/.specdev/org.json"
+    r = subprocess.run(["git", "show", f"{ref}:{rel}"], cwd=str(root),
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    try:
+        cls = json.loads(r.stdout).get("classification")
+    except json.JSONDecodeError:
+        return None
+    if isinstance(cls, str):
+        return cls
+    if isinstance(cls, dict):
+        return cls.get(MATURITY_AXIS)
+    return None
+
+
+def has_poc_history(root, unit: str) -> bool:
+    """True when this unit has actually been BUILT under the poc lane.
+
+    Two independent signals, either sufficient: run.json recording mode 'poc'
+    (written by run_manifest.py), and a poc release tag (written by
+    deploy-poc.yml, namespaced by unit slug the same way)."""
+    rm = Path(root) / unit / ".specdev" / "run.json"
+    if rm.exists():
+        try:
+            if cch.load_json(rm).get("mode") == "poc":
+                return True
+        except json.JSONDecodeError:
+            pass
+    slug = unit.replace("/", "-").replace(".", "-").strip("-")
+    pattern = f"poc-{slug}-*" if slug else "poc-*"
+    r = subprocess.run(["git", "tag", "--list", pattern], cwd=str(root),
+                       capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
+def promotion_errors(root=".", base=None, index=None) -> list[str]:
+    """poc units are never promoted in place; they are reverse-mapped and
+    rebuilt. Ranks come from the org index, so an org that renames its maturity
+    values keeps a working rule instead of a silently inert one.
+
+    Inert with no base: this is a diff-driven rule, and there is nothing to
+    compare against. The staleness half of org-adr-check is what stays
+    unfiltered, not this."""
+    if not base:
+        return []
+    root = Path(root)
+    if index is None:
+        index, why = _load_index(root)
+        if index is None:
+            print(f"NOTE: promotion check skipped — {why}", file=sys.stderr)
+            return []
+    ranks = {v: d.get("rank", -1) for v, d in
+             index.get("axes", {}).get(MATURITY_AXIS, {}).get("values", {}).items()}
+    errors = []
+    for unit in units.unit_paths(root):
+        was = maturity_at(root, unit, base)
+        now = maturity_at(root, unit, "HEAD")
+        if not was or not now or was == now:
+            continue
+        if was in ranks and now in ranks and ranks[now] <= ranks[was]:
+            continue  # demotion or lateral move
+        if not has_poc_history(root, unit):
+            continue
+        errors.append(
+            f"unit '{unit}' was built under the poc lane and this change "
+            f"promotes it {was} -> {now}. poc units are not promoted in "
+            f"place: reverse-map it with the spec-explorer agent and rebuild "
+            f"it as a new unit through the full pipeline.")
+    return errors
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", default=".")
@@ -276,9 +354,22 @@ def main() -> int:
     ps.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
     pm = sub.add_parser("matrix", help="{unit: profile} for every unit, one JSON line")
     pm.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
+    pp = sub.add_parser("promotion-check",
+                        help="reject in-place promotion of a poc-built unit")
+    pp.add_argument("--changed-from", required=True)
+    pp.add_argument("--index", help="local index.json (skip fetching; offline/tests)")
     args = ap.parse_args()
 
     index = cch.load_json(Path(args.index)) if args.index else None
+
+    if args.cmd == "promotion-check":
+        errs = promotion_errors(args.root, args.changed_from, index)
+        for e in errs:
+            print(f"ERROR: {e}", file=sys.stderr)
+        if errs:
+            return 1
+        print("promotion check ok — no poc-built unit is being promoted in place.")
+        return 0
 
     if args.cmd == "matrix":
         print(json.dumps(resolve_all(args.root, index), sort_keys=True))
