@@ -208,7 +208,7 @@ PLACEHOLDER = re.compile(r"<[^<>\n]{2,}>|\bTBD\b|\bTODO\b")
 # double-backtick spans, then single-backtick spans, replacing each with spaces
 # so surrounding offsets/line structure are preserved for any later matching.
 FENCED_CODE_BLOCK = re.compile(r"```.*?```", re.S)
-DOUBLE_BACKTICK_SPAN = re.compile(r"``.*?``", re.S)
+DOUBLE_BACKTICK_SPAN = re.compile(r"``[^\n]*?``")
 SINGLE_BACKTICK_SPAN = re.compile(r"`[^`\n]*`")
 
 

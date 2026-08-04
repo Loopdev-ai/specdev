@@ -603,3 +603,38 @@ def test_lint_still_flags_bare_placeholder_outside_code_spans(tmp_path):
     )
     errs = lint_text(tmp_path, text, req_ids={"REQ-002", "REQ-005"})
     assert any("placeholder" in e for e in errs)
+
+
+def test_lint_double_backtick_spans_are_line_bounded(tmp_path):
+    """Regression test: the DOUBLE_BACKTICK_SPAN regex must be line-bounded to
+    prevent unmatched `` on different lines from blanketing everything between.
+
+    Before the fix: DOUBLE_BACKTICK_SPAN used re.S (DOTALL), so .*? matched
+    across newlines. An unclosed `` in Context and an unclosed `` in
+    Consequences would match as one giant span, blanking everything between
+    them—including a bare <decision title> placeholder in Decision—so lint
+    would not catch it.
+
+    This test has:
+    - `` literal code (unclosed) in Context section
+    - <decision title> placeholder in Decision section
+    - more stuff `` (unclosed) in Consequences section
+
+    Before fix: `` to `` matches across both, hiding the placeholder.
+    After fix: line bounds prevent this cross-section blanking.
+    """
+    text = GOOD_LOCAL.replace(
+        "Two services must both authenticate the same caller without a shared store.",
+        "Two services must authenticate. `` literal code",
+    ).replace(
+        "Stateless signed JWTs, with a 15-minute access token lifetime.",
+        "<decision title>",
+    ).replace(
+        "- Follow-ups: revisit if we ever need instant revocation.",
+        "- Follow-ups: see more stuff ``",
+    )
+    errs = lint_text(tmp_path, text, req_ids={"REQ-002", "REQ-005"})
+    assert any("placeholder" in e for e in errs), (
+        "Should catch <decision title> in Decision even when it lies between "
+        "unclosed `` on different lines (the regex must be line-bounded)"
+    )
