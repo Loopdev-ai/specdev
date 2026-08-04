@@ -138,7 +138,7 @@ remove ceremony; it cannot remove the floor.
 
 **Credential floor** — five distinct mechanisms, none in the profile table:
 
-1. **gitleaks secret scan** (`post-dev-qa.yml:92-120`), deliberately run
+1. **gitleaks secret scan** (`post-dev-qa.yml:101-121`), deliberately run
    repo-wide and unfiltered on every matrix leg.
 2. **`arch_config.py validate`** — secret-bearing fields may hold only a
    `secret_ref` pointer (key vault / env var / file), never a literal, with a
@@ -164,7 +164,7 @@ profile:
 |---|---|
 | 2 Brainstorm | Short charter Q&A: goal, questions this spike must answer, timebox, what would make us abandon it |
 | 3 Spec | `.specdev/CHARTER.md` instead of the REQ/acceptance structure; `validate_spec.py --profile charter` validates charter fields, not REQ IDs |
-| 4 Architecture | ADRs skipped; `adr-checker` still runs (floor) |
+| 4 Architecture | The `adr` skill / `/specdev:adr` is not invoked, so no ADRs are authored; `adr-checker` still runs (floor) |
 | 5 Spec PR | Skipped — the charter commits onto the `poc/**` branch |
 | 6 Build | Waves still exist (dependency order is correctness, not governance) but no gate *between* them; one `qa-verifier` at the end in smoke mode |
 | 7 Impl PR | Still opened, still self-merged — it remains the audit record even with thin gates |
@@ -172,7 +172,8 @@ profile:
 | 9 Traceability | Skipped — no matrix, no `--check-gaps`, and no `Refs: REQ-###` commit trailers, since `spec_bar: charter` assigns no REQ IDs to reference |
 
 **New terminal state:** `BUILD.md` must carry a non-empty `## Findings`
-section. This extends the assertion `specdev-build.yml:378-380` already makes
+section. This extends the assertion `specdev-build.yml:624-625` already makes
+(the `verify` step feeding `terminal_ok`, which `deploy-poc` is gated on)
 rather than adding machinery — and it is the one thing that makes the spike
 worth having run, given the code is reverse-engineered and rebuilt.
 
@@ -189,6 +190,15 @@ worth having run, given the code is reverse-engineered and rebuilt.
 **Workflows.** `post-dev-qa` makes coverage and trace-gaps conditional on the
 profile; `spec-validate` learns charter mode; `traceability` and `compliance`
 skip poc units; `specdev-build`'s verify step asserts Findings.
+
+**Interaction with the `adr` skill** (landed in PR #10, after this design's
+first draft): ADR authoring now routes through `skills/adr/SKILL.md` and
+`assets/specdev/tools/adr.py` (`lint`, `conflicts`, `next-id`). Neither
+subcommand is invoked by **any** workflow — the ADR quality gate is
+skill-side only. `adrs: false` therefore needs **no CI conditional**: it is
+purely "do not invoke the `adr` skill at step 4". This makes the reduction
+smaller than it would otherwise have been, and it is why the profile table
+needs no `adr_lint` key.
 
 ## No promotion in place
 
