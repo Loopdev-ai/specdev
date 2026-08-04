@@ -57,3 +57,80 @@ def test_profile_rides_the_generated_index(tmp_path):
     index = json.loads(
         (tmp_path / "governance" / "adr" / "index.json").read_text(encoding="utf-8-sig"))
     assert index["axes"]["maturity"]["values"]["poc"]["profile"]["adrs"] is False
+
+
+pf = None  # bound after the module exists
+
+
+def _pf():
+    global pf
+    if pf is None:
+        pf = load_mod(PROFILE_PATH, "specdev_profile")
+    return pf
+
+
+AXES = {
+    "maturity": {
+        "ordered": True,
+        "values": {
+            "poc":  {"rank": 0, "profile": {"spec_bar": "charter", "spec_pr": False,
+                                            "adrs": False, "per_wave_qa": False,
+                                            "coverage_gate": False, "traceability": False,
+                                            "compliance": False, "prod_promotion": False}},
+            "prod": {"rank": 2, "profile": {"spec_bar": "full", "spec_pr": True,
+                                            "adrs": True, "per_wave_qa": True,
+                                            "coverage_gate": True, "traceability": True,
+                                            "compliance": True, "prod_promotion": True}},
+        },
+    },
+    "audience": {"ordered": False, "values": {"internal": {}, "customer": {}}},
+}
+
+
+def test_compose_single_value_returns_that_profile():
+    p = _pf().compose({"poc"}, AXES)
+    assert p["spec_bar"] == "charter"
+    assert p["per_wave_qa"] is False
+
+
+def test_compose_strictest_wins_across_a_set():
+    p = _pf().compose({"poc", "prod"}, AXES)
+    assert p["spec_bar"] == "full"
+    assert p["per_wave_qa"] is True
+    assert p["prod_promotion"] is True
+
+
+def test_compose_includes_the_floor():
+    p = _pf().compose({"poc"}, AXES)
+    for k in ("secret_scan", "scope_check", "sast", "findings",
+              "smoke_test", "org_adr_check"):
+        assert p[k] is True, f"floor key {k} must be True even for poc"
+
+
+def test_floor_keys_cannot_be_disabled_by_the_table(capsys):
+    axes = json.loads(json.dumps(AXES))
+    axes["maturity"]["values"]["poc"]["profile"]["secret_scan"] = False
+    p = _pf().compose({"poc"}, axes)
+    assert p["secret_scan"] is True
+    assert "secret_scan" in capsys.readouterr().err
+
+
+def test_unknown_profile_key_is_ignored_with_a_warning(capsys):
+    axes = json.loads(json.dumps(AXES))
+    axes["maturity"]["values"]["poc"]["profile"]["nonsense"] = True
+    p = _pf().compose({"poc"}, axes)
+    assert "nonsense" not in p
+    assert "nonsense" in capsys.readouterr().err
+
+
+def test_missing_profile_falls_back_to_strictest():
+    axes = json.loads(json.dumps(AXES))
+    del axes["maturity"]["values"]["poc"]["profile"]
+    p = _pf().compose({"poc"}, axes)
+    assert p == _pf().compose(set(), axes) == {**_pf().STRICTEST, **_pf().FLOOR}
+
+
+def test_invalid_spec_bar_value_falls_back_to_strictest():
+    axes = json.loads(json.dumps(AXES))
+    axes["maturity"]["values"]["poc"]["profile"]["spec_bar"] = "sloppy"
+    assert _pf().compose({"poc"}, axes)["spec_bar"] == "full"
