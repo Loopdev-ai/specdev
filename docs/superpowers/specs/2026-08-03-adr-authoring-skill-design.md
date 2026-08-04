@@ -169,7 +169,9 @@ Exit 1 on any of:
 - local: a `relates_to` REQ that does not exist in the unit's `spec.md`
 - local: frontmatter/prose drift on `status` or `relates_to`
 - org: `## Conformance` has no checkbox items, or an item is empty/placeholder
-- `supersedes` / `superseded_by` naming an id with no corresponding file
+
+`lint` is a per-file check; anything requiring the whole directory (including
+`supersedes` / `superseded_by` resolution) belongs to `conflicts` below.
 
 Whether a Conformance item is *objectively checkable* is judgment, not
 grammar — the tool checks presence, the skill checks quality.
