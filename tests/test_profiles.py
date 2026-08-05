@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -776,6 +777,141 @@ def test_gen_traceability_fails_safe_when_profile_resolution_raises(
     assert (tmp_path / "spike" / ".specdev" / "traceability.md").exists(), \
         "profile resolution failure must fail SAFE (generate), never skip"
     assert "NOTE" in capsys.readouterr().err
+
+
+# ---- Task 9: Findings as the poc terminal state ------------------------
+#
+# The original plan had the assertion live as a shell block appended to the
+# `verify` step's `run:` in specdev-build.yml. It does not: that step only
+# dispatches to `python .specdev/tools/build_outcome.py verify`, which
+# assembles the record whose `ok` field becomes `terminal_ok` — the value
+# `deploy-poc` is gated on. So the assertion lives in build_outcome.py's
+# findings_problems(), wired into verify() only for mode="poc".
+
+BUILD_TEMPLATE = ROOT / "assets" / "specdev" / "BUILD.md"
+BO_PATH = ROOT / "assets" / "specdev" / "tools" / "build_outcome.py"
+
+
+def test_build_template_has_a_findings_section():
+    text = BUILD_TEMPLATE.read_text(encoding="utf-8")
+    assert re.search(r"^##\s+Findings\s*$", text, re.M), \
+        "BUILD.md must carry a Findings section for the poc terminal state"
+
+
+def _bo():
+    return load_mod(BO_PATH, "specdev_build_outcome_findings")
+
+
+def _git(root, *args):
+    subprocess.run(["git", *args], cwd=str(root), check=True,
+                   capture_output=True, text=True)
+
+
+def _findings_repo(tmp_path, findings_block):
+    """A repo where a build otherwise reached its terminal state: a real
+    checkpoint, a prepared PR body, and the implementation branch pushed
+    with a commit beyond base. `findings_block` is appended verbatim to
+    BUILD.md so each test varies only the Findings section."""
+    root = tmp_path / "repo"
+    (root / ".specdev").mkdir(parents=True)
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    (root / ".specdev" / "BUILD.md").write_text(
+        "# Build Plan - Widget\n\n**Feature ID:** FEAT-900\n\nWave 1 green.\n"
+        + findings_block, encoding="utf-8")
+    (root / ".specdev" / "PR_BODY.md").write_text(
+        "# FEAT-900 - Widget\n\nImplements REQ-001.\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "seed")
+
+    bo = _bo()
+    ref = bo.implementation_ref(".", "FEAT-900")
+    _git(root, "checkout", "-q", "-B", ref, "main")
+    (root / "widget.py").write_text("widget", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "feat(widget): REQ-001")
+    _git(root, "checkout", "-q", "main")
+    return root, bo
+
+
+def _verify(root, bo, mode, monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    return bo.verify(root, "FEAT-900", mode, ".", "main", None, repo_dir=root)
+
+
+def test_findings_assertion_gates_the_poc_verdict_when_missing(tmp_path, monkeypatch):
+    """No '## Findings' section at all -> poc verify() fails, and the reason
+    ends up in `problems` (what _md_report surfaces to explain the FAIL)."""
+    root, bo = _findings_repo(tmp_path, "")
+    rec = _verify(root, bo, "poc", monkeypatch)
+    assert rec["ok"] is False
+    assert any("Findings" in p for p in rec["problems"])
+
+
+def test_findings_assertion_gates_the_poc_verdict_when_only_placeholders(
+        tmp_path, monkeypatch):
+    block = ("\n## Findings\n\n"
+             "- **What we learned:** <the answer>\n")
+    root, bo = _findings_repo(tmp_path, block)
+    rec = _verify(root, bo, "poc", monkeypatch)
+    assert rec["ok"] is False
+    assert any("Findings" in p for p in rec["problems"])
+
+
+def test_findings_assertion_passes_the_poc_verdict_when_filled_in(tmp_path, monkeypatch):
+    block = "\n## Findings\n\nA single consumer sustained 62k events/sec.\n"
+    root, bo = _findings_repo(tmp_path, block)
+    rec = _verify(root, bo, "poc", monkeypatch)
+    assert rec["ok"] is True, rec["problems"]
+
+
+def test_prod_verify_is_unaffected_by_an_absent_findings_section(tmp_path, monkeypatch):
+    """A prod build must be completely unaffected by Task 9 -- it has no
+    Findings requirement at all."""
+    root, bo = _findings_repo(tmp_path, "")  # no Findings section
+    rec = _verify(root, bo, "prod", monkeypatch)
+    assert rec["ok"] is True, rec["problems"]
+    assert not any("Findings" in p for p in rec["problems"])
+
+
+def test_shipped_build_template_findings_is_not_counted_as_filled_in(tmp_path):
+    """The shipped template's own Findings section is all blockquote intro
+    and <...> placeholders -- the same discipline CHARTER.md's template gets
+    -- so validating it as-is must still report a problem."""
+    bo = _bo()
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "BUILD.md").write_text(
+        BUILD_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    probs = bo.findings_problems(tmp_path)
+    assert probs, "the stock template's Findings section must not pass"
+
+
+def test_checkpoint_problems_still_flags_the_stock_template(tmp_path):
+    """Regression: the Findings section added for Task 9 must not disturb
+    STOCK_MARKERS detection -- the stock template (now with an unfilled
+    Findings section too) must still be rejected as a checkpoint."""
+    bo = _bo()
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "BUILD.md").write_text(
+        BUILD_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    probs = bo.checkpoint_problems(tmp_path)
+    assert probs and "stock template" in probs[0]
+
+
+def test_checkpoint_problems_still_accepts_a_real_edited_build_md(tmp_path):
+    """A genuinely edited BUILD.md (no stock markers) still passes
+    checkpoint_problems -- unaffected by the new Findings section."""
+    bo = _bo()
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "BUILD.md").write_text(
+        "# Build Plan - Widget\n\n**Feature ID:** FEAT-900\n\nWave 1 green.\n"
+        "\n## Findings\n\nThroughput held at 62k events/sec.\n",
+        encoding="utf-8")
+    assert bo.checkpoint_problems(tmp_path) == []
 
 
 def test_gen_traceability_does_not_shadow_stdlib_profile():

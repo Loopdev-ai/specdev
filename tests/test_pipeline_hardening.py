@@ -197,8 +197,14 @@ def built(tmp_path):
     git(root, "config", "user.email", BOT_EMAIL)
     git(root, "config", "user.name", "specdev-bot")
     (root / "seed.txt").write_text("seed", encoding="utf-8")
+    # Includes a filled-in '## Findings' section so poc-mode verify() checks
+    # in this file exercise the branch/PR-body assertions this fixture is
+    # actually about, without also having to satisfy the (separately tested,
+    # in test_profiles.py) Findings requirement on every call.
     (root / ".specdev" / "BUILD.md").write_text(
-        "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n\nWave 1 green.\n",
+        "# Build Plan - Widget\n\n**Feature ID:** FEAT-002\n\nWave 1 green.\n"
+        "\n## Findings\n\nA single consumer sustained 62k events/sec with no "
+        "back-pressure observed.\n",
         encoding="utf-8")
     (root / ".specdev" / "PR_BODY.md").write_text(
         "# FEAT-002 - Widget\n\nImplements REQ-001.\n", encoding="utf-8")
