@@ -34,14 +34,61 @@ if sys.version_info < (3, 10):
 
 PLACEHOLDER = re.compile(r"<[^>\n]+>|XXX|\bTBD\b", re.I)
 
+CHARTER_SECTIONS = ("Goal", "Questions this spike must answer", "Timebox",
+                    "Abandon criteria")
+
+
+def _validate_charter(root: Path, strict: bool) -> int:
+    """Gate 1 for a `poc` unit. A spike answers questions; it does not deliver
+    requirements, so there are no REQ IDs, acceptance lines or ADRs to check.
+    What must NOT be skipped is that the charter is actually filled in — an
+    unedited template is how a spike becomes untracked work."""
+    charter = root / ".specdev" / "CHARTER.md"
+    if not charter.exists():
+        print(f"ERROR: {charter.as_posix()} not found "
+              "(the poc profile's Gate 1 artifact)")
+        return 1
+    text = charter.read_text(encoding="utf-8")
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for name in CHARTER_SECTIONS:
+        m = re.search(rf"^##\s+{re.escape(name)}\s*$(.*?)(^##\s|\Z)",
+                      text, re.S | re.M)
+        if not m:
+            errors.append(f"missing '## {name}' section")
+            continue
+        body = m.group(1).strip()
+        if not body:
+            errors.append(f"'## {name}' is empty")
+        elif PLACEHOLDER.search(body):
+            errors.append(f"'## {name}' still holds a placeholder")
+
+    for w in warnings:
+        print(f"WARN:  {w}")
+    for e in errors:
+        print(f"ERROR: {e}")
+    if errors or (strict and warnings):
+        print(f"\nGate 1 (charter) FAILED: {len(errors)} error(s), "
+              f"{len(warnings)} warning(s)")
+        return 1
+    print(f"\nGate 1 (charter) passed ({len(CHARTER_SECTIONS)} sections).")
+    return 0
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--strict", action="store_true", help="treat warnings as errors")
+    ap.add_argument("--profile", choices=("full", "charter"), default="full",
+                    help="'charter' validates .specdev/CHARTER.md for a poc "
+                         "unit instead of the full spec.md bar (see "
+                         "profile.py). Default 'full'.")
     args = ap.parse_args()
 
     root = Path(args.root)
+    if args.profile == "charter":
+        return _validate_charter(root, args.strict)
     spec = root / ".specdev" / "spec.md"
     errors: list[str] = []
     warnings: list[str] = []

@@ -501,3 +501,87 @@ def test_org_adr_check_discover_has_full_history():
     steps = doc["jobs"]["discover"]["steps"]
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout"))
     assert checkout.get("with", {}).get("fetch-depth") == 0
+
+
+VALIDATE = ROOT / "assets" / "specdev" / "tools" / "validate_spec.py"
+CHARTER_TEMPLATE = ROOT / "assets" / "specdev" / "CHARTER.md"
+
+
+def run_validate(tmp_path, *args):
+    return subprocess.run(
+        [sys.executable, str(VALIDATE), "--root", str(tmp_path), *args],
+        capture_output=True, text=True)
+
+
+GOOD_CHARTER = """# Spike Charter — streaming ingest
+
+## Goal
+
+Find out whether a single Kafka consumer can sustain 50k events/sec on the
+current instance size.
+
+## Questions this spike must answer
+
+- Does one consumer saturate before 50k/sec?
+- Where does back-pressure first appear?
+
+## Timebox
+
+Three working days, ending 2026-08-07.
+
+## Abandon criteria
+
+- Throughput below 20k/sec after two days of tuning.
+"""
+
+
+def test_charter_mode_accepts_a_complete_charter(tmp_path):
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "CHARTER.md").write_text(GOOD_CHARTER, encoding="utf-8")
+    r = run_validate(tmp_path, "--strict", "--profile", "charter")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_charter_mode_rejects_a_missing_section(tmp_path):
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "CHARTER.md").write_text(
+        GOOD_CHARTER.replace("## Timebox", "## Notes"), encoding="utf-8")
+    r = run_validate(tmp_path, "--strict", "--profile", "charter")
+    assert r.returncode == 1
+    assert "Timebox" in r.stdout
+
+
+def test_charter_mode_rejects_placeholders(tmp_path):
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "CHARTER.md").write_text(
+        GOOD_CHARTER.replace("Three working days, ending 2026-08-07.", "TBD"),
+        encoding="utf-8")
+    r = run_validate(tmp_path, "--strict", "--profile", "charter")
+    assert r.returncode == 1
+
+
+def test_charter_mode_does_not_require_a_spec(tmp_path):
+    """The whole point: no spec.md, no REQ IDs, no ADRs."""
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "CHARTER.md").write_text(GOOD_CHARTER, encoding="utf-8")
+    assert not (d / "spec.md").exists()
+    assert run_validate(tmp_path, "--profile", "charter").returncode == 0
+
+
+def test_shipped_charter_template_is_a_template_not_a_pass(tmp_path):
+    """The template ships with placeholders, so validating it must FAIL —
+    the same discipline the four post-dev-qa stubs ship with."""
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "CHARTER.md").write_text(
+        CHARTER_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    assert run_validate(tmp_path, "--strict", "--profile", "charter").returncode == 1
+
+
+def test_full_profile_is_the_default_and_still_requires_a_spec(tmp_path):
+    (tmp_path / ".specdev").mkdir(parents=True)
+    assert run_validate(tmp_path).returncode == 1
