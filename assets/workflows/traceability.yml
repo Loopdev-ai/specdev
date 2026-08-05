@@ -23,6 +23,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      # Governance-profile filtering (skip units with traceability: false)
+      # happens INSIDE gen_traceability.py, not here. This job is deliberately
+      # a single job over --all-units, not a per-unit matrix: the "Commit
+      # matrix" step below already races concurrent unit builds on the push
+      # and copes by rebase-retrying. A per-unit matrix would multiply that
+      # race by the number of units instead of leaving it as one push per run.
       - name: Generate matrix (every governed unit)
         env:
           RELEASE_TAG: ${{ github.event.workflow_run.head_sha }}

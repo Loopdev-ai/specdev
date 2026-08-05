@@ -625,3 +625,141 @@ def test_shipped_charter_template_is_a_template_not_a_pass(tmp_path):
 def test_full_profile_is_the_default_and_still_requires_a_spec(tmp_path):
     (tmp_path / ".specdev").mkdir(parents=True)
     assert run_validate(tmp_path).returncode == 1
+
+
+# ---- Task 8: profile-conditional gate workflows ------------------------
+
+WORKFLOWS = ROOT / "assets" / "workflows"
+
+# traceability.yml is deliberately EXCLUDED here: it has no `discover` job and
+# no per-unit matrix (a single job over --all-units, to avoid multiplying the
+# push race the "Commit matrix" step already rebase-retries around). Its
+# profile filtering lives inside gen_traceability.py instead — see the
+# gen_traceability tests below.
+PROFILE_GATED = {
+    "post-dev-qa.yml": ["coverage_gate", "traceability"],
+    "spec-validate.yml": ["spec_bar"],
+    "compliance.yml": ["compliance"],
+}
+
+
+@pytest.mark.parametrize("wf", sorted(PROFILE_GATED))
+def test_discover_emits_the_profiles_output(wf):
+    doc = yaml.safe_load((WORKFLOWS / wf).read_text(encoding="utf-8"))
+    outputs = doc["jobs"]["discover"].get("outputs", {})
+    assert "profiles" in outputs, f"{wf}: discover must emit 'profiles'"
+    steps = doc["jobs"]["discover"]["steps"]
+    assert any("profile.py matrix" in str(s.get("run", "")) for s in steps), \
+        f"{wf}: discover must run 'profile.py matrix'"
+
+
+@pytest.mark.parametrize("wf,keys", sorted(PROFILE_GATED.items()))
+def test_workflow_gates_on_its_profile_keys(wf, keys):
+    text = (WORKFLOWS / wf).read_text(encoding="utf-8")
+    for k in keys:
+        assert f"profiles)[matrix.unit].{k}" in text, \
+            f"{wf}: nothing gates on profile key '{k}'"
+
+
+def test_secret_scan_and_sast_are_never_profile_gated():
+    """The credential floor is not subject to the profile. If either of these
+    ever acquires an `if:` referencing profiles, the floor has been breached."""
+    doc = yaml.safe_load((WORKFLOWS / "post-dev-qa.yml").read_text(encoding="utf-8"))
+    for job in doc["jobs"].values():
+        for step in job.get("steps", []):
+            name = str(step.get("name", ""))
+            if "Secret scan" in name or "SAST" in name or "gitleaks" in name:
+                assert "profiles" not in str(step.get("if", "")), \
+                    f"floor step '{name}' must not be profile-gated"
+
+
+def test_traceability_workflow_has_no_discover_job():
+    """Regression pin: traceability.yml is a single job over --all-units, not a
+    per-unit matrix. Splitting it would multiply the concurrent-push race its
+    'Commit matrix' step rebase-retries around. The profile filter lives in
+    the tool instead (see the gen_traceability tests below)."""
+    doc = yaml.safe_load((WORKFLOWS / "traceability.yml").read_text(encoding="utf-8"))
+    assert "discover" not in doc["jobs"]
+
+
+# ---- traceability profile filtering lives in the tool, not the workflow ---
+
+GT_PATH = ROOT / "assets" / "specdev" / "tools" / "gen_traceability.py"
+
+
+def load_gt():
+    return load_mod(GT_PATH, "specdev_gen_traceability")
+
+
+def write_unit_spec(root, name):
+    d = root / name / ".specdev"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "spec.md").write_text(
+        f"# Spec {name}\n\n**Feature ID:** FEAT-001\n", encoding="utf-8")
+
+
+def test_gen_traceability_skips_a_unit_whose_profile_disables_traceability(
+        tmp_path, monkeypatch):
+    gt = load_gt()
+    a = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    b = make_unit(tmp_path, "api", {"maturity": "prod", "audience": "customer"})
+    write_registry(tmp_path, [a, b])
+    write_unit_spec(tmp_path, "spike")
+    write_unit_spec(tmp_path, "api")
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+
+    real_resolve_all = gt.profile.resolve_all
+    monkeypatch.setattr(gt.profile, "resolve_all",
+                        lambda root: real_resolve_all(root, index=idx))
+    monkeypatch.setattr(sys, "argv",
+                        ["gen_traceability.py", "--root", str(tmp_path), "--all-units"])
+
+    assert gt.main() == 0
+    assert not (tmp_path / "spike" / ".specdev" / "traceability.md").exists(), \
+        "poc unit has traceability: false in its resolved profile — must be skipped"
+    assert (tmp_path / "api" / ".specdev" / "traceability.md").exists(), \
+        "prod unit has traceability: true — must still be generated"
+
+
+def test_gen_traceability_generates_for_a_unit_whose_profile_enables_it(
+        tmp_path, monkeypatch):
+    gt = load_gt()
+    e = make_unit(tmp_path, "api", {"maturity": "prod", "audience": "customer"})
+    write_registry(tmp_path, [e])
+    write_unit_spec(tmp_path, "api")
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+
+    real_resolve_all = gt.profile.resolve_all
+    monkeypatch.setattr(gt.profile, "resolve_all",
+                        lambda root: real_resolve_all(root, index=idx))
+    monkeypatch.setattr(sys, "argv",
+                        ["gen_traceability.py", "--root", str(tmp_path), "--all-units"])
+
+    assert gt.main() == 0
+    out = tmp_path / "api" / ".specdev" / "traceability.md"
+    assert out.exists()
+    assert "REQ" in out.read_text(encoding="utf-8") or "requirements" in out.read_text(
+        encoding="utf-8").lower()
+
+
+def test_gen_traceability_fails_safe_when_profile_resolution_raises(
+        tmp_path, monkeypatch, capsys):
+    """A unit must never be silently skipped because governance itself broke.
+    If profile.resolve_all() raises, every unit still gets traceability
+    generated -- the strict behaviour -- never the loose one."""
+    gt = load_gt()
+    e = make_unit(tmp_path, "spike", {"maturity": "poc", "audience": "internal"})
+    write_registry(tmp_path, [e])
+    write_unit_spec(tmp_path, "spike")
+
+    def boom(root):
+        raise RuntimeError("network is unreachable")
+
+    monkeypatch.setattr(gt.profile, "resolve_all", boom)
+    monkeypatch.setattr(sys, "argv",
+                        ["gen_traceability.py", "--root", str(tmp_path), "--all-units"])
+
+    assert gt.main() == 0
+    assert (tmp_path / "spike" / ".specdev" / "traceability.md").exists(), \
+        "profile resolution failure must fail SAFE (generate), never skip"
+    assert "NOTE" in capsys.readouterr().err

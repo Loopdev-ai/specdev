@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       units: ${{ steps.m.outputs.units }}
+      profiles: ${{ steps.p.outputs.profiles }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,6 +41,12 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BASE")" >> "$GITHUB_OUTPUT"
+      # Resolve every unit's governance profile ONCE per run; legs read their
+      # own from this output. Keeps it to one index fetch and leaves no
+      # resolved file on disk for a later step to tamper with.
+      - id: p
+        name: Resolve governance profiles
+        run: echo "profiles=$(python .specdev/tools/profile.py matrix)" >> "$GITHUB_OUTPUT"
 
   validate:
     needs: discover
@@ -55,8 +62,11 @@ jobs:
         with:
           python-version: '3.x'
       - name: Validate spec artifacts (Gate 1) — ${{ matrix.unit }}
-        if: hashFiles(format('{0}/.specdev/spec.md', matrix.unit)) != ''
-        run: python .specdev/tools/validate_spec.py --strict --root '${{ matrix.unit }}'
+        if: hashFiles(format('{0}/.specdev/spec.md', matrix.unit)) != '' || fromJSON(needs.discover.outputs.profiles)[matrix.unit].spec_bar == 'charter'
+        run: |
+          python .specdev/tools/validate_spec.py --strict \
+            --root '${{ matrix.unit }}' \
+            --profile '${{ fromJSON(needs.discover.outputs.profiles)[matrix.unit].spec_bar }}'
 
   # The single required status check. Matrix leg names are dynamic, so branch
   # protection cannot require them individually.

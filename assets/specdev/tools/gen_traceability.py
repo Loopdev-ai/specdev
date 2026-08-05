@@ -45,6 +45,7 @@ if sys.version_info < (3, 10):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import units  # noqa: E402  (vendored sibling module)
+import profile  # noqa: E402  (vendored sibling module)
 
 try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stdout.reconfigure(encoding="utf-8")
@@ -236,8 +237,23 @@ def main() -> int:
     if not args.all_units:
         return run_one(args)
 
+    # Resolved ONCE for the whole run, not per unit — one index fetch, not one
+    # per unit. Fail safe: if resolution raises, or a unit is absent from the
+    # result, treat that as "no opinion" and generate for it anyway (the
+    # strict behaviour) rather than silently skipping it.
+    try:
+        profiles = profile.resolve_all(args.root)
+    except Exception as exc:
+        print(f"NOTE: governance profile resolution failed ({exc}) — "
+              f"generating traceability for every unit", file=sys.stderr)
+        profiles = {}
+
     rc = 0
     for unit in units.unit_paths(args.root):
+        prof = profiles.get(unit)
+        if prof is not None and prof.get("traceability") is False:
+            print(f"--- {unit} --- skipped: governance profile disables traceability")
+            continue
         sub = argparse.Namespace(**vars(args))
         sub.all_units = False
         sub.root = str(Path(args.root) / unit)
