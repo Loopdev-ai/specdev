@@ -987,10 +987,11 @@ SKILL = ROOT / "skills" / "specdev" / "SKILL.md"
 def test_skill_resolves_the_profile_before_the_pipeline():
     text = SKILL.read_text(encoding="utf-8")
     assert "profile.py show" in text
+    i_unit_first = text.index("## Establish the governed unit FIRST")
     i_profile = text.index("profile.py show")
     i_pipeline = text.index("## The pipeline")
-    assert i_profile < i_pipeline, \
-        "the profile must be resolved before the pipeline steps, not inside them"
+    assert i_unit_first < i_profile < i_pipeline, \
+        "the profile section must appear between 'Establish the governed unit FIRST' and 'The pipeline'"
 
 
 @pytest.mark.parametrize("key", ["spec_bar", "spec_pr", "adrs",

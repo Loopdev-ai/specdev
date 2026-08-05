@@ -146,7 +146,7 @@ poc-built unit's maturity.
      every wave, not only before the PR. A red wave goes back to a builder.
    - **Per-wave traceability gate: after each wave, the qa-verifier's
      `gen_traceability.py --check-gaps` must pass** — every `REQ-###` built that
-     wave has a linked test before the next wave starts.
+     wave has a linked test before the next wave starts. **(`traceability: false` → skip.)**
    - **Starting a build authorizes subagent dispatch.** This workflow spawns
      subagents by design; the harness default ("don't spawn unless asked") does
      not apply once the user has invoked the SpecDev build — dispatch them.
@@ -290,6 +290,7 @@ but it can only push what you committed.
 
 ```
 python .specdev/tools/validate_spec.py --strict      # Gate 1 check
+python .specdev/tools/profile.py show --unit <unit>  # resolve the unit's governance profile
 python .specdev/tools/gen_traceability.py            # write the matrix
 python .specdev/tools/gen_traceability.py --check-gaps  # Gate 2 test-coverage check
 python .specdev/tools/check_org_adrs.py              # org-ADR gate (inert until org.json is configured)
@@ -303,6 +304,7 @@ and:
 ```
 python .specdev/tools/units.py list                  # the repo's governed units
 python .specdev/tools/units.py check                 # registry drift + validation
+python .specdev/tools/profile.py --root <u> show    # one unit's resolved profile
 python .specdev/tools/check_org_adrs.py --unit <u>   # one unit's org-ADR gate
 python .specdev/tools/adr.py lint --unit <u>         # one unit's ADR quality gate
 python .specdev/tools/units.py migrate --unit <path> # single-root -> multi-unit
