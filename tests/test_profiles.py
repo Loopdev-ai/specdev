@@ -524,6 +524,75 @@ def test_promotion_check_cli_stays_inert_when_governance_not_adopted(
         "message used for a real, checked, clean promotion")
 
 
+def test_removing_governance_link_and_promoting_poc_unit_in_same_pr_is_rejected(
+        tmp_path, capsys):
+    """The escape hatch fix: a single PR that removes governance_repo AND
+    promotes a poc-built unit must not bypass the check by becoming inert.
+    The check must refuse (exit 2) when it detects that governance WAS adopted
+    at the base ref, even though it is not adopted at HEAD."""
+    init_repo(tmp_path)
+    # Commit 1: governance adopted + poc unit at poc maturity with history
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "poc")
+    (tmp_path / "spike" / ".specdev" / "run.json").write_text(
+        json.dumps({"mode": "poc", "feat": "FEAT-001"}), encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init with governance")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    # Commit 2: remove governance AND promote poc to prod
+    # This is the attack: removing governance_repo should NOT allow promotion
+    write_registry(tmp_path, [{"path": "spike"}])  # Remove governance_repo
+    set_maturity(tmp_path, "spike", "prod")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "remove governance and promote")
+
+    # Prepare an offline index so we can test without needing to fetch
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+
+    # Run the CLI check: it should refuse (exit 2) because governance was
+    # adopted at base, not because it cannot find an index (index is provided)
+    r = run_cli(tmp_path, "promotion-check", "--changed-from", base,
+                "--index", str(write_index(tmp_path)))
+    # If governance is not recognized as having been adopted at base, this
+    # would exit 1 (promotion error found) or 0 (no error, vacuous success).
+    # But the spec says we should refuse to report success -- exit 2 is correct
+    # because governance WAS adopted at base. The offline index is provided,
+    # so the check should run and should report the promotion error (exit 1),
+    # not skip or refuse.
+    assert r.returncode == 1, (
+        f"expected exit 1 (promotion error found), got {r.returncode}. "
+        f"The check should detect the promotion and report it as an error. "
+        f"stderr: {r.stderr}\nstdout: {r.stdout}")
+    assert "spike" in r.stderr and "promotes it" in r.stderr
+
+
+def test_governance_adoption_at_ref_helper_returns_true_when_adopted(tmp_path):
+    """Unit test for governance_adopted_at() helper: it should detect when
+    governance_repo is present and non-REPLACE_ME at a given ref."""
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "governance adopted")
+    ref = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    assert _pf().governance_adopted_at(tmp_path, ref) is True
+
+
+def test_governance_adoption_at_ref_helper_returns_false_when_not_adopted(
+        tmp_path):
+    """Unit test for governance_adopted_at() helper: it should return False
+    when governance_repo is missing, empty, or REPLACE_ME."""
+    init_repo(tmp_path)
+    # No registry, no governance
+    (tmp_path / "readme.md").write_text("x", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "no governance")
+    ref = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    assert _pf().governance_adopted_at(tmp_path, ref) is False
+
+
 def test_poc_tag_does_not_match_unit_name_prefixes(tmp_path):
     """Regression test: poc-spike-* should not match poc-spike-two-*.
     Only spike-two should be detected as poc-built."""

@@ -305,6 +305,26 @@ def _emit(value) -> str:
     return str(value)
 
 
+def governance_adopted_at(root, ref: str) -> bool:
+    """True when governance_repo is configured at a git ref, False otherwise.
+
+    Reads via `git show` rather than the worktree so the BASE side of the
+    comparison is the committed state, not whatever is checked out. Tries
+    .specdev/units.json first, then .specdev/org.json."""
+    for path in [".specdev/units.json", ".specdev/org.json"]:
+        r = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=str(root),
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            try:
+                doc = json.loads(r.stdout)
+                repo = doc.get("governance_repo", "")
+                if repo and not "REPLACE_ME" in json.dumps(repo):
+                    return True
+            except json.JSONDecodeError:
+                pass
+    return False
+
+
 def maturity_at(root, unit: str, ref: str) -> str | None:
     """This unit's declared maturity at a git ref, or None if unreadable.
 
@@ -423,11 +443,18 @@ def main() -> int:
         # stays silent-and-empty on either, by design, so it alone can't make
         # that distinction.
         if index is None:
-            index, why, adopted = _load_index(Path(args.root))
+            # Check adoption at both base and HEAD. If governance was adopted
+            # at either point, we must enforce (exit 2 on unreachable index).
+            # This prevents removing governance_repo in the same PR that
+            # promotes a poc unit from bypassing the check.
+            root = Path(args.root)
+            adopted_base = governance_adopted_at(root, base)
+            index, why, adopted_head = _load_index(root)
+            adopted = adopted_base or adopted_head
             if index is None:
                 if not adopted:
-                    # Governance genuinely isn't configured here -- the same
-                    # inert case check_org_adrs.py treats as OK, not a failure.
+                    # Governance genuinely isn't configured here at either point --
+                    # the same inert case check_org_adrs.py treats as OK, not a failure.
                     print(f"promotion check skipped — {why}.")
                     return 0
                 print(f"ERROR: promotion check cannot run: {why}. A promotion "
