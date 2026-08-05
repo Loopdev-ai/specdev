@@ -17,14 +17,15 @@ identically for a throwaway spike and a customer-facing production service.
 | Brainstorm → `spec.md` with REQ IDs + acceptance | high (human) | no |
 | Gate 1 `validate_spec.py --strict` | low | no |
 | ADRs | medium | partly — "skip if it fits existing architecture" |
-| Spec PR: human approval + merge round trip | high (latency) | only headless `poc` (self-merge) |
+| Spec PR: human approval + merge round trip | high (latency) | only headless `poc` (no merge — deploys from the built branch) |
 | `adr-checker` before *both* PRs | medium | inert until `org.json` set |
 | Per-wave `qa-verifier` + trace-gap check | high (tokens, wall clock) | no |
 | Gate 2: tests, SAST, coverage, trace gaps + review | high | no |
 | Deploy → staging QA → auto-prod → QA | high | yes — poc uses an isolated env |
 
 The only fast path that exists is `specdev-build.yml`'s `poc/**` lane, and it
-collapses only *who merges* and *where it deploys* — not *how much governance
+collapses only *the merge round trip* (poc deploys straight from the pushed
+branch and is never merged) and *where it deploys* — not *how much governance
 runs*. The spec bar, the two-PR structure, per-wave QA and the coverage gate
 are still full-freight for a spike.
 
@@ -51,9 +52,12 @@ product repo already fetches that file at its pinned `ref`. A `profile` key
 added to a maturity value therefore reaches every product repo through a fetch
 that already happens. **No new distribution plumbing.**
 
-Likewise, every gate workflow already has a `discover` job running
-`units.py check`, which gives both profile resolution and the no-promotion
-rule a home with zero new wiring.
+Likewise, every gate workflow already has a `discover` job, which gives
+profile resolution a home with only a small added step (`profile.py matrix`)
+— no new job, no new workflow. The no-promotion rule ended up living
+specifically in `org-adr-check.yml`'s `discover` job via a new `profile.py
+promotion-check` subcommand, not spread across every gate's `units.py check`
+as first assumed here — see *No promotion in place* below for why.
 
 ## Approach
 
@@ -121,6 +125,16 @@ for all units once and emits them as a JSON output; matrix legs read their own
 leg's profile from it. One fetch per workflow run, no per-leg network, and no
 cached file on disk to tamper with.
 
+**Exception: `traceability.yml` is not restructured this way.** It is
+deliberately a single job, not a per-unit matrix — its commit step already
+rebase-retries around a known concurrent-push race (concurrent unit builds can
+both reach the push), and splitting the job into a per-unit matrix would
+multiply that race by the number of units instead of leaving it as one push
+per run. Profile filtering instead lives *inside* `gen_traceability.py`'s
+`--all-units` loop: it skips a unit whose resolved profile has
+`traceability: false`, and fails safe — i.e. generates the matrix — when a
+unit's profile cannot be resolved at all, rather than silently dropping it.
+
 ## The floor (non-overridable)
 
 Applied by `profile.py` *after* loading the table. An org that writes
@@ -167,15 +181,20 @@ profile:
 | 4 Architecture | The `adr` skill / `/specdev:adr` is not invoked, so no ADRs are authored; `adr-checker` still runs (floor) |
 | 5 Spec PR | Skipped — the charter commits onto the `poc/**` branch |
 | 6 Build | Waves still exist (dependency order is correctness, not governance) but no gate *between* them; one `qa-verifier` at the end in smoke mode |
-| 7 Impl PR | Still opened, still self-merged — it remains the audit record even with thin gates |
+| 7 Impl PR | Still opened, never merged — deploy runs from the pushed branch, so the PR remains the audit record even with thin gates |
 | 8 Deploy | `deploy-poc` only |
 | 9 Traceability | Skipped — no matrix, no `--check-gaps`, and no `Refs: REQ-###` commit trailers, since `spec_bar: charter` assigns no REQ IDs to reference |
 
 **New terminal state:** `BUILD.md` must carry a non-empty `## Findings`
-section. This extends the assertion `specdev-build.yml:624-625` already makes
-(the `verify` step feeding `terminal_ok`, which `deploy-poc` is gated on)
-rather than adding machinery — and it is the one thing that makes the spike
-worth having run, given the code is reverse-engineered and rebuilt.
+section. The `- id: verify` step in `specdev-build.yml` asserts nothing
+inline — it delegates entirely to `build_outcome.py verify`, whose verdict
+becomes the `terminal_ok` output that `deploy-poc` is gated on. The Findings
+check itself is a `findings_problems()` function in `build_outcome.py`,
+contributing to that verdict only when `mode == "poc"`; a `prod` build calls
+the same function path and is completely unaffected. This extends the
+existing terminal-state assertion rather than adding new machinery — and it
+is the one thing that makes the spike worth having run, given the code is
+reverse-engineered and rebuilt.
 
 **Agents.**
 
@@ -188,8 +207,11 @@ worth having run, given the code is reverse-engineered and rebuilt.
   its cost.
 
 **Workflows.** `post-dev-qa` makes coverage and trace-gaps conditional on the
-profile; `spec-validate` learns charter mode; `traceability` and `compliance`
-skip poc units; `specdev-build`'s verify step asserts Findings.
+profile; `spec-validate` learns charter mode; `compliance` gains a
+`discover`-fed matrix that skips poc units; `traceability` skips poc units too,
+but by filtering inside `gen_traceability.py` rather than restructuring into a
+matrix (see *Distribution to CI* above); `specdev-build`'s `build_outcome.py
+verify` asserts Findings for a poc build.
 
 **Interaction with the `adr` skill** (landed in PR #10, after this design's
 first draft): ADR authoring now routes through `skills/adr/SKILL.md` and
@@ -202,15 +224,26 @@ needs no `adr_lint` key.
 
 ## No promotion in place
 
-`units.py check` gains one rule: if a unit's maturity rank **increased** versus
-the merge base **and** that unit has poc build history (a `poc-*` release tag,
-or `run.json` recording mode `poc`), fail hard:
+`profile.py` gains a `promotion-check` subcommand, wired into
+`org-adr-check.yml`'s `discover` job: if a unit's maturity rank **increased**
+versus the merge base **and** that unit has poc build history (a `poc-*`
+release tag, or `run.json` recording mode `poc`), it fails hard:
 
 > poc units are not promoted in place; reverse-map with `spec-explorer` and
 > rebuild in a new unit.
 
-Every gate's `discover` job already runs `units.py check`, so this needs no new
-wiring. It closes the gap ADR-0001 leaves open, where reclassification is
+`org-adr-check.yml` is the right host: it already fetches the org index, it
+already runs on every PR, and it is deliberately never path-filtered. It needs
+no new workflow — only `fetch-depth: 0` on its `discover` checkout, since
+`git show <base>:...` cannot resolve in a shallow clone.
+
+**This moved from `units.py check`, where the design first put it.** `units.py`
+runs offline and has no access to the org index, so it would need hardcoded
+maturity ranks — and an org that renamed its maturity values would get a
+silently inert rule, failing *open* on exactly the check meant to prevent
+promotion. Ranks now come from the index.
+
+It closes the gap ADR-0001 leaves open, where reclassification is
 "a PR-reviewed change like any other".
 
 ## What this buys

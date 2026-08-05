@@ -964,7 +964,12 @@ def promotion_errors(root=".", base=None, index=None) -> list[str]:
         now = maturity_at(root, unit, "HEAD")
         if not was or not now or was == now:
             continue
-        if ranks.get(now, -1) <= ranks.get(was, -1):
+        # Membership check, not `.get(x, -1)`: with a `.get` default, a
+        # promotion from a known rank to an UNRECOGNISED one would default the
+        # target to -1, make the comparison true, and silently treat a real
+        # promotion as a demotion. Requiring both ranks to be known keeps this
+        # fail-closed instead of fail-open.
+        if was in ranks and now in ranks and ranks[now] <= ranks[was]:
             continue  # demotion or lateral move
         if not has_poc_history(root, unit):
             continue

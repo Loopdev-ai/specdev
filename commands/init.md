@@ -129,6 +129,10 @@ Then print this post-install checklist:
 - Create a `poc` GitHub Environment (isolated from staging/production) and fill
   `environments.poc.url` in `.specdev/deploy.profile.json`; poc builds deploy
   only there and never promote to prod.
+- A unit classified `maturity: poc` uses `.specdev/CHARTER.md` as its Gate 1
+  artifact instead of `spec.md`, and runs the reduced pipeline its profile
+  declares. Check what you get with
+  `python .specdev/tools/profile.py show --unit <unit>`.
 - Architecture/runtime hosting config: capture values with the `arch-config`
   skill (writes `.specdev/architecture-config.json`); make `arch-config-validate`
   a required status check if you use it.
