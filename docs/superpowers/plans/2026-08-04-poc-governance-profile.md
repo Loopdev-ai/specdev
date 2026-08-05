@@ -1455,107 +1455,78 @@ git commit -m "feat(ci): gate coverage, traceability and compliance on the resol
 ### Task 9: Findings as the poc terminal state
 
 **Files:**
-- Modify: `assets/workflows/specdev-build.yml`
-- Modify: `assets/specdev/BUILD.md`
-- Test: `tests/test_profiles.py` (append)
+- Provide: `assets/specdev/BUILD.md` (already has the Findings section)
+- Provide: `assets/specdev/tools/build_outcome.py` (findings_problems function)
+- Test: `tests/test_profiles.py` (verdict-based assertion)
 
 **Interfaces:**
-- Extends the existing `verify` step (`specdev-build.yml:624-625`) that feeds `terminal_ok`, which `deploy-poc` is gated on. A poc build that leaves no Findings must not deploy.
+- A `findings_problems()` function in `build_outcome.py` (around line 140) validates that a poc unit's `## Findings` section is filled in. It is invoked from the `verify()` function (lines 479–486) **only when `mode == "poc"`**. Its result becomes part of `problems`, which is included in the record whose `ok` field becomes `terminal_ok` — the gate that `deploy-poc` depends on. A poc build that leaves no Findings must not deploy.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Understand the findings_problems function**
 
-Append to `tests/test_profiles.py`:
+`assets/specdev/tools/build_outcome.py:140–175` defines `findings_problems()`, which:
+- Returns an empty list if the Findings section exists and is filled in.
+- Returns a list of problem strings if the section is missing, empty, or contains only blockquote text or `<...>` placeholders.
+- The same placeholder-filtering discipline that CHARTER.md applies is used here: blockquote lines (the template's own `>` explanatory text), blank lines, and unfilled `<...>` tokens do not count as real content.
 
+- [ ] **Step 2: Understand how it integrates into verify()**
+
+`assets/specdev/tools/build_outcome.py:479–486` shows the integration point:
 ```python
-BUILD_WF = WORKFLOWS / "specdev-build.yml"
-BUILD_TEMPLATE = ROOT / "assets" / "specdev" / "BUILD.md"
-
-
-def test_build_template_has_a_findings_section():
-    text = BUILD_TEMPLATE.read_text(encoding="utf-8")
-    assert re.search(r"^##\s+Findings\s*$", text, re.M), \
-        "BUILD.md must carry a Findings section for the poc terminal state"
-
-
-def test_verify_step_asserts_findings_for_poc():
-    text = BUILD_WF.read_text(encoding="utf-8")
-    assert "Findings" in text, \
-        "the terminal-state assertion must require Findings in poc mode"
-
-
-def test_findings_assertion_is_inside_the_verify_step():
-    """It must feed terminal_ok, which deploy-poc gates on — not be a separate
-    advisory step that a failed assertion cannot block a deployment from."""
-    doc = yaml.safe_load(BUILD_WF.read_text(encoding="utf-8"))
-    steps = doc["jobs"]["build"]["steps"]
-    verify = next(s for s in steps if s.get("id") == "verify")
-    assert "Findings" in str(verify.get("run", ""))
+    if mode == "poc":
+        # A poc's actual deliverable is not the code — it is reverse-mapped
+        # with the spec-explorer agent and rebuilt as a new unit, never
+        # promoted — it is what the spike taught. This is part of the
+        # TERMINAL STATE, not a separate advisory check: deploy-poc gates on
+        # `ok`, and an advisory step could not have stopped it. `prod` is
+        # completely unaffected — a prod unit has no Findings requirement.
+        problems += findings_problems(root)
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+The findings assertion is **inside** the tool's verdict logic, not in the workflow's shell step, because the workflow's `verify` step (lines 631–660 of `specdev-build.yml`) only dispatches to the Python tool and interprets its exit code. The verdict itself is assembled in Python.
 
-Run: `python -m pytest tests/test_profiles.py -q -k findings`
-Expected: FAIL on all three.
+- [ ] **Step 3: Understand the shipped BUILD.md template**
 
-- [ ] **Step 3: Add a Findings section to `assets/specdev/BUILD.md`**
-
-Append to the template:
-
+`assets/specdev/BUILD.md:65–75` contains the Findings section with guidance:
 ```markdown
 ## Findings
 
-> **Required to finish a `poc` build.** A spike's deliverable is what it taught
-> you, because the code itself is reverse-mapped and rebuilt rather than
-> promoted. An empty section fails the build's terminal-state assertion, so
-> `deploy-poc` never runs on a spike that left nothing behind.
+> **Required to finish a `poc` build.** A spike's deliverable is what it
+> taught you, because the code itself is reverse-mapped and rebuilt rather
+> than promoted. An empty section fails the build's terminal-state
+> assertion, so `deploy-poc` never runs on a spike that left nothing behind.
 
 - **What we set out to answer:** <from CHARTER.md>
-- **What we learned:** <the answer, including "it doesn't work" — that is a
-  result, not a failure>
+- **What we learned:** <the answer, including "it doesn't work" — that is a result, not a failure>
 - **What surprised us:** <anything the real spec must account for>
-- **What the rebuild must do differently:** <concrete guidance for the
-  dev/prod unit that replaces this>
+- **What the rebuild must do differently:** <concrete guidance for the dev/prod unit that replaces this>
 ```
 
-- [ ] **Step 4: Extend the `verify` step in `assets/workflows/specdev-build.yml`**
+- [ ] **Step 4: Understand the shipped tests**
 
-Locate the `- id: verify` step (around line 624) and add this to the **end** of its `run:` block, keeping the step's existing `terminal_ok` output logic intact:
+`tests/test_profiles.py:843–888` contains four assertion tests:
 
-```bash
-          # A poc's deliverable is its Findings — the code is reverse-mapped
-          # and rebuilt, never promoted. A spike that deploys but records
-          # nothing has produced nothing, so this is part of the TERMINAL
-          # STATE, not a separate advisory check: deploy-poc gates on
-          # terminal_ok, and an advisory step could not stop it.
-          if [ "$MODE" = "poc" ]; then
-            findings=$(awk '/^## Findings[[:space:]]*$/{f=1;next} /^## /{f=0} f' \
-                       "$UNIT/.specdev/BUILD.md" 2>/dev/null \
-                       | grep -v '^[[:space:]]*>' \
-                       | grep -v '^[[:space:]]*$' \
-                       | grep -v '<[^>]*>' || true)
-            if [ -z "$findings" ]; then
-              echo "TERMINAL STATE NOT REACHED: $UNIT/.specdev/BUILD.md has no" \
-                   "filled-in '## Findings' section. A poc build's deliverable" \
-                   "is what it taught you; record it before finishing."
-              echo "ok=false" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-          fi
-```
+1. `test_findings_assertion_gates_the_poc_verdict_when_missing()` (line 843):
+   Verifies that `verify(mode="poc")` returns `ok=False` and includes a Findings problem when the section is absent.
 
-Check the surrounding step for the exact variable names it already uses for the mode and unit (`$MODE`, `$UNIT`, or `${{ needs.setup.outputs.* }}`) and match them — do not introduce new ones.
+2. `test_findings_assertion_gates_the_poc_verdict_when_only_placeholders()` (line 852):
+   Verifies that `verify(mode="poc")` returns `ok=False` when the section contains only template text and placeholders.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+3. `test_findings_assertion_passes_the_poc_verdict_when_filled_in()` (line 862):
+   Verifies that `verify(mode="poc")` returns `ok=True` when the section has real content.
+
+4. `test_prod_verify_is_unaffected_by_an_absent_findings_section()` (line 869):
+   Verifies that `verify(mode="prod")` returns `ok=True` regardless of Findings — a prod build is completely unaffected by Task 9.
+
+- [ ] **Step 5: Verify the tests pass**
+
+Run: `python -m pytest tests/test_profiles.py -q -k findings`
+Expected: all green (the tests were added during the build and all pass).
+
+Additionally, verify the full suite:
 
 Run: `python -m pytest tests/ -q`
-Expected: all green.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add assets/workflows/specdev-build.yml assets/specdev/BUILD.md tests/test_profiles.py
-git commit -m "feat(build): require Findings to reach the poc terminal state"
-```
+Expected: all tests green (no regression in other gates).
 
 ---
 
