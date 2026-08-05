@@ -943,8 +943,34 @@ def test_qa_verifier_documents_smoke_mode():
 
 
 def test_qa_verifier_smoke_mode_keeps_the_credential_floor():
-    text = (AGENTS / "qa-verifier.md").read_text(encoding="utf-8").lower()
-    assert "coverage" in text and "check-gaps" in text
+    text = (AGENTS / "qa-verifier.md").read_text(encoding="utf-8")
+    # Extract the smoke-mode section specifically (from ## Smoke mode to next ## or EOF)
+    # The header has parameters in parentheses, so account for the full line
+    match = re.search(r"^##\s+Smoke mode.*?\n(.*?)(?=^##|\Z)", text, re.MULTILINE | re.DOTALL)
+    assert match, "smoke mode section not found"
+    smoke_section = match.group(1).lower()
+
+    # Verify the smoke-mode contract:
+    # 1. gitleaks/secret scan is unconditional and not disableable
+    assert "gitleaks" in smoke_section or "secret scan" in smoke_section, \
+        "smoke mode must describe gitleaks/secret scan"
+    assert "unconditional" in smoke_section, \
+        "smoke mode must state gitleaks is unconditional"
+    assert "profile cannot switch it off" in smoke_section or "cannot" in smoke_section, \
+        "smoke mode must state gitleaks is not disableable by profile"
+
+    # 2. coverage and --check-gaps are described as skipped
+    assert "skip" in smoke_section, \
+        "smoke mode must describe what is skipped"
+    assert "coverage" in smoke_section, \
+        "smoke mode must mention coverage is skipped"
+    assert "check-gaps" in smoke_section, \
+        "smoke mode must mention --check-gaps is skipped"
+
+    # 3. A zero-test run is a RED verdict
+    assert "zero tests" in smoke_section or "collects zero" in smoke_section or \
+           ("red" in smoke_section and "test" in smoke_section), \
+        "smoke mode must state that zero tests result in RED verdict"
 
 
 def test_component_builder_documents_charter_mode():
