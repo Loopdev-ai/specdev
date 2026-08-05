@@ -415,6 +415,24 @@ def test_promotion_check_with_no_base_is_inert(tmp_path):
     assert _pf().promotion_errors(tmp_path, base=None, index=idx) == []
 
 
+def test_promotion_check_cli_refuses_empty_changed_from(tmp_path):
+    """The CLI boundary rejects empty --changed-from to prevent vacuous success."""
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    idx = write_index(tmp_path)
+
+    # Empty --changed-from should exit 2 and print error
+    r = run_cli(tmp_path, "promotion-check", "--changed-from", "",
+                "--index", str(idx))
+    assert r.returncode == 2, (
+        f"Expected exit 2 for empty --changed-from, got {r.returncode}: {r.stderr}")
+    assert "no base ref given" in r.stderr or "base" in r.stderr.lower()
+    assert "compares nothing" in r.stderr or "verifying nothing" in r.stderr.lower()
+
+
 def test_poc_tag_does_not_match_unit_name_prefixes(tmp_path):
     """Regression test: poc-spike-* should not match poc-spike-two-*.
     Only spike-two should be detected as poc-built."""
@@ -456,9 +474,24 @@ WF = ROOT / "assets" / "workflows" / "org-adr-check.yml"
 
 
 def test_org_adr_check_runs_the_promotion_check():
-    text = WF.read_text(encoding="utf-8")
-    assert "profile.py promotion-check" in text, (
-        "org-adr-check must enforce the no-in-place-promotion rule")
+    """Promotion check must be in the discover job as a real, enabled step."""
+    doc = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    steps = doc["jobs"]["discover"]["steps"]
+    # Find the step by name or by content
+    promo_step = None
+    for s in steps:
+        if s.get("name", "").startswith("Reject in-place promotion"):
+            promo_step = s
+            break
+    assert promo_step is not None, (
+        "org-adr-check discover job must have a 'Reject in-place promotion' step")
+    # Verify it's a real step with a run command
+    assert "run" in promo_step, "promotion check step must have a 'run' command"
+    assert "profile.py promotion-check" in promo_step["run"], (
+        "promotion check step must invoke profile.py promotion-check")
+    # Verify it's not disabled
+    assert "if" not in promo_step or not promo_step["if"], (
+        "promotion check step must not be disabled with an if condition")
 
 
 def test_org_adr_check_discover_has_full_history():

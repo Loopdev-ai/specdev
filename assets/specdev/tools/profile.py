@@ -364,7 +364,17 @@ def main() -> int:
     index = cch.load_json(Path(args.index)) if args.index else None
 
     if args.cmd == "promotion-check":
-        errs = promotion_errors(args.root, args.changed_from, index)
+        base = (args.changed_from or "").strip()
+        if not base:
+            print(f"ERROR: promotion check cannot run: no base ref given. "
+                  f"A promotion check without a base compares nothing, so it "
+                  f"would report success without verifying anything. On "
+                  f"workflow_dispatch, pass the run's own start SHA explicitly.",
+                  file=sys.stderr)
+            print("Refusing to report success without checking anything.",
+                  file=sys.stderr)
+            return 2
+        errs = promotion_errors(args.root, base, index)
         for e in errs:
             print(f"ERROR: {e}", file=sys.stderr)
         if errs:
