@@ -24,8 +24,9 @@ Three rules, in order, and all three are load-bearing:
 The FLOOR is applied after the table and cannot be disabled by it.
 
 Usage:
-    profile.py --root . show   [--unit .] [--index FILE] [--key KEY]
-    profile.py --root . matrix [--index FILE]
+    profile.py --root . show             [--unit .] [--index FILE] [--key KEY]
+    profile.py --root . matrix           [--index FILE]
+    profile.py --root . promotion-check  --changed-from REF [--index FILE]
 
 NOTE: --root is a top-level argument and must precede the subcommand. --index
 belongs to the subcommand and must follow it. Using --index before the
@@ -302,7 +303,7 @@ def has_poc_history(root, unit: str) -> bool:
         except json.JSONDecodeError:
             pass
     slug = unit.replace("/", "-").replace(".", "-").strip("-")
-    pattern = f"poc-{slug}-*" if slug else "poc-*"
+    pattern = f"poc-{slug}-[0-9]*" if slug else "poc-[0-9]*"
     r = subprocess.run(["git", "tag", "--list", pattern], cwd=str(root),
                        capture_output=True, text=True)
     return bool(r.stdout.strip())

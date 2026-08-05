@@ -412,3 +412,40 @@ def test_promotion_check_with_no_base_is_inert(tmp_path):
     git(tmp_path, "commit", "-q", "-m", "init")
     idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
     assert _pf().promotion_errors(tmp_path, base=None, index=idx) == []
+
+
+def test_poc_tag_does_not_match_unit_name_prefixes(tmp_path):
+    """Regression test: poc-spike-* should not match poc-spike-two-*.
+    Only spike-two should be detected as poc-built."""
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}, {"path": "spike-two"}])
+    set_maturity(tmp_path, "spike", "poc")
+    set_maturity(tmp_path, "spike-two", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    # Tag only spike-two as poc-built
+    git(tmp_path, "tag", "poc-spike-two-20260804-abc1234")
+
+    # spike should not have poc history (no tag matches poc-spike-[0-9]*)
+    assert _pf().has_poc_history(tmp_path, "spike") is False
+    # spike-two should have poc history (tag matches poc-spike-two-[0-9]*)
+    assert _pf().has_poc_history(tmp_path, "spike-two") is True
+
+
+def test_root_unit_poc_tag_does_not_match_named_unit_tags(tmp_path):
+    """Regression test: root unit (.) pattern poc-[0-9]* should not match
+    named unit tags like poc-api-20260804-sha7. Only the root unit's own tag
+    should register as poc history."""
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "."}, {"path": "api"}])
+    set_maturity(tmp_path, ".", "prod")
+    set_maturity(tmp_path, "api", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    # Tag only the api unit as poc-built
+    git(tmp_path, "tag", "poc-api-20260804-abc1234")
+
+    # Root unit (.) should not have poc history (no tag matches poc-[0-9]*)
+    assert _pf().has_poc_history(tmp_path, ".") is False
+    # api should have poc history (tag matches poc-api-[0-9]*)
+    assert _pf().has_poc_history(tmp_path, "api") is True
