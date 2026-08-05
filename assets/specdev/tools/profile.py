@@ -161,16 +161,30 @@ def _load_index(root: Path):
     """Reuse check_org_adrs' single fetcher rather than adding a second one, so
     exactly one code path decides which ref the org's policy is read at.
     fetch_index() exits the process on failure; for profiles that must be a
-    fail-closed fallback instead, so SystemExit is caught."""
+    fail-closed fallback instead, so SystemExit is caught (and, since any
+    unhandled exception here must never propagate out of a resolution path
+    that is supposed to be the fail-closed fallback of last resort, so is
+    every other Exception).
+
+    Returns (index_or_None, reason_or_None, adopted). `adopted` distinguishes
+    "governance isn't configured here at all" (legitimately inert -- there is
+    nothing to fail closed FROM) from "governance IS configured but the index
+    couldn't be reached" (a real failure): callers that must stay silent in
+    the first case and refuse to report success in the second need to tell
+    them apart."""
     link = cch.resolve_link(root)
-    if link is None:
-        return None, "governance not adopted (no org.json / registry link)"
+    if link is None or not str(link.get("governance_repo", "")).strip():
+        # A registry/org.json with no governance_repo key at all (e.g. a
+        # migrated unit's org.json, which deliberately carries none) is the
+        # same "not adopted" case as no link at all -- not a crash. Without
+        # this, fetch_index(link) below raises KeyError.
+        return None, "governance not adopted (no org.json / registry link)", False
     if "REPLACE_ME" in json.dumps(link.get("governance_repo", "")):
-        return None, "governance link still holds REPLACE_ME"
+        return None, "governance link still holds REPLACE_ME", False
     try:
-        return cch.fetch_index(link), None
-    except SystemExit:
-        return None, "org ADR index could not be fetched"
+        return cch.fetch_index(link), None, True
+    except (SystemExit, Exception):
+        return None, "org ADR index could not be fetched", True
 
 
 def _max_strict(axes: dict) -> dict:
@@ -226,12 +240,35 @@ def _declared(root: Path, entries, axes) -> dict:
     return out
 
 
+def _for_propagation(entries, axes, declared) -> dict:
+    """`declared`, extended with max-strictness for every unit that declares
+    NOTHING (no org.json, or REPLACE_ME) -- so an omitted classification pulls
+    its dependencies up to strict exactly as a present-but-invalid one does.
+    Property 1 (resolve from EFFECTIVE classification) is a hole otherwise: a
+    unit that simply never adds an org.json contributes nothing to
+    units.effective()'s pull-up, unlike the present-but-invalid path, which
+    correctly injects _max_strict via `declared` itself.
+
+    Used ONLY to seed units.effective()'s propagation. resolve_all's own
+    fail-closed checks (`not declared`, `u not in declared`) must keep reading
+    the ORIGINAL `declared` -- if they read this instead, a repo where NOBODY
+    has adopted governance would be indistinguishable from one where every
+    unit was declared, and the whole-repo 'governance not configured'
+    fail-closed path would never fire."""
+    out = dict(declared)
+    strict = _max_strict(axes)
+    for e in entries:
+        if e["path"] not in out:
+            out[e["path"]] = strict
+    return out
+
+
 def resolve_all(root=".", index=None) -> dict:
     """{unit path: profile} for every registered unit."""
     root = Path(root)
     entries = units.unit_entries(root)
     if index is None:
-        index, why = _load_index(root)
+        index, why, _adopted = _load_index(root)
         if index is None:
             return {e["path"]: _fallback(why) for e in entries}
     axes = index.get("axes", {})
@@ -239,7 +276,7 @@ def resolve_all(root=".", index=None) -> dict:
     if not declared:
         return {e["path"]: _fallback("no unit declares a classification")
                 for e in entries}
-    eff = units.effective(entries, axes, declared)
+    eff = units.effective(entries, axes, _for_propagation(entries, axes, declared))
     out = {}
     for e in entries:
         u = e["path"]
@@ -300,7 +337,12 @@ def has_poc_history(root, unit: str) -> bool:
         try:
             if cch.load_json(rm).get("mode") == "poc":
                 return True
-        except json.JSONDecodeError:
+        except (OSError, ValueError, AttributeError):
+            # ValueError covers json.JSONDecodeError and a bad-encoding
+            # UnicodeDecodeError; AttributeError covers a well-formed but
+            # non-dict run.json (a list/string/number has no .get). None of
+            # these should abort the whole promotion check -- fall through to
+            # the tag signal instead.
             pass
     slug = unit.replace("/", "-").replace(".", "-").strip("-")
     pattern = f"poc-{slug}-[0-9]*" if slug else "poc-[0-9]*"
@@ -321,7 +363,7 @@ def promotion_errors(root=".", base=None, index=None) -> list[str]:
         return []
     root = Path(root)
     if index is None:
-        index, why = _load_index(root)
+        index, why, _adopted = _load_index(root)
         if index is None:
             print(f"NOTE: promotion check skipped — {why}", file=sys.stderr)
             return []
@@ -374,6 +416,27 @@ def main() -> int:
             print("Refusing to report success without checking anything.",
                   file=sys.stderr)
             return 2
+        # An explicit --index is used as-is (offline/tests). Otherwise resolve
+        # the index HERE, before delegating to promotion_errors(), so this CLI
+        # can tell "no unit is being promoted" (real success) apart from
+        # "couldn't check" (fetch/token failure) -- promotion_errors() itself
+        # stays silent-and-empty on either, by design, so it alone can't make
+        # that distinction.
+        if index is None:
+            index, why, adopted = _load_index(Path(args.root))
+            if index is None:
+                if not adopted:
+                    # Governance genuinely isn't configured here -- the same
+                    # inert case check_org_adrs.py treats as OK, not a failure.
+                    print(f"promotion check skipped — {why}.")
+                    return 0
+                print(f"ERROR: promotion check cannot run: {why}. A promotion "
+                      f"check that cannot reach the governance index would "
+                      f"report success without verifying anything.",
+                      file=sys.stderr)
+                print("Refusing to report success without checking anything.",
+                      file=sys.stderr)
+                return 2
         errs = promotion_errors(args.root, base, index)
         for e in errs:
             print(f"ERROR: {e}", file=sys.stderr)
@@ -383,7 +446,26 @@ def main() -> int:
         return 0
 
     if args.cmd == "matrix":
-        print(json.dumps(resolve_all(args.root, index), sort_keys=True))
+        try:
+            out = resolve_all(args.root, index)
+        except Exception as exc:
+            # A gate that cannot resolve profiles must run everything, not
+            # emit nothing: a crash here would leave `matrix`'s
+            # $GITHUB_OUTPUT capture empty (or the step non-zero), and every
+            # downstream `if: fromJSON(...)[unit].KEY` then evaluates
+            # fromJSON('') -- exactly the fail-OPEN failure mode property 3
+            # forbids. Fall back to the strictest profile for every
+            # registered unit instead.
+            print(f"NOTE: profile matrix resolution failed ({exc}) — falling "
+                  f"back to full production governance for every registered "
+                  f"unit", file=sys.stderr)
+            strict = {**STRICTEST, **FLOOR}
+            try:
+                entries = units.unit_entries(args.root)
+            except Exception:
+                entries = [dict(units.ROOT_UNIT)]
+            out = {e["path"]: dict(strict) for e in entries}
+        print(json.dumps(out, sort_keys=True))
         return 0
 
     prof = resolve(args.root, args.unit, index)

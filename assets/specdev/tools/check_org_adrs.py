@@ -74,9 +74,14 @@ def fetch_index(org: dict) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        print(f"ERROR: could not fetch org ADR index from {url}: {e}")
+        # stderr, not stdout: profile.py matrix's $GITHUB_OUTPUT capture reads
+        # this tool's stdout when it falls back through here, and a workflow
+        # doing `echo "profiles=$(... matrix)" >> "$GITHUB_OUTPUT"` corrupts
+        # the output the moment a second line appears on stdout.
+        print(f"ERROR: could not fetch org ADR index from {url}: {e}", file=sys.stderr)
         print("       (once org.json is configured this gate fails closed — "
-              "check governance_repo/ref/path, and set GOVERNANCE_TOKEN for a private repo)")
+              "check governance_repo/ref/path, and set GOVERNANCE_TOKEN for a private repo)",
+              file=sys.stderr)
         sys.exit(1)
 
 

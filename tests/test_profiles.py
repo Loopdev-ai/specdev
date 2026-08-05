@@ -252,6 +252,44 @@ def test_resolve_all_covers_every_registered_unit(tmp_path):
     assert allp["api"]["coverage_gate"] is True
 
 
+def test_omitted_dependent_still_propagates_max_strictness_to_its_dependency(tmp_path):
+    """I1: 'app' depends on 'lib' but declares NO classification at all -- no
+    org.json (legal: org-ADR governance is inert without one). 'lib' must
+    still be pulled up to full strict governance, exactly as it would be if
+    app's classification were PRESENT but invalid -- an omitted classification
+    must not be a lighter-touch stand-in for a declared one, or moving risky
+    code into an unclassified dependent unit becomes a new escape hatch."""
+    lib = make_unit(tmp_path, "lib", {"maturity": "poc", "audience": "internal"})
+    app = {"path": "app", "depends_on": ["lib"]}  # deliberately no org.json
+    write_registry(tmp_path, [lib, app])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    p = _pf().resolve(tmp_path, "lib", index=idx)
+    assert p["per_wave_qa"] is True
+    assert p["coverage_gate"] is True
+    assert p["traceability"] is True
+    assert p["spec_bar"] == "full"
+
+
+def test_no_unit_declaring_anything_still_fails_closed_for_the_whole_repo(
+        tmp_path, capsys):
+    """Guardrail for the I1 fix above: injecting max-strictness for omitted
+    units to seed propagation must not make resolve_all() treat a repo where
+    NOBODY declares a classification as if every unit were declared -- that
+    must still take the whole-repo 'governance not configured' fail-closed
+    path (one NOTE, not a per-unit one)."""
+    lib = {"path": "lib"}
+    app = {"path": "app", "depends_on": ["lib"]}
+    write_registry(tmp_path, [lib, app])
+    idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
+    allp = _pf().resolve_all(tmp_path, index=idx)
+    assert allp["lib"] == {**_pf().STRICTEST, **_pf().FLOOR}
+    assert allp["app"] == {**_pf().STRICTEST, **_pf().FLOOR}
+    err = capsys.readouterr().err
+    assert "no unit declares a classification" in err, (
+        "a repo where NOBODY declares anything must take the whole-repo "
+        "fail-closed path, not the per-unit injected-strictness path")
+
+
 def run_cli(tmp_path, *args):
     return subprocess.run(
         [sys.executable, str(PROFILE_PATH), "--root", str(tmp_path), *args],
@@ -434,6 +472,58 @@ def test_promotion_check_cli_refuses_empty_changed_from(tmp_path):
     assert "compares nothing" in r.stderr or "verifying nothing" in r.stderr.lower()
 
 
+def test_promotion_check_cli_refuses_when_index_unavailable(
+        tmp_path, monkeypatch, capsys):
+    """C2 regression: governance IS adopted (the registry names a
+    governance_repo) but the index can't be fetched -- e.g. a private repo
+    with no GOVERNANCE_TOKEN. The CLI must refuse (exit 2, no success
+    message), not silently report success having checked nothing."""
+    init_repo(tmp_path)
+    write_registry(tmp_path, [{"path": "spike"}])
+    set_maturity(tmp_path, "spike", "poc")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    git(tmp_path, "commit", "--allow-empty", "-q", "-m", "noop")
+
+    mod = _pf()
+
+    def _boom(link):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(mod.cch, "fetch_index", _boom)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["profile.py", "--root", str(tmp_path), "promotion-check",
+         "--changed-from", base])
+    rc = mod.main()
+    out = capsys.readouterr()
+    assert rc == 2, f"expected exit 2, got {rc}: {out.err}"
+    assert "promotion check ok" not in out.out, (
+        "must not print the success message when the index is unreachable")
+    assert "cannot run" in out.err or "refus" in out.err.lower()
+
+
+def test_promotion_check_cli_stays_inert_when_governance_not_adopted(
+        tmp_path, capsys):
+    """A repo that has never adopted org governance at all (no registry, no
+    org.json) must stay inert on promotion-check -- this is a DIFFERENT case
+    from the C2 fix above ('adopted but unreachable') and must not start
+    failing every PR for repos that simply don't use org governance."""
+    init_repo(tmp_path)
+    (tmp_path / "readme.md").write_text("x", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "init")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    git(tmp_path, "commit", "--allow-empty", "-q", "-m", "noop")
+
+    r = run_cli(tmp_path, "promotion-check", "--changed-from", base)
+    assert r.returncode == 0, f"expected exit 0, got {r.returncode}: {r.stderr}"
+    assert "promotion check ok" not in r.stdout, (
+        "an unadopted repo should report 'skipped', not the same success "
+        "message used for a real, checked, clean promotion")
+
+
 def test_poc_tag_does_not_match_unit_name_prefixes(tmp_path):
     """Regression test: poc-spike-* should not match poc-spike-two-*.
     Only spike-two should be detected as poc-built."""
@@ -469,6 +559,25 @@ def test_root_unit_poc_tag_does_not_match_named_unit_tags(tmp_path):
     assert _pf().has_poc_history(tmp_path, ".") is False
     # api should have poc history (tag matches poc-api-[0-9]*)
     assert _pf().has_poc_history(tmp_path, "api") is True
+
+
+def test_has_poc_history_falls_through_on_non_dict_run_json(tmp_path):
+    """Minor C: a syntactically valid but non-dict run.json (a JSON list)
+    raises AttributeError on .get(), not json.JSONDecodeError. That must fall
+    through to the tag signal, not abort the whole promotion check."""
+    d = tmp_path / "spike" / ".specdev"
+    d.mkdir(parents=True)
+    (d / "run.json").write_text("[1, 2, 3]", encoding="utf-8")
+    assert _pf().has_poc_history(tmp_path, "spike") is False
+
+
+def test_has_poc_history_falls_through_on_unreadable_run_json(tmp_path):
+    """A run.json that can't even be decoded as UTF-8 must not crash the
+    promotion check either -- fall through to the tag signal."""
+    d = tmp_path / "spike" / ".specdev"
+    d.mkdir(parents=True)
+    (d / "run.json").write_bytes(b"\xff\xfe\x00\xff not valid utf-8")
+    assert _pf().has_poc_history(tmp_path, "spike") is False
 
 
 WF = ROOT / "assets" / "workflows" / "org-adr-check.yml"
@@ -918,15 +1027,28 @@ def test_gen_traceability_does_not_shadow_stdlib_profile():
     """Regression: gen_traceability must not register our sibling profile.py as
     sys.modules['profile'], shadowing the Python standard library's profile
     module (the deterministic profiler). The fix loads the sibling under an
-    unambiguous name (_specdev_profile) instead."""
-    gt = load_gt()
+    unambiguous name (_specdev_profile) instead.
 
-    # After loading gen_traceability, sys.modules['profile'] should either
-    # not exist, or should be the stdlib module (no resolve_all attribute)
+    Minor A: the original version of this test called only load_gt(), which
+    merely imports gen_traceability.py -- it never calls _load_profile_module(),
+    which is invoked lazily from inside main()'s --all-units branch, not at
+    import time. So the assertion below was unreachable: sys.modules['profile']
+    was never touched by load_gt() either way, bug or no bug. This version
+    calls _load_profile_module() directly -- the actual code path that used to
+    contain the bare `import profile` -- so it exercises the real behaviour."""
+    gt = load_gt()
+    sys.modules.pop("profile", None)  # clean slate: prove THIS call's effect
+
+    mod = gt._load_profile_module()
+
+    assert mod.__name__ == "_specdev_profile", (
+        "the sibling profile.py must be loaded under the unambiguous name "
+        "'_specdev_profile', not as stdlib 'profile'")
     cached_profile = sys.modules.get("profile")
-    if cached_profile is not None:
-        assert not hasattr(cached_profile, "resolve_all"), \
-            "sys.modules['profile'] is our custom module (has resolve_all)"
+    assert cached_profile is None or not hasattr(cached_profile, "resolve_all"), (
+        "sys.modules['profile'] was overwritten with our custom module (has "
+        "resolve_all) -- this shadows the stdlib profiler for every later "
+        "importer in the process")
 
 
 # ---- Task 10: Agent contracts — smoke mode and charter mode -----
@@ -971,6 +1093,55 @@ def test_qa_verifier_smoke_mode_keeps_the_credential_floor():
     assert "zero tests" in smoke_section or "collects zero" in smoke_section or \
            ("red" in smoke_section and "test" in smoke_section), \
         "smoke mode must state that zero tests result in RED verdict"
+
+
+def test_qa_verifier_smoke_mode_is_keyed_off_per_wave_qa_not_coverage_gate():
+    """I3 regression: smoke mode (one qa-verifier run at the end, instead of
+    one per wave) is governed by `per_wave_qa`, not `coverage_gate`. A table
+    setting coverage_gate: false, per_wave_qa: true, traceability: true is
+    legal (per-wave QA still runs, just without a coverage threshold) and
+    must NOT put qa-verifier into smoke mode -- smoke mode also skips
+    --check-gaps, which post-dev-qa.yml would still run, failing the PR gate
+    on a build qa-verifier reported green."""
+    text = (AGENTS / "qa-verifier.md").read_text(encoding="utf-8")
+    header_match = re.search(r"^##\s+Smoke mode.*$", text, re.MULTILINE)
+    assert header_match, "smoke mode header not found"
+    header = header_match.group(0)
+    assert "per_wave_qa" in header, (
+        "the smoke-mode header must key off per_wave_qa, the key that "
+        "actually governs whether QA runs per-wave or once at the end")
+    assert "coverage_gate" not in header, (
+        "coverage_gate governs the coverage threshold, not whether smoke "
+        "mode is entered -- it must not appear in the smoke-mode header")
+
+    body_match = re.search(r"^##\s+Smoke mode.*?\n(.*?)(?=^##|\Z)", text,
+                           re.MULTILINE | re.DOTALL)
+    body = body_match.group(1)
+    assert "when `per_wave_qa` is false you are in" in body.lower() or \
+           "per_wave_qa` is false" in body, (
+        "the smoke-mode body must state that per_wave_qa false is the "
+        "trigger for smoke mode")
+    assert "coverage_gate` is false" in body or \
+           "when `coverage_gate` is false" in body.lower(), (
+        "skipping the coverage threshold must be keyed off coverage_gate "
+        "explicitly, independent of the smoke-mode trigger")
+    assert "traceability` is false" in body or \
+           "when `traceability` is false" in body.lower(), (
+        "skipping --check-gaps must be keyed off traceability explicitly, "
+        "independent of the smoke-mode trigger")
+
+
+def test_skill_smoke_mode_reference_keys_off_per_wave_qa():
+    """I3: SKILL.md's line telling the coordinator which key qa-verifier needs
+    to detect smoke mode must name per_wave_qa, not coverage_gate."""
+    text = SKILL.read_text(encoding="utf-8")
+    i = text.index("to know whether it is in smoke mode")
+    line_start = text.rfind("\n", 0, i) + 1
+    line_end = text.index("\n", i)
+    line = text[line_start:line_end]
+    assert "per_wave_qa" in line, (
+        f"the smoke-mode trigger key referenced on this line must be "
+        f"per_wave_qa: {line!r}")
 
 
 def test_component_builder_documents_charter_mode():

@@ -71,7 +71,8 @@ containment are not ceremony.
 
 **Pass the profile to every subagent you dispatch.** `component-builder` needs
 `spec_bar` to know whether to write REQ-driven tests or a smoke test;
-`qa-verifier` needs `coverage_gate` to know whether it is in smoke mode.
+`qa-verifier` needs `per_wave_qa` to know whether it is in smoke mode, and
+`coverage_gate`/`traceability` to know which per-wave checks to skip within it.
 
 **A poc is never promoted in place.** When a spike proves out, reverse-map it
 with the `spec-explorer` agent and rebuild it as a new `dev`/`prod` unit
@@ -298,13 +299,16 @@ python .specdev/tools/adr.py lint                    # ADR quality gate (mode au
 python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shortlist check for one ADR
 ```
 
-In a monorepo add `--root <unit>` to each (the tools stay at the repo root),
-and:
+In a monorepo add `--root <unit>` to each (the tools stay at the repo root;
+**`profile.py` is the one exception** — it resolves against the repo-level
+registry to honour effective classification, so give it `--unit <u>` instead
+of `--root <u>`; `--root` into a unit directory has no registry to resolve
+against), and:
 
 ```
 python .specdev/tools/units.py list                  # the repo's governed units
 python .specdev/tools/units.py check                 # registry drift + validation
-python .specdev/tools/profile.py --root <u> show    # one unit's resolved profile
+python .specdev/tools/profile.py show --unit <u>     # one unit's resolved profile
 python .specdev/tools/check_org_adrs.py --unit <u>   # one unit's org-ADR gate
 python .specdev/tools/adr.py lint --unit <u>         # one unit's ADR quality gate
 python .specdev/tools/units.py migrate --unit <path> # single-root -> multi-unit

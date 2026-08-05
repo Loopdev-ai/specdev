@@ -46,7 +46,9 @@ jobs:
       # resolved file on disk for a later step to tamper with.
       - id: p
         name: Resolve governance profiles
-        run: echo "profiles=$(python .specdev/tools/profile.py matrix)" >> "$GITHUB_OUTPUT"
+        run: |
+          p="$(python .specdev/tools/profile.py matrix)" || exit 1
+          echo "profiles=$p" >> "$GITHUB_OUTPUT"
 
   validate:
     needs: discover

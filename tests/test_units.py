@@ -847,6 +847,25 @@ def test_migrate_moves_unit_scoped_artifacts(tmp_path):
         assert k not in org, f"{k} must move to the registry, not stay on the unit"
 
 
+def test_migrate_moves_charter_md(tmp_path):
+    """Minor B: a poc unit's filled-in CHARTER.md must move with the rest of
+    the unit-scoped artifacts. Before this fix, UNIT_SCOPED omitted it, so
+    `migrate` stranded CHARTER.md at the repo root and charter-mode Gate 1
+    then failed with 'not found' on the migrated unit."""
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    (d / "CHARTER.md").write_text("# Charter\n", encoding="utf-8")
+    (d / "org.json").write_text(json.dumps({
+        "governance_repo": "faro/governance", "ref": "main",
+        "classification": {"maturity": "poc"},
+    }), encoding="utf-8")
+
+    un.migrate(tmp_path, "spike")
+
+    assert (tmp_path / "spike" / ".specdev" / "CHARTER.md").exists()
+    assert not (d / "CHARTER.md").exists()
+
+
 def test_migrate_result_passes_check(tmp_path):
     """The whole point: a migrated repo must be a valid multi-unit repo."""
     d = tmp_path / ".specdev"

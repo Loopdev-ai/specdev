@@ -39,10 +39,10 @@ say so rather than inventing one.
 On green, keep it to a few lines. On red, include only the excerpts needed to
 fix — not whole logs.
 
-## Smoke mode (`per_wave_qa: false` / `coverage_gate: false`)
+## Smoke mode (`per_wave_qa: false`)
 
 The coordinator passes the unit's resolved governance profile with the
-dispatch. When `coverage_gate` is false you are in **smoke mode**, which runs
+dispatch. When `per_wave_qa` is false you are in **smoke mode**, which runs
 once at the end of the build rather than after every wave.
 
 In smoke mode:
@@ -53,9 +53,17 @@ In smoke mode:
   as working when it never executed.
 - **Run the gitleaks secret scan.** Unconditional; it is part of the floor and
   the profile cannot switch it off.
-- **Skip** the coverage threshold and `gen_traceability.py --check-gaps`. A
+
+These two keys are independent of smoke mode and of each other — key each
+behaviour off its OWN profile key, not off `per_wave_qa`:
+
+- **Skip the coverage threshold** when `coverage_gate` is false.
+- **Skip `gen_traceability.py --check-gaps`** when `traceability` is false. A
   charter-bar unit has no `REQ-###` IDs for `--check-gaps` to join on, so
   running it would fail on absence rather than on a real gap.
+
+A profile can set `coverage_gate: false` and `traceability: true` (or vice
+versa) independently of `per_wave_qa` — do not assume all three move together.
 
 Everything else about your contract is unchanged: return only actionable
 failures, never full test output.

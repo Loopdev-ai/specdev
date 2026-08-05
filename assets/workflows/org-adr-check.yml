@@ -46,6 +46,13 @@ jobs:
       - name: Reject in-place promotion of a poc-built unit
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # For a PRIVATE governance repo the default GITHUB_TOKEN cannot read
+          # across repos — create a read-only PAT, save it as the
+          # GOVERNANCE_TOKEN secret, and it will be picked up here. Without
+          # it, the index can't be fetched and profile.py's promotion-check
+          # refuses to report success rather than silently checking nothing.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOVERNANCE_TOKEN: ${{ secrets.GOVERNANCE_TOKEN }}
         run: python .specdev/tools/profile.py promotion-check --changed-from "$BASE"
       - id: m
         name: Enumerate ALL units (never filtered — see header)
