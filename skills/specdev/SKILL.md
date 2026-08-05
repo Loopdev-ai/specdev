@@ -40,6 +40,44 @@ Run `python .specdev/tools/units.py list`.
   level. `check_org_adrs.py` prints the escalation and the dependent that caused
   it. Judge against the effective value.
 
+## Then resolve the governance profile
+
+Run `python .specdev/tools/profile.py show --unit <unit>` (omit `--unit` for a
+single-root repo). It prints the unit's resolved profile — how much of the
+pipeline actually runs. Hold it alongside the spec and the component DAG, and
+record it in `BUILD.md`.
+
+The profile is resolved from the unit's **effective** classification, so a
+`poc` unit that a `prod` unit depends on resolves to the `prod` profile. You do
+not get to infer it from the branch name or from `org.json` — run the tool.
+
+| Key | When false / `charter` |
+|---|---|
+| `spec_bar` | `charter` → write `.specdev/CHARTER.md`, not `spec.md`; no `REQ-###` IDs |
+| `spec_pr` | skip the Spec PR entirely; the charter commits onto the `poc/**` branch |
+| `adrs` | do not invoke the `adr` skill; author no ADRs |
+| `per_wave_qa` | no `qa-verifier` between waves — one smoke-mode run at the end |
+| `coverage_gate` | no coverage threshold |
+| `traceability` | no matrix, no `--check-gaps`, no `Refs: REQ-###` trailers |
+| `compliance` | no control-framework evidence |
+| `prod_promotion` | `deploy-poc` only; never staging→prod |
+
+**The floor is not negotiable and is not in the table.** Whatever the profile
+says, these always apply: the unit scope check, the gitleaks secret scan, SAST,
+`arch_config.py validate`'s `secret_ref` rule, org ADRs that target `poc`, at
+least one passing smoke test, and a filled-in `## Findings` section in
+`BUILD.md` before a poc build is finished. Credential protection and
+containment are not ceremony.
+
+**Pass the profile to every subagent you dispatch.** `component-builder` needs
+`spec_bar` to know whether to write REQ-driven tests or a smoke test;
+`qa-verifier` needs `coverage_gate` to know whether it is in smoke mode.
+
+**A poc is never promoted in place.** When a spike proves out, reverse-map it
+with the `spec-explorer` agent and rebuild it as a new `dev`/`prod` unit
+through the full pipeline. `org-adr-check` rejects a PR that raises a
+poc-built unit's maturity.
+
 ## The pipeline (do these in order)
 
 1. **Detect mode.** New product → spec from scratch. Extending an existing one →
@@ -50,11 +88,13 @@ Run `python .specdev/tools/units.py list`.
    this thread yourself — that is the explorer's job to summarize.
 2. **Brainstorm.** Socratic Q&A to pin users, problem, scope, out-of-scope.
    Don't write the spec until the problem is unambiguous.
-3. **Spec (Gate 1 artifact).** Fill `.specdev/spec.md`: assign `FEAT-###`, one
+3. **Spec (Gate 1 artifact).** **(`spec_bar: charter` → write `.specdev/CHARTER.md` instead; skip the rest of this step.)**
+   Fill `.specdev/spec.md`: assign `FEAT-###`, one
    `REQ-###` per requirement, each with a testable **Acceptance** line, and a
    concrete **Out of Scope**. Use `/specdev:new-feature` to start this on a
    `spec/<feature>` branch.
-4. **Architecture.** Record every decision by invoking the **`adr`** skill —
+4. **Architecture.** **(`adrs: false` → skip; still dispatch `adr-checker`, which is floor.)**
+   Record every decision by invoking the **`adr`** skill —
    it runs the decision interview, allocates the id, lints the result, and
    proves the ADR does not conflict with an already-accepted one. **Do not
    hand-write a file into `.specdev/adr/`**: a hand-written ADR skips the
@@ -81,7 +121,8 @@ Run `python .specdev/tools/units.py list`.
    local ADR documenting it plus a `superseded-by-local` manifest entry. Never
    proceed silently past a violation, and never read org ADR bodies into this
    thread — that is the checker's job.
-5. **Open the Spec PR.** Before opening it, the **`adr-checker`** agent must
+5. **Open the Spec PR.** **(`spec_pr: false` → skip this step entirely.)**
+   Before opening it, the **`adr-checker`** agent must
    be green (when org governance is configured) — a spec that contradicts an
    applicable org ADR is fixed *before* review, not during. Then
    `spec-validate.yml` runs `validate_spec.py` and `org-adr-check.yml` runs
@@ -100,7 +141,8 @@ Run `python .specdev/tools/units.py list`.
      its component row + spec section + acceptance criteria; it enforces TDD and
      `Refs: REQ-###` trailers and returns a summary you record in `BUILD.md`.
    - **Per-wave QA gate (MANDATORY): after EACH wave, dispatch the
-     `qa-verifier` agent — do not proceed until it returns green.** QA happens
+     `qa-verifier` agent — do not proceed until it returns green.** **(`per_wave_qa: false` → one smoke-mode `qa-verifier` at the end instead.)**
+     QA happens
      every wave, not only before the PR. A red wave goes back to a builder.
    - **Per-wave traceability gate: after each wave, the qa-verifier's
      `gen_traceability.py --check-gaps` must pass** — every `REQ-###` built that
@@ -138,7 +180,8 @@ Run `python .specdev/tools/units.py list`.
    run `deploy.py preflight --env staging` and `--env production` until green.
    The `preflight` job in `deploy.yml` enforces this — a merge cannot deploy
    with an unresolved spec, so resolve it before opening the Impl PR.
-9. **Traceability is automatic.** `traceability.yml` regenerates the matrix and
+9. **Traceability is automatic.** **(`traceability: false` → skip.)**
+   `traceability.yml` regenerates the matrix and
    commits it beside `BUILD.md`. Never hand-edit `.specdev/traceability.md`.
 
 ## Context discipline (strict coordinator)

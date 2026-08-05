@@ -977,3 +977,29 @@ def test_component_builder_documents_charter_mode():
     text = (AGENTS / "component-builder.md").read_text(encoding="utf-8")
     assert "charter" in text.lower()
     assert "smoke test" in text.lower()
+
+
+# ---- Task 11: SKILL.md — resolve and honour the governance profile ----
+
+SKILL = ROOT / "skills" / "specdev" / "SKILL.md"
+
+
+def test_skill_resolves_the_profile_before_the_pipeline():
+    text = SKILL.read_text(encoding="utf-8")
+    assert "profile.py show" in text
+    i_profile = text.index("profile.py show")
+    i_pipeline = text.index("## The pipeline")
+    assert i_profile < i_pipeline, \
+        "the profile must be resolved before the pipeline steps, not inside them"
+
+
+@pytest.mark.parametrize("key", ["spec_bar", "spec_pr", "adrs",
+                                 "per_wave_qa", "traceability"])
+def test_skill_documents_each_profile_branch(key):
+    assert key in SKILL.read_text(encoding="utf-8")
+
+
+def test_skill_states_the_floor_is_not_negotiable():
+    text = SKILL.read_text(encoding="utf-8").lower()
+    assert "floor" in text
+    assert "findings" in text
