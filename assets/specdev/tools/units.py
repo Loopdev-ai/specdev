@@ -435,7 +435,7 @@ def write_rollup_index(root, rel_artifact: str, title: str) -> Path | None:
 
 
 UNIT_SCOPED = ("spec.md", "components.md", "traceability.md", "BUILD.md",
-               "run.json", "org.json", "architecture-config.json",
+               "CHARTER.md", "run.json", "org.json", "architecture-config.json",
                "deploy.profile.json", "adr", "compliance", "specs", "deploy")
 REPO_SCOPED = ("tools", "units.json", "ci.json")
 

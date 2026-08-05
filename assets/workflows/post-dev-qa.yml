@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       units: ${{ steps.m.outputs.units }}
+      profiles: ${{ steps.p.outputs.profiles }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,6 +39,14 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BASE")" >> "$GITHUB_OUTPUT"
+      # Resolve every unit's governance profile ONCE per run; legs read their
+      # own from this output. Keeps it to one index fetch and leaves no
+      # resolved file on disk for a later step to tamper with.
+      - id: p
+        name: Resolve governance profiles
+        run: |
+          p="$(python .specdev/tools/profile.py matrix)" || exit 1
+          echo "profiles=$p" >> "$GITHUB_OUTPUT"
 
   qa:
     needs: discover
@@ -85,6 +94,7 @@ jobs:
       # traceability gap check below (every REQ has a test) as the real
       # requirement-coverage gate.
       - name: Coverage gate — ${{ matrix.unit }}
+        if: fromJSON(needs.discover.outputs.profiles)[matrix.unit].coverage_gate
         run: |
           echo "::error title=Unwired QA gate::Replace the coverage threshold check in .github/workflows/post-dev-qa.yml"
           echo "Prefer BRANCH coverage; e.g. pytest --cov --cov-fail-under=80"
@@ -131,6 +141,7 @@ jobs:
       # shipped feature's test fails here too, not just the current feature's.
       - name: Traceability — every requirement has a test — ${{ matrix.unit }}
         working-directory: .
+        if: fromJSON(needs.discover.outputs.profiles)[matrix.unit].traceability
         run: python .specdev/tools/gen_traceability.py --check-gaps --root '${{ matrix.unit }}'
 
   # The single required status check. Matrix leg names are dynamic, so branch

@@ -20,7 +20,7 @@ orchestrator keeps only your final summary, so it must be self-contained.
 If any of these are missing or ambiguous, stop and say what you need — do not
 guess at scope or touch components you weren't assigned.
 
-## How you work
+## How you work (`spec_bar: full`)
 
 1. Write tests first (RED). **Every `REQ-###` in your contract must get at least
    one test**, with the ID in the test name or a comment so traceability links
@@ -51,3 +51,23 @@ guess at scope or touch components you weren't assigned.
 
 Do not paste file contents or full test output unless something failed and the
 detail is needed to act.
+
+## Charter mode (`spec_bar: charter`)
+
+The coordinator passes the unit's resolved governance profile with the
+dispatch. When `spec_bar` is `charter` you are building a **spike**: there is
+no `spec.md` and no `REQ-###` IDs, only `.specdev/CHARTER.md` with the
+questions the spike must answer. The instructions below *replace* the standard
+"How you work" section for this build.
+
+In charter mode:
+
+- **Write one smoke test first, then build.** Not red-green per requirement —
+  there are no requirements to drive it. The smoke test proves the thing runs.
+- **Omit `Refs: REQ-###` commit trailers.** There is no REQ to reference and
+  no traceability matrix being generated.
+- **Report against the charter's questions,** not against acceptance criteria:
+  say what the spike answered and what it did not.
+
+The code is disposable — it is reverse-mapped and rebuilt, never promoted — so
+prefer the shortest path to an answer over structure you expect to keep.

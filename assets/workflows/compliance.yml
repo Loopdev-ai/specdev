@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       units: ${{ steps.m.outputs.units }}
+      profiles: ${{ steps.p.outputs.profiles }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,6 +43,14 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: echo "units=$(python .specdev/tools/units.py matrix --changed-from "$BASE")" >> "$GITHUB_OUTPUT"
+      # Resolve every unit's governance profile ONCE per run; legs read their
+      # own from this output. Keeps it to one index fetch and leaves no
+      # resolved file on disk for a later step to tamper with.
+      - id: p
+        name: Resolve governance profiles
+        run: |
+          p="$(python .specdev/tools/profile.py matrix)" || exit 1
+          echo "profiles=$p" >> "$GITHUB_OUTPUT"
 
   controls:
     needs: discover
@@ -66,7 +75,7 @@ jobs:
       # needs the checked-out workspace, absent when job conditions are
       # evaluated.
       - name: Control coverage — ${{ matrix.unit }}
-        if: hashFiles(format('{0}/.specdev/compliance/compliance.config.json', matrix.unit)) != ''
+        if: hashFiles(format('{0}/.specdev/compliance/compliance.config.json', matrix.unit)) != '' && fromJSON(needs.discover.outputs.profiles)[matrix.unit].compliance
         run: python .specdev/tools/gen_compliance.py --check-gaps --root '${{ matrix.unit }}'
 
       - name: Regenerate matrix + SoA (artifact) — ${{ matrix.unit }}

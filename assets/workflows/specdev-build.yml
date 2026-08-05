@@ -621,6 +621,13 @@ jobs:
       # unit+FEAT, so everything inside the window belongs to this same logical
       # build, and --author still excludes anyone else's work. The record says
       # which anchor was used so a reader never has to guess.
+      # In `poc` mode, build_outcome.py verify() also requires BUILD.md's
+      # '## Findings' section to be filled in (see findings_problems() in
+      # that module) — a spike's deliverable is what it taught you, not the
+      # code, which is reverse-mapped and rebuilt rather than promoted. That
+      # check lives in the tool, not here, because this step's `run:` only
+      # dispatches to it and interprets the exit code; the verdict itself
+      # (and the reason text below in `problems`) is assembled in Python.
       - id: verify
         name: Assert the mode's terminal state was reached
         if: always()

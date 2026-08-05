@@ -304,6 +304,40 @@ A repo that cannot conform records a local ADR plus a justified
 `superseded-by-local` manifest entry — visible to humans at PR review, never
 silent.
 
+## Governance profiles (the poc fast path)
+
+Classification does more than scope org ADRs: each `maturity` value in
+[governance/classification.json](governance/classification.json) carries a
+**profile** declaring how much of the pipeline runs. A `poc` unit writes a
+`CHARTER.md` instead of a REQ-level spec, skips the Spec PR, authors no ADRs,
+runs one smoke-mode QA at the end instead of per-wave gates, and never
+promotes to prod. A `prod` unit runs everything.
+
+The table lives in the **governance repo** and travels inside `adr/index.json`,
+so a product repo cannot grant itself a discount — the dial belongs to the org.
+Resolve a unit's profile with:
+
+```
+python .specdev/tools/profile.py show --unit <unit>
+```
+
+Three properties keep the fast path from becoming an escape hatch:
+
+- **Resolution uses *effective* classification.** A `poc` unit that a `prod`
+  unit depends on resolves to the **prod** profile. Moving risky code into a
+  spike unit buys nothing.
+- **It fails closed.** Unconfigured governance, an unreachable index or an
+  unparseable value all resolve to full production governance. Undeclared
+  governance is never a discount.
+- **The floor is non-overridable.** The scope check, gitleaks, SAST,
+  `arch_config.py`'s `secret_ref` rule, poc-scoped org ADRs, one passing smoke
+  test, and a filled-in `## Findings` section are applied *after* the table and
+  cannot be switched off by it. Credential protection is not ceremony.
+
+**A poc is never promoted in place.** It is reverse-mapped with `spec-explorer`
+and rebuilt as a new unit; `org-adr-check` rejects a PR that raises a poc-built
+unit's maturity.
+
 ## Writing ADRs
 
 `/specdev:adr` (skill: `adr`) authors both kinds of decision record — local

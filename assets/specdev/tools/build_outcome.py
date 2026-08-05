@@ -11,7 +11,11 @@ actually reached":
 
     prod: an implementation BRANCH for this unit+FEAT was pushed by this run,
           carrying commits beyond the base, with a prepared PR body
-    poc:  the same branch — the poc environment deploys from it directly
+    poc:  the same branch — the poc environment deploys from it directly —
+          PLUS a filled-in '## Findings' section in BUILD.md. A poc's actual
+          deliverable is not the code (it is reverse-mapped with the
+          spec-explorer agent and rebuilt as a new unit, never promoted); it
+          is what the spike taught. See findings_problems().
 
 plus a cheap independent check that the run left a real checkpoint behind
 rather than the shipped template.
@@ -130,6 +134,51 @@ def checkpoint_problems(root=".") -> list[str]:
         return [f"{p.as_posix()} is still the stock template (contains "
                 f"{', '.join(repr(m) for m in found)}). The run did not "
                 f"check point any real state, so it is not resumable."]
+    return []
+
+
+def findings_problems(root=".") -> list[str]:
+    """Reasons a poc build's Findings are missing. Empty list means it isn't.
+
+    A poc's actual deliverable is not the code — that is reverse-mapped with
+    the spec-explorer agent and rebuilt as a new unit, never promoted — it is
+    what the spike taught. So the '## Findings' section of BUILD.md must
+    exist and be filled in before a poc build can reach its terminal state.
+    Blockquote lines (the template's own explanatory '>' text), blank lines,
+    and unfilled '<...>' placeholders are discarded before judging whether
+    anything real was written, matching the discipline CHARTER.md validation
+    already applies to its own placeholders."""
+    p = checkpoint_path(root)
+    if not p.exists():
+        return [f"{p.as_posix()} does not exist - no Findings were recorded."]
+    text = p.read_text(encoding="utf-8-sig", errors="replace")
+
+    m = re.search(r"^##\s+Findings\s*$(.*?)(?=^##\s+\S|\Z)", text,
+                  re.M | re.S)
+    if not m:
+        return [f"{p.as_posix()} has no '## Findings' section. A poc build's "
+                f"deliverable is what it taught you; record it before "
+                f"finishing."]
+
+    survives = []
+    for line in m.group(1).splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(">"):
+            continue
+        # A line still carrying an unfilled <...> placeholder is discarded
+        # WHOLE, not just the bracketed span — "- **What we learned:**
+        # <the answer>" must not count as real content just because the
+        # label text sits outside the angle brackets.
+        if re.search(r"<[^>\n]+>", stripped):
+            continue
+        survives.append(stripped)
+    if not survives:
+        return [f"{p.as_posix()} has a '## Findings' section but it is empty "
+                f"(blank, quoted, or still just <placeholders>). A poc "
+                f"build's deliverable is what it taught you; record it "
+                f"before finishing."]
     return []
 
 
@@ -427,6 +476,14 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
     warnings: list[str] = []
     problems += checkpoint_problems(root)
     problems += pr_body_problems(root)
+    if mode == "poc":
+        # A poc's actual deliverable is not the code — it is reverse-mapped
+        # with the spec-explorer agent and rebuilt as a new unit, never
+        # promoted — it is what the spike taught. This is part of the
+        # TERMINAL STATE, not a separate advisory check: deploy-poc gates on
+        # `ok`, and an advisory step could not have stopped it. `prod` is
+        # completely unaffected — a prod unit has no Findings requirement.
+        problems += findings_problems(root)
 
     authors = ([author] if isinstance(author, str) else list(author or []))
     authors = [a.strip() for a in authors if str(a).strip()]
@@ -453,7 +510,9 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
 
     required = (f"implementation branch '{branch['ref']}' pushed with commits "
                 f"beyond '{base}', and a prepared PR body — a human opens the "
-                f"PR" + (" (poc deploys from this branch directly)"
+                f"PR" + (" (poc deploys from this branch directly), and "
+                         f"BUILD.md's '## Findings' section filled in — a "
+                         f"spike's deliverable is what it taught you"
                          if mode == "poc" else ""))
     return {
         "ok": not problems,

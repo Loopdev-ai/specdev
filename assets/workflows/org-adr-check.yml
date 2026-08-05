@@ -30,11 +30,30 @@ jobs:
       units: ${{ steps.m.outputs.units }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The promotion check diffs org.json against the PR base via
+          # `git show <base>:...`, which cannot resolve in a shallow clone.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
       - name: Validate the unit registry
         run: python .specdev/tools/units.py check
+      # A poc unit is never promoted in place — it is reverse-mapped and
+      # rebuilt. This lives here, not in units.py, because the maturity RANKS
+      # come from the org index: an org that renames its maturity values keeps
+      # a working rule instead of a silently inert one.
+      - name: Reject in-place promotion of a poc-built unit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # For a PRIVATE governance repo the default GITHUB_TOKEN cannot read
+          # across repos — create a read-only PAT, save it as the
+          # GOVERNANCE_TOKEN secret, and it will be picked up here. Without
+          # it, the index can't be fetched and profile.py's promotion-check
+          # refuses to report success rather than silently checking nothing.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOVERNANCE_TOKEN: ${{ secrets.GOVERNANCE_TOKEN }}
+        run: python .specdev/tools/profile.py promotion-check --changed-from "$BASE"
       - id: m
         name: Enumerate ALL units (never filtered — see header)
         run: echo "units=$(python .specdev/tools/units.py matrix --all)" >> "$GITHUB_OUTPUT"
