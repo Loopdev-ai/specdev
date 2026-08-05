@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "assets" / "specdev" / "tools" / "profile.py"
@@ -449,3 +450,21 @@ def test_root_unit_poc_tag_does_not_match_named_unit_tags(tmp_path):
     assert _pf().has_poc_history(tmp_path, ".") is False
     # api should have poc history (tag matches poc-api-[0-9]*)
     assert _pf().has_poc_history(tmp_path, "api") is True
+
+
+WF = ROOT / "assets" / "workflows" / "org-adr-check.yml"
+
+
+def test_org_adr_check_runs_the_promotion_check():
+    text = WF.read_text(encoding="utf-8")
+    assert "profile.py promotion-check" in text, (
+        "org-adr-check must enforce the no-in-place-promotion rule")
+
+
+def test_org_adr_check_discover_has_full_history():
+    """git show <base>:... cannot resolve in a shallow clone, so the promotion
+    check would pass vacuously without fetch-depth: 0."""
+    doc = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    steps = doc["jobs"]["discover"]["steps"]
+    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout"))
+    assert checkout.get("with", {}).get("fetch-depth") == 0
