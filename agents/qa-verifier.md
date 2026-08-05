@@ -38,3 +38,24 @@ say so rather than inventing one.
 
 On green, keep it to a few lines. On red, include only the excerpts needed to
 fix — not whole logs.
+
+## Smoke mode (`per_wave_qa: false` / `coverage_gate: false`)
+
+The coordinator passes the unit's resolved governance profile with the
+dispatch. When `coverage_gate` is false you are in **smoke mode**, which runs
+once at the end of the build rather than after every wave.
+
+In smoke mode:
+
+- **Run the test suite** and assert **at least one test was collected and
+  passed**. Report the count. A suite that collects zero tests is a RED
+  verdict, not a green one — "no tests ran" is exactly how a poc gets reported
+  as working when it never executed.
+- **Run the gitleaks secret scan.** Unconditional; it is part of the floor and
+  the profile cannot switch it off.
+- **Skip** the coverage threshold and `gen_traceability.py --check-gaps`. A
+  charter-bar unit has no `REQ-###` IDs for `--check-gaps` to join on, so
+  running it would fail on absence rather than on a real gap.
+
+Everything else about your contract is unchanged: return only actionable
+failures, never full test output.

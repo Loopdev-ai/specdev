@@ -927,3 +927,27 @@ def test_gen_traceability_does_not_shadow_stdlib_profile():
     if cached_profile is not None:
         assert not hasattr(cached_profile, "resolve_all"), \
             "sys.modules['profile'] is our custom module (has resolve_all)"
+
+
+# ---- Task 10: Agent contracts — smoke mode and charter mode -----
+
+AGENTS = ROOT / "agents"
+
+
+def test_qa_verifier_documents_smoke_mode():
+    text = (AGENTS / "qa-verifier.md").read_text(encoding="utf-8")
+    assert "smoke mode" in text.lower()
+    assert "at least one test" in text.lower() or "≥1 test" in text
+    for floor in ("gitleaks", "secret"):
+        assert floor in text.lower(), f"smoke mode must still run {floor}"
+
+
+def test_qa_verifier_smoke_mode_keeps_the_credential_floor():
+    text = (AGENTS / "qa-verifier.md").read_text(encoding="utf-8").lower()
+    assert "coverage" in text and "check-gaps" in text
+
+
+def test_component_builder_documents_charter_mode():
+    text = (AGENTS / "component-builder.md").read_text(encoding="utf-8")
+    assert "charter" in text.lower()
+    assert "smoke test" in text.lower()

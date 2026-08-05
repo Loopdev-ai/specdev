@@ -51,3 +51,22 @@ guess at scope or touch components you weren't assigned.
 
 Do not paste file contents or full test output unless something failed and the
 detail is needed to act.
+
+## Charter mode (`spec_bar: charter`)
+
+The coordinator passes the unit's resolved governance profile with the
+dispatch. When `spec_bar` is `charter` you are building a **spike**: there is
+no `spec.md` and no `REQ-###` IDs, only `.specdev/CHARTER.md` with the
+questions the spike must answer.
+
+In charter mode:
+
+- **Write one smoke test first, then build.** Not red-green per requirement —
+  there are no requirements to drive it. The smoke test proves the thing runs.
+- **Omit `Refs: REQ-###` commit trailers.** There is no REQ to reference and
+  no traceability matrix being generated.
+- **Report against the charter's questions,** not against acceptance criteria:
+  say what the spike answered and what it did not.
+
+The code is disposable — it is reverse-mapped and rebuilt, never promoted — so
+prefer the shortest path to an answer over structure you expect to keep.
