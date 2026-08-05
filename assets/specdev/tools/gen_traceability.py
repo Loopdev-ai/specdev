@@ -19,6 +19,7 @@ Environment (supplied by CI, optional locally):
     PR_NUMBER, RELEASE_TAG, STAGING_QA_RUN, PROD_QA_RUN
 """
 import argparse
+import importlib.util
 import os
 import re
 import subprocess
@@ -45,13 +46,29 @@ if sys.version_info < (3, 10):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import units  # noqa: E402  (vendored sibling module)
-import profile  # noqa: E402  (vendored sibling module)
 
 try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
+
+
+def _load_profile_module():
+    """Load the sibling profile.py under an unambiguous name.
+
+    A bare `import profile` would resolve to OUR module and then sit in
+    sys.modules['profile'] for the life of the process, shadowing the
+    Python standard library's profile module (the deterministic profiler)
+    for every later importer. The sibling `units`/`check_org_adrs` imports
+    are safe because those are not stdlib names; this one is not.
+    """
+    path = Path(__file__).resolve().parent / "profile.py"
+    spec = importlib.util.spec_from_file_location("_specdev_profile", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 
 TEST_GLOBS = ("**/*test*.*", "**/*spec*.*", "**/test_*.*", "**/*_test.*")
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".specdev"}
@@ -242,7 +259,8 @@ def main() -> int:
     # result, treat that as "no opinion" and generate for it anyway (the
     # strict behaviour) rather than silently skipping it.
     try:
-        profiles = profile.resolve_all(args.root)
+        _profile = _load_profile_module()
+        profiles = _profile.resolve_all(args.root)
     except Exception as exc:
         print(f"NOTE: governance profile resolution failed ({exc}) — "
               f"generating traceability for every unit", file=sys.stderr)

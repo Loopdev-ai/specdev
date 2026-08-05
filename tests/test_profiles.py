@@ -708,9 +708,14 @@ def test_gen_traceability_skips_a_unit_whose_profile_disables_traceability(
     write_unit_spec(tmp_path, "api")
     idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
 
-    real_resolve_all = gt.profile.resolve_all
-    monkeypatch.setattr(gt.profile, "resolve_all",
+    # Load the profile module and monkeypatch its resolve_all
+    profile_mod = _pf()
+    real_resolve_all = profile_mod.resolve_all
+    monkeypatch.setattr(profile_mod, "resolve_all",
                         lambda root: real_resolve_all(root, index=idx))
+    # Monkeypatch _load_profile_module to return our patched module
+    monkeypatch.setattr(gt, "_load_profile_module",
+                        lambda: profile_mod)
     monkeypatch.setattr(sys, "argv",
                         ["gen_traceability.py", "--root", str(tmp_path), "--all-units"])
 
@@ -729,9 +734,14 @@ def test_gen_traceability_generates_for_a_unit_whose_profile_enables_it(
     write_unit_spec(tmp_path, "api")
     idx = json.loads(write_index(tmp_path).read_text(encoding="utf-8"))
 
-    real_resolve_all = gt.profile.resolve_all
-    monkeypatch.setattr(gt.profile, "resolve_all",
+    # Load the profile module and monkeypatch its resolve_all
+    profile_mod = _pf()
+    real_resolve_all = profile_mod.resolve_all
+    monkeypatch.setattr(profile_mod, "resolve_all",
                         lambda root: real_resolve_all(root, index=idx))
+    # Monkeypatch _load_profile_module to return our patched module
+    monkeypatch.setattr(gt, "_load_profile_module",
+                        lambda: profile_mod)
     monkeypatch.setattr(sys, "argv",
                         ["gen_traceability.py", "--root", str(tmp_path), "--all-units"])
 
@@ -755,7 +765,10 @@ def test_gen_traceability_fails_safe_when_profile_resolution_raises(
     def boom(root):
         raise RuntimeError("network is unreachable")
 
-    monkeypatch.setattr(gt.profile, "resolve_all", boom)
+    # Monkeypatch _load_profile_module to raise, simulating profile load failure
+    def load_broken():
+        boom(None)  # Will raise RuntimeError
+    monkeypatch.setattr(gt, "_load_profile_module", load_broken)
     monkeypatch.setattr(sys, "argv",
                         ["gen_traceability.py", "--root", str(tmp_path), "--all-units"])
 
@@ -763,3 +776,18 @@ def test_gen_traceability_fails_safe_when_profile_resolution_raises(
     assert (tmp_path / "spike" / ".specdev" / "traceability.md").exists(), \
         "profile resolution failure must fail SAFE (generate), never skip"
     assert "NOTE" in capsys.readouterr().err
+
+
+def test_gen_traceability_does_not_shadow_stdlib_profile():
+    """Regression: gen_traceability must not register our sibling profile.py as
+    sys.modules['profile'], shadowing the Python standard library's profile
+    module (the deterministic profiler). The fix loads the sibling under an
+    unambiguous name (_specdev_profile) instead."""
+    gt = load_gt()
+
+    # After loading gen_traceability, sys.modules['profile'] should either
+    # not exist, or should be the stdlib module (no resolve_all attribute)
+    cached_profile = sys.modules.get("profile")
+    if cached_profile is not None:
+        assert not hasattr(cached_profile, "resolve_all"), \
+            "sys.modules['profile'] is our custom module (has resolve_all)"
