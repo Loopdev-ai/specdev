@@ -563,6 +563,46 @@ def test_charter_mode_rejects_placeholders(tmp_path):
     assert r.returncode == 1
 
 
+def test_charter_mode_accepts_comparison_operators_in_prose(tmp_path):
+    """Regression: angle-bracket comparison operators (< 50k/sec) must not
+    false-positive as placeholders. This is the exact false-positive from the
+    Important finding: 'Throughput must stay < 50k/sec and > 10k/sec.'"""
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    charter = GOOD_CHARTER.replace(
+        "Three working days, ending 2026-08-07.",
+        "Three working days, ending 2026-08-07. Throughput must stay < 50k/sec and > 10k/sec.")
+    (d / "CHARTER.md").write_text(charter, encoding="utf-8")
+    r = run_validate(tmp_path, "--strict", "--profile", "charter")
+    assert r.returncode == 0, f"Expected pass but got: {r.stdout}{r.stderr}"
+
+
+def test_charter_mode_accepts_email_addresses_in_angle_brackets(tmp_path):
+    """Regression: email addresses in angle brackets (< team@example.com >) must
+    not false-positive as placeholders."""
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    charter = GOOD_CHARTER.replace(
+        "Throughput below 20k/sec after two days of tuning.",
+        "Throughput below 20k/sec after two days of tuning (contact <team@example.com> for questions).")
+    (d / "CHARTER.md").write_text(charter, encoding="utf-8")
+    r = run_validate(tmp_path, "--strict", "--profile", "charter")
+    assert r.returncode == 0, f"Expected pass but got: {r.stdout}{r.stderr}"
+
+
+def test_charter_mode_rejects_literal_tbd_placeholder(tmp_path):
+    """Regression: bare TBD as a whole word (case-insensitive) must still be
+    caught as a placeholder, even though angle-bracket false-positives are fixed."""
+    d = tmp_path / ".specdev"
+    d.mkdir(parents=True)
+    charter = GOOD_CHARTER.replace(
+        "Throughput below 20k/sec after two days of tuning.",
+        "TBD")
+    (d / "CHARTER.md").write_text(charter, encoding="utf-8")
+    r = run_validate(tmp_path, "--strict", "--profile", "charter")
+    assert r.returncode == 1, f"Expected fail but got: {r.stdout}{r.stderr}"
+
+
 def test_charter_mode_does_not_require_a_spec(tmp_path):
     """The whole point: no spec.md, no REQ IDs, no ADRs."""
     d = tmp_path / ".specdev"

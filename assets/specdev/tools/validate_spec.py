@@ -37,6 +37,10 @@ PLACEHOLDER = re.compile(r"<[^>\n]+>|XXX|\bTBD\b", re.I)
 CHARTER_SECTIONS = ("Goal", "Questions this spike must answer", "Timebox",
                     "Abandon criteria")
 
+# Charter-specific placeholder regex: excludes angle-bracket spans starting with
+# whitespace (comparisons like < 50k/sec) and spans containing @ (emails).
+CHARTER_PLACEHOLDER = re.compile(r"<(?!\s)[^@>\n]+>|XXX|\bTBD\b", re.I)
+
 
 def _validate_charter(root: Path, strict: bool) -> int:
     """Gate 1 for a `poc` unit. A spike answers questions; it does not deliver
@@ -61,7 +65,7 @@ def _validate_charter(root: Path, strict: bool) -> int:
         body = m.group(1).strip()
         if not body:
             errors.append(f"'## {name}' is empty")
-        elif PLACEHOLDER.search(body):
+        elif CHARTER_PLACEHOLDER.search(body):
             errors.append(f"'## {name}' still holds a placeholder")
 
     for w in warnings:
