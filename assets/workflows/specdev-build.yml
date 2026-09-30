@@ -199,7 +199,8 @@ jobs:
 
         Follow the vendored specdev skill at .claude/skills/specdev, as a
         strict coordinator: dispatch component-builder / qa-verifier /
-        adr-checker / spec-explorer subagents, keep only their summaries.
+        adr-checker / spec-explorer / code-reviewer / intent-reviewer
+        subagents, keep only their summaries.
 
         Commit every wave as it goes green. The terminal state is: the
         implementation branch carries your commits beyond the base branch,
@@ -361,8 +362,8 @@ jobs:
             Follow the vendored specdev skill at .claude/skills/specdev exactly,
             acting as a strict coordinator: never write component code inline —
             dispatch the component-builder / qa-verifier / adr-checker /
-            spec-explorer subagents (vendored in .claude/agents) and keep only
-            their summaries.
+            spec-explorer / code-reviewer / intent-reviewer subagents
+            (vendored in .claude/agents) and keep only their summaries.
 
             Feature: ${{ needs.setup.outputs.feat }}
             Mode:    ${{ needs.setup.outputs.mode }}
@@ -399,7 +400,7 @@ jobs:
 
             Reaching that terminal state is ASSERTED after you finish: the job
             fails unless the branch carries commits beyond the base and the PR
-            body is prepared. Exiting cleanly without them is a failed build,
+            body is prepared, and - in prod - the review loop is complete. Exiting cleanly without them is a failed build,
             not a partial success. Do NOT end your turn while a wave's QA is
             still outstanding or later waves are untouched — having turns to
             spare is not a reason to stop. If you genuinely cannot get there,

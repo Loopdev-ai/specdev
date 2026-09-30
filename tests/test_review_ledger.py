@@ -891,3 +891,37 @@ def test_render_says_dismissed_not_clean_when_findings_were_dismissed(repo):
     rl.dismiss(repo, "impl", "I1-1", "contradicts REQ-001 Out of Scope")
     out = rl.render(repo, "impl", repo)
     assert "was dismissed" in out and "was clean" not in out
+
+
+def test_spec_reviewers_are_authorized_to_be_dispatched():
+    assert "authorization to spawn" in _flat(NEW_FEATURE)
+    skill = _flat(SKILL)
+    section = skill[skill.index("## Pre-PR review loop"):]
+    assert "never review inline" in section.lower()
+
+
+def test_instructions_carry_the_exact_new_run_and_reviewed_commands():
+    skill = _flat(SKILL)
+    for s in ("new-run --phase <p>", "stale-at-cap", "--reviewed"):
+        assert s in skill, s
+    step5 = _between(skill, "5. **Open the Spec PR.**", "6. **Build on")
+    assert "new-run --phase spec" in step5
+    build = _flat(BUILD_CMD)
+    after = build[build.index("## After the final wave"):]
+    assert "--reviewed" in after and "stale-at-cap" in after
+    nf = _flat(NEW_FEATURE)
+    assert "--root <unit> dismiss --phase spec" in nf and "stale-at-cap" in nf
+    for path in (SKILL, BUILD_CMD, NEW_FEATURE):
+        assert re.search(r"new-run(?! --phase)", _flat(path)) is None, path
+
+
+def test_ci_prompts_name_the_reviewers_and_the_asserted_loop():
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load((WF / "specdev-build.yml").read_text(encoding="utf-8"))
+    build = doc["jobs"]["build"]
+    cont = " ".join(build["env"]["CONTINUE_PROMPT"].split())
+    agent1 = next(s for s in build["steps"] if s.get("id") == "agent1")
+    prompt = " ".join(agent1["with"]["prompt"].split())
+    for text in (cont, prompt):
+        assert "code-reviewer" in text and "intent-reviewer" in text
+    assert "the review loop is complete" in prompt

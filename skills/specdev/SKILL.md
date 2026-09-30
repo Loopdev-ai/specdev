@@ -130,6 +130,10 @@ poc-built unit's maturity.
    `max_review_iterations` is reached — and then the **`adr-checker`** agent
    must be green (when org governance is configured) — a spec that
    contradicts an applicable org ADR is fixed *before* review, not during.
+   If `adr-checker` — or anything else — changes the spec after the last
+   review pass, run another spec pass (`review_ledger.py --root <unit> new-run
+   --phase spec` first if the run is at its cap): `check --phase spec` fails on
+   any spec edit the last pass did not see.
    Commit `.specdev/review.json` with the spec. Then `spec-validate.yml` runs
    `validate_spec.py` and `review_ledger.py check --phase spec`, and
    `org-adr-check.yml` runs `check_org_adrs.py`, as required checks. Get them
@@ -268,10 +272,15 @@ skipping it is a failed build, not a shortcut.
   status --phase <spec|impl>` — the next pass, the open findings, and the
   dismissed list. Never restart at pass 1.
 
+Running `/specdev:new-feature` or `/specdev:build` authorizes dispatching these
+reviewers — the harness default ("don't spawn unless asked") does not apply.
+Never review inline: the ledger only sees JSON, so it cannot tell.
+
 Each pass:
 
-1. **Dispatch fresh reviewers, in one message.** New `Agent` calls every
-   pass — never a continuation of an earlier pass's reviewer, whose blind
+1. **Dispatch fresh reviewers, in one message.** Impl: first capture
+   `git rev-parse HEAD` — the commit the reviewers will see. New `Agent` calls
+   every pass — never a continuation of an earlier pass's reviewer, whose blind
    spots are exactly what the next pass is for.
    - spec phase: one **`spec-reviewer`**;
    - impl phase: **`code-reviewer`** and **`intent-reviewer`** in parallel,
@@ -284,8 +293,13 @@ Each pass:
    `review_ledger.py --root <unit> record --phase <p> --findings-json <file>`
    once per pass, repeating `--findings-json` per reviewer. The tool assigns
    the finding ids and stamps what was reviewed — never count or number
-   findings yourself. Impl: commit first; it refuses a dirty tree.
-3. **Stop** when `status` says `clean` or `cap-reached`. At the cap do **not**
+   findings yourself. Impl: commit first; it refuses a dirty tree. Pass the
+   captured sha as `--reviewed <sha>`; it refuses if code changed since
+   dispatch.
+3. **Stop** when `status` says `clean` or `cap-reached`. `stale` means the
+   reviewed state changed since the last pass — run the next pass;
+   `stale-at-cap` means it changed and the run is spent — run
+   `review_ledger.py --root <unit> new-run --phase <p>` first. At the cap do **not**
    fix the last pass's findings — that would ship code no reviewer saw —
    hand them off (below).
 4. **Fix every open blocking finding, then go to 1.**
@@ -315,8 +329,8 @@ never ran, when the code (or the spec) changed after the last pass, when the
 loop stopped short of the cap with findings open, or when a capped run's open
 findings were not handed off. If something changed after the last pass — the
 org-ADR loop touched code, or a human edited the spec on an open PR — run
-another pass; if the run is already at its cap, `review_ledger.py new-run`
-starts a fresh one, and refuses unless the reviewed state really changed.
+another pass; if the run is already at its cap,
+`review_ledger.py --root <unit> new-run --phase <p>` starts a fresh one, and refuses unless the reviewed state really changed.
 
 ## Terminal state (when a build is actually over)
 

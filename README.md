@@ -97,7 +97,8 @@ wave ledger, the source of truth.
 **Before each PR, a bounded review loop.** `qa-verifier` runs the tests the
 builder wrote, so it cannot catch a bug the builder never imagined — which is
 what a reviewer like Copilot then finds after the PR is open. So before every
-Spec PR and Implementation PR the coordinator runs up to
+Spec PR (when the unit's profile has `spec_pr`) and every prod Implementation
+PR — `poc` has no PR and runs neither — the coordinator runs up to
 `max_review_iterations` (default 10) review passes, each with **fresh**
 read-only reviewers: `spec-reviewer` for the spec; `code-reviewer` (defects,
 each with a `file:line` and a failure scenario) and `intent-reviewer` (every
@@ -223,6 +224,12 @@ gate, raise those (keeping `max_wall_minutes` under `max_session_minutes`) or
 lower `max_review_iterations` for the unit — that is your spend decision, not
 the kit's. A tripped run is never handed off half-reviewed: the ledger
 records the last pass, and the terminal-state assertion fails honestly.
+
+**Upgrade tools, workflows, skill and agents together.** From this release a
+prod build's terminal state includes the pre-PR review loop, which only the
+vendored `.claude/skills/specdev/` and `.claude/agents/` describe. Updating
+`.specdev/tools/` without them makes every prod build fail with "the impl
+review loop never ran"; re-run `/specdev:init` and accept all four together.
 
 Defaults are loaded from the shipped `ci.json`, so a key you never set still
 resolves. Where a value must be a *deliberate, committed* choice rather than an

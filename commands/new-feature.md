@@ -5,6 +5,10 @@ argument-hint: <feature-name>
 
 Start a new SpecDev feature for: **$ARGUMENTS**
 
+**This command dispatches `spec-reviewer` subagents by design. Running it is
+your authorization to spawn them — do it; never review the spec inline, which
+collapses the reviewer's independence in a way the gate cannot detect.**
+
 Prerequisite: the repo must already contain `.specdev/` (run `/specdev:init`
 otherwise).
 
@@ -44,11 +48,15 @@ Do this:
      --findings-json <file>`;
    - on blocking findings, revise the spec and re-run `validate_spec.py
      --strict`; batch the `needs_human` findings into one question to the
-     user per pass; dismiss a deferral (`review_ledger.py dismiss --phase
-     spec --id <id> --reason "deferred by the user"`) and list it under
+     user per pass; dismiss a deferral (`review_ledger.py --root <unit>
+     dismiss --phase spec --id <id> --reason "deferred by the user"`) and list it under
      `## Open Questions`;
    - stop on a clean pass, or at `max_review_iterations` — then list every
      open finding id under `## Open Questions`.
+   - any later edit to `spec.md` — an ADR you draft next, an `adr-checker` fix,
+     a reviewer's comment on the open PR — needs another pass (`new-run
+     --phase spec` first if `status` says `stale-at-cap`); `check --phase
+     spec` fails otherwise.
    Commit `.specdev/review.json` with the spec, then
    `review_ledger.py --root <unit> check --phase spec` must pass —
    `spec-validate.yml` runs the same check on the Spec PR.

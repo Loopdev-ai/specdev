@@ -121,13 +121,14 @@ PR is the human's call in both cases — headless CI is no different.
    the specdev skill's *Pre-PR review loop*. Start from the pass
    `python .specdev/tools/review_ledger.py --root <unit> status --phase impl`
    names, then per pass:
-   - Dispatch a fresh **`code-reviewer`** and a fresh **`intent-reviewer`** in
-     one message, with the unit root, the base branch and the dismissed list.
+   - Capture `git rev-parse HEAD`, then dispatch a fresh **`code-reviewer`** and
+     a fresh **`intent-reviewer`** in one message, with the unit root, the base branch and the dismissed list.
    - Save each one's closing JSON block and record the pass:
-     `review_ledger.py --root <unit> record --phase impl --findings-json <a>
-     --findings-json <b>`.
+     `review_ledger.py --root <unit> record --phase impl --reviewed <that sha>
+     --findings-json <a> --findings-json <b>`.
    - `clean` → go to step 4. `cap-reached` → stop fixing; the open findings
-     are handed off in step 5.
+     are handed off in step 5. `stale` → run the next pass; `stale-at-cap` →
+     `review_ledger.py --root <unit> new-run --phase impl`, then the next pass.
    - Otherwise dispatch `component-builder`s in review-fix mode with the open
      findings as their contract — each reproduces its finding with a failing
      test, then fixes it; dismiss a `not-reproducible` one with its evidence
@@ -145,7 +146,9 @@ PR is the human's call in both cases — headless CI is no different.
      iterations** — until green.
    - **Green** → record the verdict in the `BUILD.md` ledger and continue.
    - If this loop changed any code, run one more review pass (step 3) — the
-     review check fails on code the last pass never saw.
+     review check fails on code the last pass never saw. If `status` says
+     `stale-at-cap`, run `review_ledger.py --root <unit> new-run --phase impl`
+     first.
 5. Fill in `.specdev/PR_BODY.md` — the Implementation PR body — from the wave
    ledger: REQs covered and the test asserting each, deployment facts resolved,
    anything deferred. Paste `review_ledger.py --root <unit> render --phase

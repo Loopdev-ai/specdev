@@ -76,6 +76,7 @@ jobs:
       # keyed on spec_pr so a unit with no Spec PR (poc) is never asked for
       # one. The check is content-based (a hash of the spec's substance), so
       # it needs no git history.
+      # merge_group events carry no head_ref, so the merge queue skips this step: the PR-time run is the gate.
       - name: Spec review loop recorded (Gate 1) — ${{ matrix.unit }}
         if: startsWith(github.head_ref, 'spec/') && hashFiles(format('{0}/.specdev/spec.md', matrix.unit)) != '' && fromJSON(needs.discover.outputs.profiles)[matrix.unit].spec_pr
         run: |

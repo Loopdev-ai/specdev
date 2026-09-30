@@ -216,10 +216,10 @@ CLI (`--root <unit>` precedes the subcommand, as in the sibling tools):
 
 | Command | Does |
 |---|---|
-| `record --phase P --feat F --findings-json FILE [--findings-json FILE …]` | Appends the next pass to the current run, assigns ids, stamps `reviewed` itself (impl: `HEAD`, refusing a dirty non-`.specdev/` tree; spec: the spec hash), refuses a pass beyond the cap. A different `--feat` than the ledger's starts a fresh ledger (git history keeps the old one). |
+| `record --phase P --feat F --findings-json FILE [--findings-json FILE …]` | Appends the next pass to the current run, assigns ids, stamps `reviewed` itself (impl: `HEAD`, refusing a dirty non-`.specdev/` tree; spec: the spec hash), refuses a pass beyond the cap. A different `--feat` than the ledger's starts a fresh ledger (git history keeps the old one). `--reviewed <sha>` (impl): the commit HEAD pointed at when the reviewers were dispatched; refuses if code changed since, and stamps that sha. |
 | `dismiss --phase P --id ID --reason TEXT` | Moves a finding to the dismissed list. |
 | `new-run --phase P` | Starts a new run: a re-review after human changes on an open PR. **Refuses unless the reviewed state is stale** (check rule 2), so it cannot be used to buy more passes for a run that hit its cap with nothing changed. |
-| `status --phase P` | Next pass number, cap, open blocking ids, the dismissed list — what the coordinator (or a CI continuation attempt) needs to resume, and what goes into each reviewer's prompt. |
+| `status --phase P` | Next pass number, cap, open blocking ids, the dismissed list — what the coordinator (or a CI continuation attempt) needs to resume, and what goes into each reviewer's prompt. It reports `stale` / `stale-at-cap` when the reviewed state changed since the last pass. |
 | `render --phase impl` | The markdown for PR_BODY's `## Review loop` and `## Unresolved review findings` sections. |
 | `check --phase P` | The gate (below). Exit 1 with reasons. |
 
@@ -246,6 +246,8 @@ deliberate: its reviewed SHAs only mean something against the code they
 reviewed, and that code is not restored either. Continuation attempts
 *within* a job share the working tree, so they resume the pass count via
 `status`, not from pass 1.
+
+_Amended after the whole-branch review: --reviewed on record, stale-aware status, check() fails closed on unexpected errors._
 
 ### 6. Hand-off at the cap
 

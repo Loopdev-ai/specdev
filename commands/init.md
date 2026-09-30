@@ -18,7 +18,12 @@ Do this:
    carries no repo-specific edits, so an existing install that keeps its old
    copy silently keeps old bugs. When `.specdev/` already exists, diff
    `tools/` against the plugin's, show what changed, and offer to update it.
-   Same for `.github/workflows/` in step 3. Everything else under `.specdev/`
+   Same for `.github/workflows/` in step 3, and for the vendored
+   `.claude/skills/specdev/` and the shipped `.claude/agents/*.md` in step
+   3a2. **Offer them as one update, never piecemeal:** a newer tool can
+   assert a procedure only the newer skill and agents describe (the pre-PR
+   review loop is part of a prod build's terminal state), so new tools with
+   an old skill fail every prod build. Everything else under `.specdev/`
    (spec, components, ADRs, `org.json`, `ci.json`) is the repo's own and is
    never replaced without being asked.
 3. Copy `${CLAUDE_PLUGIN_ROOT}/assets/workflows/*.yml` → `./.github/workflows/`
