@@ -35,6 +35,14 @@ unfinished wave._
 |------|-----------|--------------|-------------------|-------------|--------|
 | 1    |           |              |                   | green/red   |        |
 
+### Review loop
+
+_The pre-PR review loop's ledger is `review.json`, written only by
+`review_ledger.py`. After a compact or a re-dispatch, resume it from
+`python .specdev/tools/review_ledger.py --root <unit> status --phase impl` —
+it names the next pass, the open findings and the dismissed ones. Never
+restart at pass 1._
+
 ### Open Items
 
 - [ ]

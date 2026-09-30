@@ -593,3 +593,51 @@ def test_component_builder_reproduces_a_finding_before_fixing_it():
     text = (AGENTS / "component-builder.md").read_text(encoding="utf-8")
     assert "Review-fix mode" in text
     assert "not-reproducible" in text and "fail" in text
+
+
+# ---- Task 5: templates ----------------------------------------------------
+
+TEMPLATES = ROOT / "assets" / "specdev"
+
+
+def test_spec_template_records_the_original_request_first():
+    text = (TEMPLATES / "spec.md").read_text(encoding="utf-8")
+    assert re.search(r"^## Original Request\s*$", text, re.M)
+    assert text.index("## Original Request") < text.index("## Requirements")
+    assert "verbatim" in text
+
+
+def test_pr_body_template_carries_the_review_sections():
+    text = (TEMPLATES / "PR_BODY.md").read_text(encoding="utf-8")
+    for heading in ("## Review loop", "## Unresolved review findings"):
+        assert re.search(rf"^{heading}\s*$", text, re.M), heading
+    assert text.index("## Unresolved review findings") < \
+        text.index("## Deployment facts")
+    assert "review_ledger.py check --phase impl" in text
+
+
+def test_render_pasted_into_the_template_satisfies_the_check(repo):
+    """The hand-off path end to end: at the cap, the coordinator pastes
+    render's output over the template's two review sections."""
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    template = (TEMPLATES / "PR_BODY.md").read_text(encoding="utf-8")
+    body = re.sub(r"^## Review loop.*?(?=^## Deployment facts)",
+                  rl.render(repo, "impl", repo) + "\n", template,
+                  flags=re.M | re.S)
+    (repo / ".specdev" / "PR_BODY.md").write_text(body, encoding="utf-8")
+    assert check(repo) == []
+
+
+def test_the_unfilled_template_does_not_hand_anything_off(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    (repo / ".specdev" / "PR_BODY.md").write_text(
+        (TEMPLATES / "PR_BODY.md").read_text(encoding="utf-8"),
+        encoding="utf-8")
+    assert any("not listed" in p for p in check(repo))
+
+
+def test_build_template_points_at_the_review_resume_point():
+    text = (TEMPLATES / "BUILD.md").read_text(encoding="utf-8")
+    assert "review_ledger.py" in text and "status --phase impl" in text

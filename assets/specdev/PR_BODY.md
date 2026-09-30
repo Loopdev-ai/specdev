@@ -33,6 +33,18 @@ stock markers above survive, the build failed.
 
 <!-- Copy the per-wave verdicts from BUILD.md: what was built, QA green/red. -->
 
+## Review loop
+
+<!-- Paste `review_ledger.py --root <unit> render --phase impl` over this
+section and the next: passes run against max_review_iterations, what each
+found, and every dismissal with its reason. -->
+
+## Unresolved review findings
+
+<!-- Filled by the same render: "None — the final review pass was clean.", or
+every blocking finding still open when the loop reached its cap, by id. The
+build asserts that each open id is listed here. -->
+
 ## Deployment facts
 
 <!-- Anything resolved into deploy.profile.json during the build, or "none". -->
@@ -42,6 +54,7 @@ stock markers above survive, the build failed.
 - [ ] `qa-verifier` green on the fully integrated result
 - [ ] `gen_traceability.py --check-gaps` passes — every REQ has a linked test
 - [ ] `adr-checker` green (or org governance not configured)
+- [ ] `review_ledger.py check --phase impl` passes — the last review pass covers this branch's tip
 - [ ] `deploy.py preflight` green for every target environment
 
 ## Notes for the reviewer

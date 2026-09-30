@@ -11,6 +11,19 @@
 > here flow into tests, commit trailers, and the traceability matrix — never
 > renumber a REQ after merge.
 
+## Original Request
+
+> The user's request **verbatim** — never paraphrased — then the brainstorm
+> answers that shaped it. `spec-reviewer` and `intent-reviewer` judge the
+> REQs and the code against this section; it is the only record of what was
+> actually asked for.
+
+<the request, exactly as the user wrote it>
+
+**Clarified while brainstorming:**
+
+- <question> → <answer>
+
 ## Mode
 
 - [ ] New product
