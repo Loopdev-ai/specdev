@@ -10,5 +10,6 @@
   "max_wall_minutes": 240,
   "max_tool_calls": 3000,
   "max_build_attempts": 3,
-  "continuation_cap_usd": 25
+  "continuation_cap_usd": 25,
+  "max_review_iterations": 10
 }

@@ -108,6 +108,10 @@ _FALLBACK_DEFAULTS = {
     # begins, not what it spends, so true exposure is "cap plus one attempt".
     "max_build_attempts": 3,
     "continuation_cap_usd": 25,
+    # Pre-PR review loop: passes per run before a PR is handed off
+    # (review_ledger.py). A quality gate, not a breaker limit, so it is not
+    # in BREAKER_ENV either - and 0 does not disable it.
+    "max_review_iterations": 10,
 }
 
 # ci.json key -> the environment variable circuit_breaker.py reads it from.
