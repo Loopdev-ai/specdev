@@ -925,3 +925,78 @@ def test_ci_prompts_name_the_reviewers_and_the_asserted_loop():
     for text in (cont, prompt):
         assert "code-reviewer" in text and "intent-reviewer" in text
     assert "the review loop is complete" in prompt
+
+
+# ---- Follow-up fixes ------------------------------------------------------
+
+def _flat(path):
+    return " ".join((ROOT / path).read_text(encoding="utf-8").split())
+
+
+def test_stale_with_open_findings_says_fix_or_dismiss_first(repo):
+    set_cap(repo, 2)
+    rec(repo, report(bug(), bug(where="widget.py:1", summary="other")))
+    (repo / "widget.py").write_text("def page(n):\n    return n + 1\n",
+                                    encoding="utf-8")
+    git(repo, "commit", "-q", "-am", "partial fix")
+    st = rl.status(repo, "impl", repo)
+    assert st["state"] == "stale"
+    assert ("2 blocking finding(s) from the last pass are still open"
+            in rl._status_text(st))
+
+
+def test_docs_say_to_clear_open_findings_before_a_stale_pass():
+    assert "fixed or dismissed, then run the next pass" in _flat(
+        "skills/specdev/SKILL.md")
+    assert "fix or dismiss every finding" in _flat("commands/build.md")
+
+
+def test_skill_does_not_tell_the_coordinator_to_commit_side_effects():
+    s = _flat("skills/specdev/SKILL.md")
+    assert "never commit them" in s
+    assert "commit first; it refuses a dirty tree" not in s
+
+
+def test_stale_at_cap_with_unverifiable_commit_can_new_run(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    doc = rl.load(repo)
+    doc["phases"]["impl"]["runs"][-1]["passes"][-1]["reviewed"] = "deadbeef" * 5
+    rl.save(doc, repo)
+    st = rl.status(repo, "impl", repo)
+    assert st["state"] == "stale-at-cap" and st["stale_unverified"] is True
+    assert "cannot be verified" in rl._status_text(st)
+    rl.new_run(repo, "impl", repo_root=repo)
+    assert rl.status(repo, "impl", repo)["run"] == 2
+
+
+def test_a_huge_integer_cap_does_not_overflow(repo):
+    set_cap(repo, 10**400)
+    assert rl.max_iterations(repo, repo) == 10**400
+
+
+def test_prod_fails_closed_when_the_ledger_tool_cannot_import(repo,
+                                                              monkeypatch):
+    _impl(repo)
+    rec(repo, report())
+    monkeypatch.setitem(sys.modules, "review_ledger", None)
+    out = _verify(repo, "prod", monkeypatch)
+    assert out["ok"] is False
+    assert any("could not be imported" in p for p in out["problems"])
+
+
+def test_cli_record_pins_reviewed_through_the_flag(repo):
+    old = git(repo, "rev-parse", "HEAD").strip()
+    fix_and_commit(repo)
+    new = git(repo, "rev-parse", "HEAD").strip()
+
+    def run(sha):
+        return subprocess.run(
+            [sys.executable, str(TOOL), "--root", str(repo), "record",
+             "--phase", "impl", "--repo-root", str(repo), "--reviewed", sha,
+             "--findings-json", "-"],
+            input=json.dumps(report()), capture_output=True, text=True)
+    p = run(old)
+    assert p.returncode == 1 and "code changed between dispatch" in p.stderr
+    p = run(new)
+    assert p.returncode == 0, p.stderr

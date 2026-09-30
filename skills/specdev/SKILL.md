@@ -278,8 +278,8 @@ Never review inline: the ledger only sees JSON, so it cannot tell.
 
 Each pass:
 
-1. **Dispatch fresh reviewers, in one message.** Impl: first capture
-   `git rev-parse HEAD` — the commit the reviewers will see. New `Agent` calls
+1. **Dispatch fresh reviewers, in one message.** Impl: commit the fixes first,
+   then capture `git rev-parse HEAD` — the commit the reviewers will see. New `Agent` calls
    every pass — never a continuation of an earlier pass's reviewer, whose blind
    spots are exactly what the next pass is for.
    - spec phase: one **`spec-reviewer`**;
@@ -293,11 +293,13 @@ Each pass:
    `review_ledger.py --root <unit> record --phase <p> --findings-json <file>`
    once per pass, repeating `--findings-json` per reviewer. The tool assigns
    the finding ids and stamps what was reviewed — never count or number
-   findings yourself. Impl: commit first; it refuses a dirty tree. Pass the
+   findings yourself. Impl: if `record` reports uncommitted changes, they are the reviewers' side
+   effects — discard them (`git checkout -- <paths>`), never commit them. Pass the
    captured sha as `--reviewed <sha>`; it refuses if code changed since
    dispatch.
 3. **Stop** when `status` says `clean` or `cap-reached`. `stale` means the
-   reviewed state changed since the last pass — run the next pass;
+   reviewed state changed since the last pass — make sure every finding `status` still lists as
+   OPEN is fixed or dismissed, then run the next pass;
    `stale-at-cap` means it changed and the run is spent — run
    `review_ledger.py --root <unit> new-run --phase <p>` first. At the cap do **not**
    fix the last pass's findings — that would ship code no reviewer saw —

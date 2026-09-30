@@ -127,7 +127,7 @@ PR is the human's call in both cases — headless CI is no different.
      `review_ledger.py --root <unit> record --phase impl --reviewed <that sha>
      --findings-json <a> --findings-json <b>`.
    - `clean` → go to step 4. `cap-reached` → stop fixing; the open findings
-     are handed off in step 5. `stale` → run the next pass; `stale-at-cap` →
+     are handed off in step 5. `stale` → fix or dismiss every finding `status` still lists as OPEN, then run the next pass; `stale-at-cap` →
      `review_ledger.py --root <unit> new-run --phase impl`, then the next pass.
    - Otherwise dispatch `component-builder`s in review-fix mode with the open
      findings as their contract — each reproduces its finding with a failing

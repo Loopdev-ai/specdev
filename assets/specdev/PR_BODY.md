@@ -41,7 +41,8 @@ found, and every dismissal with its reason. -->
 
 ## Unresolved review findings
 
-<!-- Filled by the same render: "None — the final review pass was clean.", or
+<!-- Filled by the same render: "None — the final review pass was clean.",
+"None — every blocking finding in the final pass was dismissed (reasons above).", or
 every blocking finding still open when the loop reached its cap, by id. The
 build asserts that each open id is listed here. -->
 

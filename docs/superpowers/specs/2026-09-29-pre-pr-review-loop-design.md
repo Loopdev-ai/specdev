@@ -256,7 +256,7 @@ findings flagged.
 
 - **Impl:** `PR_BODY.md` gains `## Review loop` (passes used / cap, per-pass
   counts, what was fixed and dismissed, with reasons) and `## Unresolved review
-  findings` ("None — the final review pass was clean", or each open finding by
+  findings` ("None — the final review pass was clean", "None — every blocking finding in the final pass was dismissed (reasons above).", or each open finding by
   id with its `where`, summary and scenario). `render` produces both.
 - **Spec:** open findings go into the spec's existing `## Open Questions`, by
   id. That section is outside the spec hash, so recording them there does not

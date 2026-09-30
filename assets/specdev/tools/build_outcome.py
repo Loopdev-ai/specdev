@@ -510,15 +510,22 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
     warnings += branch["warnings"]
 
     if mode == "prod" and branch.get("sha"):
-        import review_ledger  # noqa: PLC0415  (vendored sibling; prod only)
         # The pre-PR review loop is part of the prod terminal state: without
         # it, nothing read the code before the PR but the tests its own
         # builder wrote. Checked against the BRANCH TIP - the thing a human
         # opens the PR from - so code committed after the last review pass
         # fails here. poc has no PR, so no loop.
-        problems += review_ledger.check(root, "impl", feat=feat,
-                                        head=branch["sha"],
-                                        repo_root=repo_dir)
+        try:
+            import review_ledger  # noqa: PLC0415  (vendored sibling; prod only)
+        except ImportError as e:
+            problems.append(
+                f"the review ledger tool could not be imported ({e}) - the "
+                f"pre-PR review loop cannot be verified, so failing closed. "
+                f"Upgrade .specdev/tools/ together with the skill and agents.")
+        else:
+            problems += review_ledger.check(root, "impl", feat=feat,
+                                            head=branch["sha"],
+                                            repo_root=repo_dir)
 
     # Supplementary only. A PR is neither necessary nor sufficient here.
     prs, rejected = implementation_prs(feat, unit=unit, base=base, repo=repo,

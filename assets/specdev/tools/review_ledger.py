@@ -148,7 +148,8 @@ def max_iterations(root=".", repo_root=".") -> int:
     if val is run_manifest._MISSING:
         raise LedgerError(f"ci.json has no {MAX_KEY}")
     if (isinstance(val, bool) or not isinstance(val, (int, float))
-            or not math.isfinite(val) or int(val) != val or int(val) < 1):
+            or (isinstance(val, float) and not math.isfinite(val))
+            or int(val) != val or int(val) < 1):
         raise LedgerError(f"{MAX_KEY} must be an integer >= 1, got {val!r} "
                           f"- 0 does not disable the review loop")
     return int(val)
@@ -433,6 +434,7 @@ def status(root=".", phase="impl", repo_root=".", feat=None) -> dict:
             "cap": cap, "run": len(ph["runs"]), "passes_in_run": n,
             "next_pass_in_run": n + 1 if n < cap else None, "state": state,
             "stale_reason": why if state.startswith("stale") else "",
+            "stale_unverified": stale is None,
             "open_blocking": open_, "dismissed": ph["dismissed"]}
 
 
@@ -481,9 +483,9 @@ def new_run(root=".", phase="impl", head="HEAD", repo_root=".") -> dict:
         raise LedgerError(f"the current {phase} run has no passes yet - "
                           f"record one instead")
     stale, why = _staleness(root, phase, ph, head, repo_root)
-    if stale is None:
-        raise LedgerError(why)
-    if not stale:
+    # An unverifiable reviewed state (rewritten history) is a reason to
+    # re-review; only a state verified unchanged is refused.
+    if stale is False:
         raise LedgerError(
             f"nothing changed since pass {run['passes'][-1]['pass']} was "
             f"reviewed. A new run is for re-review after the reviewed state "
@@ -637,12 +639,20 @@ def _status_text(st: dict) -> str:
              f"{st['passes_in_run']} of {st['cap']} passes in the current run"]
     if st["state"] in ("not-started", "needs-fixes"):
         lines.append(f"next: pass {st['next_pass_in_run']} of {st['cap']}")
-    elif st["state"] == "stale":
-        lines.append(f"next: pass {st['next_pass_in_run']} of {st['cap']} - "
-                     f"the reviewed state changed ({st['stale_reason']})")
-    elif st["state"] == "stale-at-cap":
-        lines.append(f"the run is at its cap and the reviewed state changed "
-                     f"({st['stale_reason']}): run 'review_ledger.py --root "
+    elif st["state"] in ("stale", "stale-at-cap"):
+        what = ("the last reviewed state cannot be verified"
+                if st.get("stale_unverified") else
+                "the reviewed state changed")
+        if st["open_blocking"]:
+            lines.append(f"{len(st['open_blocking'])} blocking finding(s) "
+                         f"from the last pass are still open - fix or "
+                         f"dismiss each before the next pass")
+        if st["state"] == "stale":
+            lines.append(f"next: pass {st['next_pass_in_run']} of "
+                         f"{st['cap']} - {what} ({st['stale_reason']})")
+        else:
+            lines.append(f"the run is at its cap and {what} "
+                         f"({st['stale_reason']}): run 'review_ledger.py --root "
                      f"<unit> new-run --phase {st['phase']}', then record "
                      f"pass 1 of the new run")
     for f in st["open_blocking"]:
