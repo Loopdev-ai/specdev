@@ -817,7 +817,7 @@ WORKFLOWS = ROOT / "assets" / "workflows"
 # gen_traceability tests below.
 PROFILE_GATED = {
     "post-dev-qa.yml": ["coverage_gate", "traceability"],
-    "spec-validate.yml": ["spec_bar"],
+    "spec-validate.yml": ["spec_bar", "spec_pr"],
     "compliance.yml": ["compliance"],
 }
 

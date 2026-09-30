@@ -718,3 +718,37 @@ def test_new_feature_captures_intent_and_runs_the_spec_loop():
               "record --phase spec", "check --phase spec", "spec_pr",
               "Open Questions"):
         assert s in flat, s
+
+
+# ---- Task 7: workflows -----------------------------------------------------
+
+WF = ROOT / "assets" / "workflows"
+
+
+def test_spec_validate_runs_the_spec_check_only_on_spec_prs():
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load((WF / "spec-validate.yml").read_text(encoding="utf-8"))
+    steps = doc["jobs"]["validate"]["steps"]
+    step = next(s for s in steps if "review_ledger.py" in str(s.get("run", "")))
+    assert "check --phase spec" in " ".join(step["run"].split())
+    cond = str(step.get("if", ""))
+    assert "startsWith(github.head_ref, 'spec/')" in cond, \
+        "must never fire on an Implementation PR or an unrelated PR"
+    assert "].spec_pr" in cond, "a unit with no Spec PR is never asked for one"
+
+
+def test_every_build_attempt_is_told_about_the_review_loop():
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load((WF / "specdev-build.yml").read_text(encoding="utf-8"))
+    build = doc["jobs"]["build"]
+    cont = " ".join(build["env"]["CONTINUE_PROMPT"].split())
+    assert "review_ledger.py" in cont and "status --phase impl" in cont
+    agent1 = next(s for s in build["steps"] if s.get("id") == "agent1")
+    prompt = " ".join(agent1["with"]["prompt"].split())
+    assert "review_ledger.py check --phase impl" in prompt
+    assert "code-reviewer" in prompt and "intent-reviewer" in prompt
+
+
+def test_install_smoke_runs_the_installed_review_ledger():
+    text = (ROOT / ".github" / "workflows" / "tests.yml").read_text("utf-8")
+    assert "python .specdev/tools/review_ledger.py --root . status" in text

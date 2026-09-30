@@ -73,5 +73,6 @@ jobs:
           set -euo pipefail
           cd /tmp/adopter
           python .specdev/tools/run_manifest.py --root . breaker-env --repo-root .
+          python .specdev/tools/review_ledger.py --root . status --phase impl --repo-root .
           python .specdev/tools/validate_spec.py || true
           python .specdev/tools/build_outcome.py --root . checkpoint || true

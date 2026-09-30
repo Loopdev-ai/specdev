@@ -202,9 +202,13 @@ jobs:
         adr-checker / spec-explorer subagents, keep only their summaries.
 
         Commit every wave as it goes green. The terminal state is: the
-        implementation branch carries your commits beyond the base branch, and
-        <unit>/.specdev/PR_BODY.md is filled in. Do NOT open, review or merge
-        a pull request in either mode - a human opens it.
+        implementation branch carries your commits beyond the base branch,
+        <unit>/.specdev/PR_BODY.md is filled in, and - in prod mode -
+        `review_ledger.py check --phase impl` passes. If the waves are done,
+        continue the pre-PR review loop from
+        `python .specdev/tools/review_ledger.py --root <unit> status --phase impl`,
+        which names the next pass; never restart it at pass 1. Do NOT open,
+        review or merge a pull request in either mode - a human opens it.
 
         If you cannot reach the terminal state, write what is done, what is
         outstanding and what blocked you into BUILD.md, COMMIT it, and stop.
@@ -380,8 +384,14 @@ jobs:
             Resume from <unit>/.specdev/BUILD.md; if the build is incomplete,
             continue the dependency-wave loop until the terminal state:
               - your commits are on the branch (COMMIT every wave - this job
-                pushes them to specdev/impl/<unit>/<FEAT> for you), and
-              - <unit>/.specdev/PR_BODY.md is filled in.
+                pushes them to specdev/impl/<unit>/<FEAT> for you),
+              - <unit>/.specdev/PR_BODY.md is filled in, and
+              - in prod mode, the pre-PR review loop is complete: fresh
+                code-reviewer + intent-reviewer passes, fixes committed, until
+                a pass is clean or max_review_iterations is reached with the
+                open findings in PR_BODY.md -
+                `review_ledger.py check --phase impl` passes. Resume it from
+                `review_ledger.py --root <unit> status --phase impl`.
             Do NOT open, review or merge a pull request, in EITHER mode - a
             human opens it from that branch. `gh pr create`, `gh pr review` and
             `gh pr merge` are denied to you; that is deliberate, not an
