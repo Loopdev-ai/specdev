@@ -10,7 +10,10 @@ This tool replaces "the process exited 0" with "the mode's terminal state was
 actually reached":
 
     prod: an implementation BRANCH for this unit+FEAT was pushed by this run,
-          carrying commits beyond the base, with a prepared PR body
+          carrying commits beyond the base, with a prepared PR body - and the
+          pre-PR review loop recorded over the branch tip: a clean final pass,
+          or max_review_iterations reached with every open finding listed in
+          PR_BODY.md (review_ledger.check)
     poc:  the same branch — the poc environment deploys from it directly —
           PLUS a filled-in '## Findings' section in BUILD.md. A poc's actual
           deliverable is not the code (it is reverse-mapped with the
@@ -94,6 +97,8 @@ try:  # UTF-8 stdout/stderr on Windows consoles (cp1252) so output never crashes
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 BUILD_REL = ".specdev/BUILD.md"
 PR_BODY_REL = ".specdev/PR_BODY.md"
@@ -504,6 +509,24 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
     problems += branch["problems"]
     warnings += branch["warnings"]
 
+    if mode == "prod" and branch.get("sha"):
+        # The pre-PR review loop is part of the prod terminal state: without
+        # it, nothing read the code before the PR but the tests its own
+        # builder wrote. Checked against the BRANCH TIP - the thing a human
+        # opens the PR from - so code committed after the last review pass
+        # fails here. poc has no PR, so no loop.
+        try:
+            import review_ledger  # noqa: PLC0415  (vendored sibling; prod only)
+        except ImportError as e:
+            problems.append(
+                f"the review ledger tool could not be imported ({e}) - the "
+                f"pre-PR review loop cannot be verified, so failing closed. "
+                f"Upgrade .specdev/tools/ together with the skill and agents.")
+        else:
+            problems += review_ledger.check(root, "impl", feat=feat,
+                                            head=branch["sha"],
+                                            repo_root=repo_dir)
+
     # Supplementary only. A PR is neither necessary nor sufficient here.
     prs, rejected = implementation_prs(feat, unit=unit, base=base, repo=repo,
                                        since=since, author=authors)
@@ -513,7 +536,11 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
                 f"PR" + (" (poc deploys from this branch directly), and "
                          f"BUILD.md's '## Findings' section filled in — a "
                          f"spike's deliverable is what it taught you"
-                         if mode == "poc" else ""))
+                         if mode == "poc" else
+                         ", after the pre-PR review loop recorded a clean "
+                         "final pass over the branch tip — or reached "
+                         "max_review_iterations with every open finding "
+                         "listed in PR_BODY.md"))
     return {
         "ok": not problems,
         "mode": mode,

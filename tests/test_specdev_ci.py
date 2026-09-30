@@ -198,7 +198,9 @@ def test_specdev_build_does_not_require_a_pat():
 def test_vendor_sources_exist():
     # init must have something to copy into a target repo's .claude/
     assert (ROOT / "skills" / "specdev" / "SKILL.md").exists()
-    for a in ["component-builder", "qa-verifier", "adr-checker", "spec-explorer"]:
+    for a in ["component-builder", "qa-verifier", "adr-checker",
+              "spec-explorer", "spec-reviewer", "code-reviewer",
+              "intent-reviewer"]:
         assert (ROOT / "agents" / f"{a}.md").exists(), a
 
 

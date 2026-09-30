@@ -237,3 +237,18 @@ def test_the_installed_tools_resolve_their_limits_from_the_installed_config(inst
         assert var in armed, f"{key} is never exported, so it cannot be armed"
         assert float(armed[var]) == float(shipped[key]), (
             f"{var} armed as {armed[var]} but ci.json says {shipped[key]}")
+
+
+def test_the_review_ledger_runs_from_its_installed_path(installed):
+    """review_ledger.py imports run_manifest as a sibling and resolves the cap
+    from the installed ci.json - both only exist in the installed shape."""
+    import subprocess
+    import sys
+
+    p = subprocess.run(
+        [sys.executable,
+         str(installed / ".specdev" / "tools" / "review_ledger.py"),
+         "--root", ".", "status", "--phase", "impl", "--repo-root", "."],
+        cwd=str(installed), capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "not-started" in p.stdout and "of 10" in p.stdout

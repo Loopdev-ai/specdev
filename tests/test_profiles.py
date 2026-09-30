@@ -817,7 +817,7 @@ WORKFLOWS = ROOT / "assets" / "workflows"
 # gen_traceability tests below.
 PROFILE_GATED = {
     "post-dev-qa.yml": ["coverage_gate", "traceability"],
-    "spec-validate.yml": ["spec_bar"],
+    "spec-validate.yml": ["spec_bar", "spec_pr"],
     "compliance.yml": ["compliance"],
 }
 
@@ -1009,7 +1009,22 @@ def _findings_repo(tmp_path, findings_block):
     (root / "widget.py").write_text("widget", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-m", "feat(widget): REQ-001")
+    tip = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(root),
+                         check=True, capture_output=True,
+                         text=True).stdout.strip()
     _git(root, "checkout", "-q", "main")
+    # A prod build's terminal state includes the pre-PR review loop; one
+    # clean pass over the branch tip keeps the prod test in this group about
+    # Findings (which prod must ignore), not about reviews.
+    (root / ".specdev" / "review.json").write_text(json.dumps({
+        "schema_version": 1, "feat": "FEAT-900",
+        "phases": {"spec": {"runs": [], "dismissed": []},
+                   "impl": {"runs": [{"started_at": "2026-09-29T00:00:00Z",
+                                      "passes": [{"pass": 1,
+                                                  "at": "2026-09-29T00:00:00Z",
+                                                  "reviewed": tip,
+                                                  "findings": []}]}],
+                            "dismissed": []}}}), encoding="utf-8")
     return root, bo
 
 

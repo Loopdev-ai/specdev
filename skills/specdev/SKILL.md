@@ -88,7 +88,9 @@ poc-built unit's maturity.
    **Current behavior** per requirement). Do not read the codebase survey into
    this thread yourself — that is the explorer's job to summarize.
 2. **Brainstorm.** Socratic Q&A to pin users, problem, scope, out-of-scope.
-   Don't write the spec until the problem is unambiguous.
+   Don't write the spec until the problem is unambiguous. Record the user's
+   request **verbatim** — it becomes the spec's `## Original Request`, the
+   one thing the reviewers judge intent against. Never paraphrase it.
 3. **Spec (Gate 1 artifact).** **(`spec_bar: charter` → write `.specdev/CHARTER.md` instead; skip the rest of this step.)**
    Fill `.specdev/spec.md`: assign `FEAT-###`, one
    `REQ-###` per requirement, each with a testable **Acceptance** line, and a
@@ -123,12 +125,20 @@ poc-built unit's maturity.
    proceed silently past a violation, and never read org ADR bodies into this
    thread — that is the checker's job.
 5. **Open the Spec PR.** **(`spec_pr: false` → skip this step entirely.)**
-   Before opening it, the **`adr-checker`** agent must
-   be green (when org governance is configured) — a spec that contradicts an
-   applicable org ADR is fixed *before* review, not during. Then
-   `spec-validate.yml` runs `validate_spec.py` and `org-adr-check.yml` runs
-   `check_org_adrs.py` as required checks. Get them green, get human approval,
-   merge. This locks the contract — do not renumber REQs afterward.
+   Before opening it, run the **Pre-PR review loop** (below) in the spec
+   phase — a fresh `spec-reviewer` every pass until a pass is clean or
+   `max_review_iterations` is reached — and then the **`adr-checker`** agent
+   must be green (when org governance is configured) — a spec that
+   contradicts an applicable org ADR is fixed *before* review, not during.
+   If `adr-checker` — or anything else — changes the spec after the last
+   review pass, run another spec pass (`review_ledger.py --root <unit> new-run
+   --phase spec` first if the run is at its cap): `check --phase spec` fails on
+   any spec edit the last pass did not see.
+   Commit `.specdev/review.json` with the spec. Then `spec-validate.yml` runs
+   `validate_spec.py` and `review_ledger.py check --phase spec`, and
+   `org-adr-check.yml` runs `check_org_adrs.py`, as required checks. Get them
+   green, get human approval, merge. This locks the contract — do not
+   renumber REQs afterward.
 6. **Build on `feat/<feature>`** off the merged spec — run **`/specdev:build`**,
    which drives the loop below. You act as a coordinator, not a builder (see
    *Context discipline* and *Parallel dispatch protocol*):
@@ -151,14 +161,20 @@ poc-built unit's maturity.
    - **Starting a build authorizes subagent dispatch.** This workflow spawns
      subagents by design; the harness default ("don't spawn unless asked") does
      not apply once the user has invoked the SpecDev build — dispatch them.
-7. **Open the Implementation PR (Gate 2) — only after the org-ADR loop is
-   green.** With org governance configured, run this fully automatic loop
-   first (no user prompts between iterations): dispatch **`adr-checker`** →
-   on red, dispatch a `component-builder` to fix each named violation (or
-   amend the local ADRs for a justified deviation — via the **`adr`** skill,
-   so the deviation ADR is linted and conflict-checked like any other) →
-   re-run `qa-verifier` → re-run `adr-checker` — repeat until green. **Do not
-   open the PR while the checker reports violations.** Then `post-dev-qa.yml`
+7. **Open the Implementation PR (Gate 2) — only after the review loop and the
+   org-ADR loop are green.** First run the **Pre-PR review loop** (below) in
+   the impl phase: fresh `code-reviewer` + `intent-reviewer` every pass,
+   test-first fixes by `component-builder`s, `qa-verifier` green, commit —
+   until a pass is clean or `max_review_iterations` is reached. Then, with
+   org governance configured, run this fully automatic loop (no user prompts
+   between iterations): dispatch **`adr-checker`** → on red, dispatch a
+   `component-builder` to fix each named violation (or amend the local ADRs
+   for a justified deviation — via the **`adr`** skill, so the deviation ADR
+   is linted and conflict-checked like any other) → re-run `qa-verifier` →
+   re-run `adr-checker` — repeat until green. If that loop changed any code,
+   run one more review pass: `review_ledger.py check` fails on code the last
+   pass never saw. **Do not open the PR while the checker reports violations
+   or `review_ledger.py check --phase impl` fails.** Then `post-dev-qa.yml`
    runs tests, security scan, coverage, and `gen_traceability.py
    --check-gaps` (fails if any REQ has no test), and `org-adr-check.yml`
    deterministically re-proves the manifest against the org index. These are
@@ -194,8 +210,9 @@ never fills the context window:
   status. Never hold full source files, full test output, or full code surveys.
 - **Offload all heavy work to subagents** whose context is discarded — reverse-
   mapping (`spec-explorer`), component builds (`component-builder`), QA
-  (`qa-verifier`), org-ADR verification (`adr-checker`). Only their short
-  summaries return to you.
+  (`qa-verifier`), org-ADR verification (`adr-checker`), pre-PR review
+  (`spec-reviewer`, `code-reviewer`, `intent-reviewer`). Only their short
+  summaries and finding JSON return to you.
 - **Checkpoint to disk after every phase.** Write decisions, the build log, and
   open items into `.specdev/BUILD.md` so the conversation can be safely
   summarized/compacted without losing the thread. Treat `BUILD.md` as the
@@ -237,6 +254,86 @@ Turn `components.md` into a build schedule:
 Sequential or trivial single-component work can skip waves, but still goes
 through `component-builder` so its detail stays out of this thread.
 
+## Pre-PR review loop (both PRs)
+
+Nothing else reads a PR for correctness or intent before a human does:
+`qa-verifier` runs the tests the builder itself wrote, so a bug the builder
+never imagined passes green, and `validate_spec.py` checks a spec's shape, not
+whether it says what the user asked for. This loop is that reading. It runs
+before **every** Spec PR and Implementation PR, it is recorded by
+`review_ledger.py`, and it is **asserted** — `build_outcome.py verify` fails a
+prod build without it and `spec-validate.yml` fails a Spec PR without it — so
+skipping it is a failed build, not a shortcut.
+
+- **When:** the spec phase when the profile's `spec_pr` is true; the impl
+  phase in `prod` mode. `poc` has no PR and runs neither.
+- **Cap:** `max_review_iterations` passes per run (`ci.json`, default 10).
+- **Resume point:** `python .specdev/tools/review_ledger.py --root <unit>
+  status --phase <spec|impl>` — the next pass, the open findings, and the
+  dismissed list. Never restart at pass 1.
+
+Running `/specdev:new-feature` or `/specdev:build` authorizes dispatching these
+reviewers — the harness default ("don't spawn unless asked") does not apply.
+Never review inline: the ledger only sees JSON, so it cannot tell.
+
+Each pass:
+
+1. **Dispatch fresh reviewers, in one message.** Impl: commit the fixes first,
+   then capture `git rev-parse HEAD` — the commit the reviewers will see. New `Agent` calls
+   every pass — never a continuation of an earlier pass's reviewer, whose blind
+   spots are exactly what the next pass is for.
+   - spec phase: one **`spec-reviewer`**;
+   - impl phase: **`code-reviewer`** and **`intent-reviewer`** in parallel,
+     with the base branch.
+   Give each the unit root and the **dismissed list** from `status`, labelled
+   "already adjudicated — do not re-raise without new evidence". Never give a
+   reviewer the builders' summaries.
+2. **Record the pass.** Save each reviewer's closing JSON block verbatim to a
+   file outside the repo (or pipe one on stdin as `-`) and run
+   `review_ledger.py --root <unit> record --phase <p> --findings-json <file>`
+   once per pass, repeating `--findings-json` per reviewer. The tool assigns
+   the finding ids and stamps what was reviewed — never count or number
+   findings yourself. Impl: if `record` reports uncommitted changes, they are the reviewers' side
+   effects — discard them (`git checkout -- <paths>`), never commit them. Pass the
+   captured sha as `--reviewed <sha>`; it refuses if code changed since
+   dispatch.
+3. **Stop** when `status` says `clean` or `cap-reached`. `stale` means the
+   reviewed state changed since the last pass — make sure every finding `status` still lists as
+   OPEN is fixed or dismissed, then run the next pass;
+   `stale-at-cap` means it changed and the run is spent — run
+   `review_ledger.py --root <unit> new-run --phase <p>` first. At the cap do **not**
+   fix the last pass's findings — that would ship code no reviewer saw —
+   hand them off (below).
+4. **Fix every open blocking finding, then go to 1.**
+   - Impl: dispatch `component-builder`s in review-fix mode — one per
+     affected component, in parallel when their files are disjoint — with the
+     findings (id, where, scenario) as the contract. Each reproduces its
+     finding with a failing test before fixing it. A `not-reproducible`
+     comes back with evidence → `review_ledger.py --root <unit> dismiss
+     --phase impl --id <id> --reason "<evidence>"`. You may also dismiss a
+     finding that contradicts the spec or an accepted ADR, citing the
+     section. Then `qa-verifier` green, then commit.
+   - Spec: revise the spec yourself and re-run `validate_spec.py --strict`.
+     Batch the `needs_human` findings into **one** question to the user per
+     pass and fold the answers in. A deferral is dismissed ("deferred by the
+     user") and listed in `## Open Questions`.
+   Ask the user nothing else between passes — the loop is automatic.
+
+**Hand-off at the cap.** Impl: paste `review_ledger.py --root <unit> render
+--phase impl` over `PR_BODY.md`'s `## Review loop` and `## Unresolved review
+findings` sections (do this on a clean exit too — it records the passes).
+Spec: list every open finding id under the spec's `## Open Questions`. Then
+tell the user plainly that the PR carries unresolved findings.
+
+**Before announcing either PR ready,** commit `.specdev/review.json` and run
+`review_ledger.py --root <unit> check --phase <p>`. It fails when the loop
+never ran, when the code (or the spec) changed after the last pass, when the
+loop stopped short of the cap with findings open, or when a capped run's open
+findings were not handed off. If something changed after the last pass — the
+org-ADR loop touched code, or a human edited the spec on an open PR — run
+another pass; if the run is already at its cap,
+`review_ledger.py --root <unit> new-run --phase <p>` starts a fresh one, and refuses unless the reviewed state really changed.
+
 ## Terminal state (when a build is actually over)
 
 A build ends at a **terminal state**, not when you feel finished. CI asserts it
@@ -245,7 +342,10 @@ after your turn with `build_outcome.py verify`, in these words:
 - the **implementation branch** `specdev/impl/<unit>/<FEAT-###>` carries commits
   beyond the base branch (the workflow pushes it — you must *commit*);
 - a **prepared PR body** at `<unit>/.specdev/PR_BODY.md`, filled in;
-- a **real checkpoint** at `<unit>/.specdev/BUILD.md`.
+- a **real checkpoint** at `<unit>/.specdev/BUILD.md`;
+- in `prod`, a **review ledger** at `<unit>/.specdev/review.json` whose last
+  pass is clean over the branch tip — or at `max_review_iterations` with every
+  open finding listed in `PR_BODY.md`.
 
 **The build never opens or merges a PR, in either mode.** A human opens it from
 that branch: the build would otherwise need *Allow GitHub Actions to create and
@@ -276,6 +376,9 @@ but it can only push what you committed.
   PR itself is the only human gate. Never hand-edit
   `.specdev/adr/org-compliance.json` — only the checker writes it, and the
   `org-adr-check` CI gate will catch a forged or stale entry by content hash.
+- Never announce a Spec or Implementation PR ready while `review_ledger.py
+  check` fails, and never hand-edit `.specdev/review.json` — only the tool
+  writes it. Reviewers never fix; builders never review their own work.
 - Rollback is built in (profile-driven), but confirm `.specdev/deploy.profile.json`
   is correct — a wrong target or placeholder URL is the one thing that defeats
   auto-prod safety. Run `detect_deploy.py` and review it during `/specdev:init`.
@@ -297,6 +400,8 @@ python .specdev/tools/gen_traceability.py --check-gaps  # Gate 2 test-coverage c
 python .specdev/tools/check_org_adrs.py              # org-ADR gate (inert until org.json is configured)
 python .specdev/tools/adr.py lint                    # ADR quality gate (mode auto-detected)
 python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shortlist check for one ADR
+python .specdev/tools/review_ledger.py status --phase impl   # pre-PR review loop: next pass, open + dismissed findings
+python .specdev/tools/review_ledger.py check --phase impl    # the review-loop gate (spec: --phase spec)
 ```
 
 In a monorepo add `--root <unit>` to each (the tools stay at the repo root;
@@ -312,4 +417,5 @@ python .specdev/tools/profile.py show --unit <u>     # one unit's resolved profi
 python .specdev/tools/check_org_adrs.py --unit <u>   # one unit's org-ADR gate
 python .specdev/tools/adr.py lint --unit <u>         # one unit's ADR quality gate
 python .specdev/tools/units.py migrate --unit <path> # single-root -> multi-unit
+python .specdev/tools/review_ledger.py --root <u> check --phase impl  # one unit's review-loop gate
 ```

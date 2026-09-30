@@ -6,8 +6,9 @@ argument-hint: [FEAT-### or feature-name]
 Build the feature **$ARGUMENTS** from its merged spec.
 
 **This command dispatches subagents by design. Running it is your authorization
-to spawn `component-builder` and `qa-verifier` agents — do it; do not fall back
-to building inline.** You are a coordinator, not a builder: you hold only the
+to spawn `component-builder`, `qa-verifier`, `code-reviewer` and
+`intent-reviewer` agents — do it; do not fall back to building or reviewing
+inline.** You are a coordinator, not a builder: you hold only the
 spec, the component DAG, and returned summaries. You never write component code,
 full test output, or code surveys into this thread.
 
@@ -32,6 +33,10 @@ your turn ends (`build_outcome.py verify`), in these words:
 - **A prepared PR body** at `<unit>/.specdev/PR_BODY.md`, filled in, not the
   shipped template.
 - **A real checkpoint** at `<unit>/.specdev/BUILD.md`, not the shipped template.
+- **A recorded review loop** (prod) at `<unit>/.specdev/review.json`: the last
+  pass clean over the branch tip, or `max_review_iterations` reached with every
+  open finding listed in `PR_BODY.md`. `review_ledger.py check --phase impl` is
+  the same assertion — run it yourself before you stop.
 
 **Do not open the PR, in either mode, and do not merge anything.** A human
 opens the PR from that branch. This is not a restriction being worked around:
@@ -60,8 +65,9 @@ stopping is cheap and a re-dispatch resumes from it — but only for what you
 actually committed.
 
 Interactively (this command, run by a human), the terminal state is the end of
-*After the final wave* below: green QA, green org-ADR loop, `PR_BODY.md`
-filled in, `BUILD.md` at `qa`, and the user told the PR is ready. Opening the
+*After the final wave* below: green QA, a complete review loop, green org-ADR
+loop, `PR_BODY.md` filled in, `BUILD.md` at `qa`, and the user told the PR is
+ready. Opening the
 PR is the human's call in both cases — headless CI is no different.
 
 ## Build loop (repeat until every component is built)
@@ -111,7 +117,25 @@ PR is the human's call in both cases — headless CI is no different.
    `BUILD.md` → *Deployment Facts*, then `deploy.py preflight --env staging` and
    `--env production` until green (the `preflight` job blocks the merge
    otherwise).
-3. **Org-ADR compliance loop (when `.specdev/org.json` is configured) — the
+3. **Pre-PR review loop (prod mode) — the PR is held until it ends.** Follow
+   the specdev skill's *Pre-PR review loop*. Start from the pass
+   `python .specdev/tools/review_ledger.py --root <unit> status --phase impl`
+   names, then per pass:
+   - Capture `git rev-parse HEAD`, then dispatch a fresh **`code-reviewer`** and
+     a fresh **`intent-reviewer`** in one message, with the unit root, the base branch and the dismissed list.
+   - Save each one's closing JSON block and record the pass:
+     `review_ledger.py --root <unit> record --phase impl --reviewed <that sha>
+     --findings-json <a> --findings-json <b>`.
+   - `clean` → go to step 4. `cap-reached` → stop fixing; the open findings
+     are handed off in step 5. `stale` → fix or dismiss every finding `status` still lists as OPEN, then run the next pass; `stale-at-cap` →
+     `review_ledger.py --root <unit> new-run --phase impl`, then the next pass.
+   - Otherwise dispatch `component-builder`s in review-fix mode with the open
+     findings as their contract — each reproduces its finding with a failing
+     test, then fixes it; dismiss a `not-reproducible` one with its evidence
+     (`review_ledger.py --root <unit> dismiss --phase impl --id <id> --reason
+     "..."`) — then `qa-verifier` green, commit, and run the next pass.
+     **Automatically — do not ask the user between passes.**
+4. **Org-ADR compliance loop (when `.specdev/org.json` is configured) — the
    PR is held until this is green.** Dispatch the **`adr-checker`** agent. It
    fetches the org ADR index, verifies every ADR applicable to this repo's
    classification, and writes `.specdev/adr/org-compliance.json`.
@@ -121,14 +145,24 @@ PR is the human's call in both cases — headless CI is no different.
      `adr-checker`. Repeat **automatically — do not ask the user between
      iterations** — until green.
    - **Green** → record the verdict in the `BUILD.md` ledger and continue.
-4. Fill in `.specdev/PR_BODY.md` — the Implementation PR body — from the wave
+   - If this loop changed any code, run one more review pass (step 3) — the
+     review check fails on code the last pass never saw. If `status` says
+     `stale-at-cap`, run `review_ledger.py --root <unit> new-run --phase impl`
+     first.
+5. Fill in `.specdev/PR_BODY.md` — the Implementation PR body — from the wave
    ledger: REQs covered and the test asserting each, deployment facts resolved,
-   anything deferred. It is asserted after the run, so the stock template
-   surviving is a failed build.
-5. Update `BUILD.md` status to `qa`, then tell the user the build is green and
+   anything deferred. Paste `review_ledger.py --root <unit> render --phase
+   impl` over its `## Review loop` and `## Unresolved review findings`
+   sections. It is asserted after the run, so the stock template surviving is
+   a failed build.
+6. Commit `.specdev/review.json`, then run `review_ledger.py --root <unit>
+   check --phase impl`. It must pass. If the run reached its cap, tell the
+   user which findings are unresolved.
+7. Update `BUILD.md` status to `qa`, then tell the user the build is green and
    the next step is to open the Implementation PR (Gate 2) from the pushed
    branch, pasting `PR_BODY.md`. Do **not** open the PR automatically, and
-   never announce PR readiness while `qa-verifier` or `adr-checker` is red.
+   never announce PR readiness while `qa-verifier`, `adr-checker` or
+   `review_ledger.py check` is red.
 
 ## Guardrails
 
@@ -140,3 +174,6 @@ PR is the human's call in both cases — headless CI is no different.
   from the wave ledger without re-reading this conversation.
 - Only the `adr-checker` agent writes `.specdev/adr/org-compliance.json`; the
   coordinator never edits it and never reads org ADR bodies into this thread.
+- Reviewers never fix and builders never review: every review pass is a fresh
+  `code-reviewer` + `intent-reviewer`, and only `review_ledger.py` writes
+  `.specdev/review.json`.
