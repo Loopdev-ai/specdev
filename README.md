@@ -71,6 +71,9 @@ gated flow or when a repo contains `.specdev/`.
 | Agent `spec-explorer` | reverse-maps an existing codebase for extensions (read-only) |
 | Agent `qa-verifier` | local Gate-2 dry run; returns only actionable failures |
 | Agent `adr-checker` | verifies the repo against applicable org ADRs; writes the compliance manifest; gates every PR |
+| Agent `spec-reviewer` | pre-PR review of the spec against the user's original request; read-only, fresh every pass |
+| Agent `code-reviewer` | pre-PR defect review of the implementation diff — every finding with a `file:line` and a failure scenario |
+| Agent `intent-reviewer` | pre-PR check that every REQ is delivered end to end and genuinely asserted, and the original request honoured |
 | Skill `arch-config` | capture/edit/delete a product's runtime hosting config (10 categories) as per-environment, reference-only records in `.specdev/architecture-config.json` |
 | Skill `adr` | interviews, allocates the id, lints, and conflict-checks an architecture decision record (local or org) — the only supported way to write one |
 | `governance/` (this repo) | the org's **architectural repo of record**: tier-scoped org ADRs, classification scheme, generated index |
@@ -90,6 +93,23 @@ a separate `qa-verifier` agent gates it** (tests + coverage + secret scan +
 traceability gap check) — QA happens every build step, and stays independent of
 the agent that wrote the code. Phase state is checkpointed to the `BUILD.md`
 wave ledger, the source of truth.
+
+**Before each PR, a bounded review loop.** `qa-verifier` runs the tests the
+builder wrote, so it cannot catch a bug the builder never imagined — which is
+what a reviewer like Copilot then finds after the PR is open. So before every
+Spec PR and Implementation PR the coordinator runs up to
+`max_review_iterations` (default 10) review passes, each with **fresh**
+read-only reviewers: `spec-reviewer` for the spec; `code-reviewer` (defects,
+each with a `file:line` and a failure scenario) and `intent-reviewer` (every
+REQ delivered end to end and genuinely asserted, the Original Request
+honoured) for the implementation. Blocking findings go back to
+`component-builder`s test-first, QA re-runs, and the next pass starts; the
+loop ends on a clean pass or at the cap, where the open findings are listed
+in the PR body (or the spec's Open Questions) rather than dropped. Every pass
+is recorded in `.specdev/review.json` by `review_ledger.py`, and the loop is
+**asserted**: a prod build's terminal state and the Spec PR's `spec-validate`
+check both fail if it never ran, stopped early, or reviewed code that has
+since changed.
 
 **Driving pattern (this is what makes the above actually happen):** drive
 multi-feature builds with **`/specdev:build`** — invoking the command is the
@@ -113,7 +133,7 @@ IMPL PR  ──gate2: post-dev-qa (required checks)──merge─▶
 
 | Workflow | Trigger | Role |
 |----------|---------|------|
-| `spec-validate.yml` | PR to `spec/**` | Gate 1 — artifact completeness + REQ IDs |
+| `spec-validate.yml` | PR to `spec/**` | Gate 1 — artifact completeness + REQ IDs + the recorded spec review loop |
 | `post-dev-qa.yml` | PR to `main` | Gate 2 — tests, security, coverage, trace gaps |
 | `org-adr-check.yml` | every PR | org-ADR gate — applicable org ADRs verified & hash-current |
 | `deploy.yml` | push to `main` | build, tag, staging→QA→auto-prod→QA, rollback |
@@ -127,8 +147,10 @@ properties keep an unattended run honest:
 
 - **The job is not green because the process exited.** It ends by asserting the
   terminal state: `specdev/impl/<unit>/<FEAT-###>` carries commits beyond the
-  base branch, `.specdev/PR_BODY.md` is filled in, and `BUILD.md` is no longer
-  the shipped template. `deploy-poc` is gated on that assertion, so a build
+  base branch, `.specdev/PR_BODY.md` is filled in, `BUILD.md` is no longer
+  the shipped template, and — in prod — the pre-PR review loop recorded a
+  clean final pass over the branch tip (or reached its cap with every open
+  finding in the PR body). `deploy-poc` is gated on that assertion, so a build
   that produced nothing cannot trigger a deployment.
 - **The build never opens or merges a pull request** — in either mode. It
   pushes a branch and prepares the PR body; a human opens the PR. See *The
@@ -170,6 +192,7 @@ properties keep an unattended run honest:
 | `max_wall_minutes` | 240 | the run has been going that long |
 | `max_tool_calls` | 3000 | that many tool calls have been made |
 | `auto_resume` | `true` | — restores the checkpoint ref on re-dispatch |
+| `max_review_iterations` | 10 | — review passes per run before a PR is handed off (≥ 1; `0` does not disable it; not a breaker limit) |
 
 The denial limbs are a **conjunction**: a run trips only when refusals clear
 the floor *and* exceed the rate. A bare count is scale-dependent — 16 refusals
@@ -191,6 +214,15 @@ terminal record. When it cannot be read the run says so — the outcome record
 reports *not measured (ceiling was INACTIVE)* rather than `$0` — and
 `max_wall_minutes` / `max_tool_calls` are the bounds that actually hold. Keep
 `max_wall_minutes` below `max_session_minutes`, or the job timeout fires first.
+
+**The review loop spends inside these limits.** Up to `max_review_iterations`
+passes of reviewers, fixers and QA is real work on top of the build itself,
+and none of the ceilings above were raised for it. If long features trip
+`max_tool_calls`, `max_wall_minutes` or the `continuation_cap_usd` start
+gate, raise those (keeping `max_wall_minutes` under `max_session_minutes`) or
+lower `max_review_iterations` for the unit — that is your spend decision, not
+the kit's. A tripped run is never handed off half-reviewed: the ledger
+records the last pass, and the terminal-state assertion fails honestly.
 
 Defaults are loaded from the shipped `ci.json`, so a key you never set still
 resolves. Where a value must be a *deliberate, committed* choice rather than an
@@ -536,6 +568,9 @@ agents/
   spec-explorer.md       read-only reverse-map for extensions
   qa-verifier.md         local Gate-2 dry run
   adr-checker.md         org-ADR verification; gates every PR
+  spec-reviewer.md       pre-PR spec review against the original request
+  code-reviewer.md       pre-PR defect review of the implementation diff
+  intent-reviewer.md     pre-PR check: every REQ delivered and asserted
 skills/
   specdev/SKILL.md       the workflow driver (strict coordinator)
   arch-config/SKILL.md   runtime hosting config capture/edit/delete
@@ -548,6 +583,7 @@ governance/
 assets/
   specdev/               → copied to .specdev/ in target repos (incl. org.json, architecture-config.json seed, tools/arch_config.py)
     tools/units.py       governed-unit registry: the only module that knows a repo can hold >1 unit
+    tools/review_ledger.py pre-PR review loop ledger; asserted by verify + spec-validate
   workflows/             → copied to .github/workflows/ in target repos
     deploy-unit.yml      reusable staging→QA→prod chain for ONE unit; deploy.yml matrixes it
     specdev-sweep.yml    nightly unfiltered all-unit ADR-staleness sweep

@@ -752,3 +752,26 @@ def test_every_build_attempt_is_told_about_the_review_loop():
 def test_install_smoke_runs_the_installed_review_ledger():
     text = (ROOT / ".github" / "workflows" / "tests.yml").read_text("utf-8")
     assert "python .specdev/tools/review_ledger.py --root . status" in text
+
+
+# ---- Task 8: docs, vendoring, lint ------------------------------------------
+
+def test_readme_documents_the_loop_and_its_budget():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    for s in ("spec-reviewer", "code-reviewer", "intent-reviewer",
+              "max_review_iterations", "review_ledger.py"):
+        assert s in text, s
+    assert "spends inside these limits" in text, \
+        "the interaction with the breaker and continuation caps is documented"
+
+
+def test_init_vendors_the_reviewers():
+    text = " ".join((ROOT / "commands" / "init.md")
+                    .read_text(encoding="utf-8").split())
+    for a in ("spec-reviewer", "code-reviewer", "intent-reviewer"):
+        assert a in text, a
+
+
+def test_lint_command_covers_the_review_ledger():
+    cfg = json.loads((ROOT / ".sdlc" / "config.json").read_text("utf-8"))
+    assert "review_ledger.py" in cfg["commands"]["lint"]

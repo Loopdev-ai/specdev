@@ -30,8 +30,10 @@ Do this:
    `${CLAUDE_PLUGIN_ROOT}/agents/*.md` → `./.claude/agents/` (create the dirs;
    same no-overwrite rule). This lets `specdev-build.yml` run the build with
    `claude-code-action` — the runner loads the same skill and the
-   component-builder / qa-verifier / adr-checker / spec-explorer subagents from
-   the repo, so the coordinator can offload work and stay context-bounded.
+   component-builder / qa-verifier / adr-checker / spec-explorer and
+   spec-reviewer / code-reviewer / intent-reviewer subagents from the repo, so
+   the coordinator can offload work — including the pre-PR review loop — and
+   stay context-bounded.
 3c. **Link to the org's architectural repo of record.** Ask the user for:
    - the governance repo (`owner/name` — the org's SpecDev repo holding
      `governance/adr/`), and the `ref` to track (`main`, or a tag to pin);
