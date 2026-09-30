@@ -71,3 +71,22 @@ In charter mode:
 
 The code is disposable — it is reverse-mapped and rebuilt, never promoted — so
 prefer the shortest path to an answer over structure you expect to keep.
+
+## Review-fix mode
+
+When your contract is a set of **review findings** — ids like `I3-2`, each
+with a `where`, a failure scenario and a suggested fix — rather than a
+component to build:
+
+1. For each finding, **write a test that reproduces it and watch it fail**
+   before changing any code. The scenario is the test.
+2. Fix it. The new test and the component's existing tests must pass.
+3. If you cannot make it fail — the scenario does not occur — do not change
+   the code. Report the finding `not-reproducible` with the evidence (the
+   test you wrote and what it showed); the coordinator dismisses it with that
+   evidence as the reason.
+4. Commit with the usual `Refs: REQ-###` trailers for the REQs the fixes
+   touch, and name the finding ids in the commit subject.
+
+Report one line per finding id — `fixed` (+ the test that now passes) or
+`not-reproducible` (+ the evidence) — in place of the usual REQ list.

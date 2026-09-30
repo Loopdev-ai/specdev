@@ -526,3 +526,70 @@ def test_poc_terminal_state_does_not_involve_the_review_loop(repo,
     out = _verify(repo, "poc", monkeypatch)
     assert out["ok"] is True, out["problems"]
     assert "review loop" not in out["required_terminal_state"]
+
+
+# ---- Task 4: reviewer agents ---------------------------------------------
+
+AGENTS = ROOT / "agents"
+REVIEWERS = ("spec-reviewer", "code-reviewer", "intent-reviewer")
+
+
+def _agent(name):
+    text = (AGENTS / f"{name}.md").read_text(encoding="utf-8")
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    assert m, f"{name}.md has no frontmatter"
+    fm = dict(line.split(":", 1) for line in m.group(1).splitlines()
+              if ":" in line)
+    return {k.strip(): v.strip() for k, v in fm.items()}, text
+
+
+@pytest.mark.parametrize("name", REVIEWERS)
+def test_reviewers_judge_and_never_fix(name):
+    fm, _ = _agent(name)
+    assert fm["name"] == name
+    tools = {t.strip() for t in fm["tools"].split(",")}
+    assert not tools & {"Write", "Edit", "NotebookEdit"}, \
+        f"{name} must not be able to change what it reviews"
+    assert {"Read", "Grep", "Glob", "Bash"} <= tools
+
+
+@pytest.mark.parametrize("name", REVIEWERS)
+def test_reviewers_end_with_the_json_the_ledger_reads(name):
+    _, text = _agent(name)
+    for key in ('"findings"', '"severity"', '"kind"', '"where"', '"summary"',
+                "blocking", "minor"):
+        assert key in text, f"{name} must specify {key} in its JSON block"
+    assert "dismissed" in text.lower(), \
+        f"{name} must honour the dismissed list"
+
+
+@pytest.mark.parametrize("name", REVIEWERS)
+def test_every_example_block_parses_and_the_ledger_accepts_it(name, repo):
+    _, text = _agent(name)
+    blocks = re.findall(r"```json\n(.*?)\n```", text, re.S)
+    assert blocks, f"{name} shows no example JSON block"
+    phase = "spec" if name == "spec-reviewer" else "impl"
+    for b in blocks:
+        rec(repo, json.loads(b), phase=phase)
+
+
+def test_code_reviewer_demands_a_location_and_a_failure_scenario():
+    _, text = _agent("code-reviewer")
+    assert "file:line" in text and "scenario" in text.lower()
+
+
+def test_intent_reviewer_walks_every_req_against_the_original_request():
+    _, text = _agent("intent-reviewer")
+    for s in ("Original Request", "Acceptance", "end to end"):
+        assert s in text
+
+
+def test_spec_reviewer_blocks_on_a_missing_original_request():
+    _, text = _agent("spec-reviewer")
+    assert "Original Request" in text and "needs_human" in text
+
+
+def test_component_builder_reproduces_a_finding_before_fixing_it():
+    text = (AGENTS / "component-builder.md").read_text(encoding="utf-8")
+    assert "Review-fix mode" in text
+    assert "not-reproducible" in text and "fail" in text
