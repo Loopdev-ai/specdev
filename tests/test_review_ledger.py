@@ -641,3 +641,80 @@ def test_the_unfilled_template_does_not_hand_anything_off(repo):
 def test_build_template_points_at_the_review_resume_point():
     text = (TEMPLATES / "BUILD.md").read_text(encoding="utf-8")
     assert "review_ledger.py" in text and "status --phase impl" in text
+
+
+# ---- Task 6: the skill and commands drive the loop ------------------------
+
+SKILL = ROOT / "skills" / "specdev" / "SKILL.md"
+BUILD_CMD = ROOT / "commands" / "build.md"
+NEW_FEATURE = ROOT / "commands" / "new-feature.md"
+
+
+def _flat(path):
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def _between(text, start, end):
+    return text[text.index(start):text.index(end)]
+
+
+def test_skill_defines_the_pre_pr_review_loop():
+    text = SKILL.read_text(encoding="utf-8")
+    assert re.search(r"^## Pre-PR review loop", text, re.M)
+    flat = _flat(SKILL)
+    for s in ("max_review_iterations", "review_ledger.py", "spec-reviewer",
+              "code-reviewer", "intent-reviewer", "fresh", "dismiss",
+              "new-run", "check --phase", "render --phase impl"):
+        assert s in flat, s
+
+
+def test_both_pr_steps_invoke_the_loop():
+    text = SKILL.read_text(encoding="utf-8")
+    step5 = _between(text, "5. **Open the Spec PR.**", "6. **Build on")
+    step7 = _between(text, "7. **Open the Implementation PR",
+                     "8. **Merge is the deploy trigger")
+    assert "Pre-PR review loop" in step5 and "Pre-PR review loop" in step7
+    assert "review_ledger.py check --phase impl" in " ".join(step7.split())
+
+
+def test_skill_brainstorm_captures_the_original_request():
+    text = SKILL.read_text(encoding="utf-8")
+    step2 = _between(text, "2. **Brainstorm.**", "3. **Spec")
+    assert "Original Request" in step2 and "verbatim" in step2
+
+
+def test_skill_terminal_state_and_guardrails_name_the_loop():
+    text = SKILL.read_text(encoding="utf-8")
+    terminal = _between(text, "## Terminal state", "## Guardrails")
+    guard = _between(text, "## Guardrails", "## Helper commands")
+    assert "review.json" in terminal
+    assert "review_ledger.py check" in " ".join(guard.split())
+
+
+def test_build_command_runs_the_loop_before_the_pr_body():
+    text = BUILD_CMD.read_text(encoding="utf-8")
+    after = " ".join(_between(text, "## After the final wave",
+                              "## Guardrails").split())
+    for s in ("code-reviewer", "intent-reviewer", "record --phase impl",
+              "render --phase impl", "check --phase impl"):
+        assert s in after, s
+    assert after.index("code-reviewer") < after.index("render --phase impl")
+    terminal = _between(text, "## Terminal state", "## Build loop")
+    assert "review loop" in terminal.lower()
+
+
+def test_the_terminal_state_names_the_review_loop_in_both_halves(repo,
+                                                                 monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    required = bo.verify(repo, "FEAT-007", "prod", ".", "main", None,
+                         repo_dir=repo)["required_terminal_state"]
+    assert "review loop" in required
+    assert "review loop" in _flat(BUILD_CMD).lower()
+
+
+def test_new_feature_captures_intent_and_runs_the_spec_loop():
+    flat = _flat(NEW_FEATURE)
+    for s in ("Original Request", "verbatim", "spec-reviewer",
+              "record --phase spec", "check --phase spec", "spec_pr",
+              "Open Questions"):
+        assert s in flat, s
