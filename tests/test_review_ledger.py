@@ -465,3 +465,64 @@ def test_cli_check_exit_codes(repo):
     p = run()
     assert p.returncode == 0, p.stderr
     assert "review loop ok" in p.stdout
+
+
+# ---- Task 3: the prod terminal state asserts the loop ---------------------
+
+bo = load_mod(TOOLS / "build_outcome.py", "build_outcome_rl")
+
+
+def _impl(repo):
+    """Commit a real checkpoint + PR body and the implementation ref the
+    workflow pushes; leave it checked out, as the CI runner has it."""
+    (repo / ".specdev" / "BUILD.md").write_text(
+        "# Build Plan - Widget\n\n**Feature ID:** FEAT-007\n\nWave 1 green.\n",
+        encoding="utf-8")
+    (repo / ".specdev" / "PR_BODY.md").write_text(
+        "# FEAT-007 - Widget\n\nImplements REQ-001.\n", encoding="utf-8")
+    ref = bo.implementation_ref(".", "FEAT-007")
+    git(repo, "checkout", "-q", "-B", ref)
+    (repo / "widget.py").write_text("def page(n):\n    return max(n, 1)\n",
+                                    encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "feat(widget): REQ-001")
+    return ref
+
+
+def _verify(repo, mode, monkeypatch):
+    monkeypatch.setattr(bo, "_gh_prs", lambda *a, **k: [])
+    return bo.verify(repo, "FEAT-007", mode, ".", "main", None, repo_dir=repo)
+
+
+def test_prod_terminal_state_requires_the_review_loop(repo, monkeypatch):
+    _impl(repo)
+    out = _verify(repo, "prod", monkeypatch)
+    assert out["ok"] is False
+    assert any("review loop never ran" in p for p in out["problems"])
+    rec(repo, report())
+    out = _verify(repo, "prod", monkeypatch)
+    assert out["ok"] is True, out["problems"]
+    assert "review loop" in out["required_terminal_state"]
+
+
+def test_prod_rejects_code_pushed_after_the_last_review(repo, monkeypatch):
+    _impl(repo)
+    rec(repo, report())
+    (repo / "widget.py").write_text("def page(n):\n    return 1\n",
+                                    encoding="utf-8")
+    git(repo, "commit", "-q", "-am", "unreviewed")
+    out = _verify(repo, "prod", monkeypatch)
+    assert out["ok"] is False
+    assert any("changed after pass 1" in p for p in out["problems"])
+
+
+def test_poc_terminal_state_does_not_involve_the_review_loop(repo,
+                                                             monkeypatch):
+    _impl(repo)
+    b = repo / ".specdev" / "BUILD.md"
+    b.write_text(b.read_text(encoding="utf-8")
+                 + "\n## Findings\n\nPaging works at 20 rows.\n",
+                 encoding="utf-8")
+    out = _verify(repo, "poc", monkeypatch)
+    assert out["ok"] is True, out["problems"]
+    assert "review loop" not in out["required_terminal_state"]

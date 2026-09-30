@@ -213,16 +213,33 @@ def built(tmp_path):
     return root
 
 
+def write_clean_review_ledger(root, feat, reviewed):
+    """What review_ledger.py leaves after one clean impl pass. The prod
+    terminal state includes it (tests/test_review_ledger.py covers the loop
+    itself); written directly so these tests stay about branches and bodies."""
+    (root / ".specdev" / "review.json").write_text(json.dumps({
+        "schema_version": 1, "feat": feat,
+        "phases": {"spec": {"runs": [], "dismissed": []},
+                   "impl": {"runs": [{"started_at": RUN_START, "passes": [
+                       {"pass": 1, "at": RUN_START, "reviewed": reviewed,
+                        "findings": []}]}], "dismissed": []}}}),
+        encoding="utf-8")
+
+
 def push_impl(root, feat="FEAT-002", unit=".", when=WORK_PUSHED,
               msg="feat(widget): REQ-001", name="specdev-bot",
               email=BOT_EMAIL, body="widget"):
-    """Create the implementation ref the workflow pushes, with a commit."""
+    """Create the implementation ref the workflow pushes, with a commit, and
+    the clean review ledger a prod build records over that commit."""
     ref = bo.implementation_ref(unit, feat)
     git(root, "checkout", "-q", "-B", ref, "main")
     (root / "widget.py").write_text(body, encoding="utf-8")
     git_at(root, when, "add", "-A", name=name, email=email)
     git_at(root, when, "commit", "-m", msg, name=name, email=email)
     git(root, "checkout", "-q", "main")
+    tip = subprocess.run(["git", "rev-parse", ref], cwd=str(root), check=True,
+                         capture_output=True, text=True).stdout.strip()
+    write_clean_review_ledger(root, feat, tip)
     return ref
 
 
