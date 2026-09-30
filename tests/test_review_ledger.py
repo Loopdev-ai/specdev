@@ -277,3 +277,191 @@ def test_cli_refusals_exit_nonzero_with_the_reason(repo):
          "impl", "--repo-root", str(repo), "--id", "I1-1", "--reason", "x"],
         capture_output=True, text=True)
     assert p.returncode == 1 and "no review ledger" in p.stderr
+
+
+# ---- Task 2: staleness, new-run, check, render ---------------------------
+
+def fix_and_commit(repo, body="def page(n):\n    return max(n, 1)\n",
+                   msg="fix"):
+    (repo / "widget.py").write_text(body, encoding="utf-8")
+    git(repo, "commit", "-q", "-am", msg)
+
+
+def check(repo, phase="impl", **kw):
+    return rl.check(repo, phase, repo_root=repo, **kw)
+
+
+def test_check_fails_when_the_loop_never_ran(repo):
+    probs = check(repo)
+    assert probs and "never ran" in probs[0]
+
+
+def test_a_clean_last_pass_over_the_handed_off_commit_passes(repo):
+    rec(repo, report(bug()))
+    fix_and_commit(repo)
+    rec(repo, report(nit()))
+    assert check(repo) == []
+
+
+def test_bookkeeping_after_the_last_pass_does_not_make_it_stale(repo):
+    rec(repo, report())
+    (repo / ".specdev" / "PR_BODY.md").write_text("# FEAT-007\n",
+                                                  encoding="utf-8")
+    (repo / ".specdev" / "BUILD.md").write_text("done\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "checkpoint [skip ci]")
+    assert check(repo) == []
+
+
+def test_code_changed_after_the_last_pass_is_stale(repo):
+    rec(repo, report())
+    fix_and_commit(repo, msg="an unreviewed change")
+    probs = check(repo)
+    assert any("widget.py" in p and "changed after pass 1" in p
+               for p in probs)
+
+
+def test_check_compares_against_the_given_head(repo):
+    """verify() passes the implementation branch's tip, not the checkout."""
+    rec(repo, report())
+    reviewed = git(repo, "rev-parse", "HEAD")
+    fix_and_commit(repo, msg="later")
+    assert check(repo, head=reviewed) == []
+
+
+def test_an_unknown_reviewed_commit_is_a_failure_not_a_pass(repo):
+    rec(repo, report())
+    doc = rl.load(repo)
+    doc["phases"]["impl"]["runs"][0]["passes"][0]["reviewed"] = "deadbeef" * 5
+    rl.save(doc, repo)
+    assert any("cannot resolve" in p for p in check(repo))
+
+
+def test_stopping_short_of_the_cap_with_findings_open_fails(repo):
+    rec(repo, report(bug()))
+    probs = check(repo)
+    assert any("stopped after 1 of 10" in p and "I1-1" in p for p in probs)
+
+
+def test_a_dismissed_finding_is_not_open(repo):
+    rec(repo, report(bug()))
+    rl.dismiss(repo, "impl", "I1-1", "not reproducible: see test_page_zero")
+    assert check(repo) == []
+
+
+def test_at_the_cap_open_findings_must_be_handed_off_in_the_pr_body(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug(), bug(summary="second")))
+    body = repo / ".specdev" / "PR_BODY.md"
+    body.write_text("# FEAT-007\n\n## Unresolved review findings\n\n"
+                    "- `I1-1` page 0\n", encoding="utf-8")
+    probs = check(repo)
+    assert any("I1-2" in p and "not listed" in p for p in probs)
+    assert not any("I1-1" in p and "not listed" in p for p in probs)
+    body.write_text(body.read_text(encoding="utf-8") + "- `I1-2` second\n",
+                    encoding="utf-8")
+    assert check(repo) == []
+
+
+def test_an_id_is_matched_whole_not_as_a_prefix(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    (repo / ".specdev" / "PR_BODY.md").write_text(
+        "## Unresolved review findings\n\n- `I1-12` something else\n",
+        encoding="utf-8")
+    assert any("I1-1" in p for p in check(repo))
+
+
+def test_an_id_outside_the_handoff_section_does_not_count(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    (repo / ".specdev" / "PR_BODY.md").write_text(
+        "## Notes for the reviewer\n\n- I1-1 is fine\n\n"
+        "## Unresolved review findings\n\nNone\n", encoding="utf-8")
+    assert any("not listed" in p for p in check(repo))
+
+
+def test_spec_phase_hands_off_in_open_questions(repo):
+    set_cap(repo, 1)
+    rec(repo, report({"severity": "blocking", "kind": "spec",
+                      "where": "REQ-001",
+                      "summary": "page size unstated for the last page"}),
+        phase="spec")
+    assert any("not listed" in p for p in check(repo, "spec"))
+    p = repo / ".specdev" / "spec.md"
+    p.write_text(p.read_text(encoding="utf-8")
+                 .replace("- none yet", "- S1-1: last page size"),
+                 encoding="utf-8")
+    assert check(repo, "spec") == [], \
+        "Open Questions is outside the hash, so the hand-off is not stale"
+
+
+def test_a_spec_edit_after_the_last_pass_is_stale(repo):
+    rec(repo, report(), phase="spec")
+    p = repo / ".specdev" / "spec.md"
+    p.write_text(p.read_text(encoding="utf-8")
+                 .replace("Sorting.", "Sorting, filtering."),
+                 encoding="utf-8")
+    assert any("spec changed after pass 1" in x for x in check(repo, "spec"))
+
+
+def test_the_ledger_must_be_for_this_feature(repo):
+    rec(repo, report())
+    probs = check(repo, feat="FEAT-008")
+    assert probs and "FEAT-007, not FEAT-008" in probs[0]
+
+
+def test_new_run_refuses_when_nothing_changed(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    with pytest.raises(rl.LedgerError, match="nothing changed"):
+        rl.new_run(repo, "impl", repo_root=repo)
+
+
+def test_new_run_after_a_change_resets_the_pass_count(repo):
+    set_cap(repo, 1)
+    rec(repo, report(bug()))
+    fix_and_commit(repo, msg="human edit on the open PR")
+    rl.new_run(repo, "impl", repo_root=repo)
+    st = rl.status(repo, "impl", repo)
+    assert st["run"] == 2 and st["passes_in_run"] == 0
+    assert st["state"] == "not-started"
+    entry = rec(repo, report())
+    assert entry["pass"] == 2, "pass numbers stay unique across runs"
+    assert check(repo) == []
+
+
+def test_render_produces_both_pr_body_sections(repo):
+    set_cap(repo, 2)
+    rec(repo, report(bug(summary="first")))
+    rl.dismiss(repo, "impl", "I1-1", "not reproducible")
+    fix_and_commit(repo)
+    rec(repo, report(bug(summary="still broken"), nit()))
+    md = rl.render(repo, "impl", repo)
+    assert "## Review loop" in md and "## Unresolved review findings" in md
+    assert "2 of 2" in md and "cap-reached" in md
+    assert "`I1-1`" in md and "not reproducible" in md
+    assert "`I2-1`" in md and "still broken" in md
+    (repo / ".specdev" / "PR_BODY.md").write_text("# FEAT-007\n\n" + md,
+                                                  encoding="utf-8")
+    assert check(repo) == []
+
+
+def test_render_says_clean_when_it_is(repo):
+    rec(repo, report())
+    assert "None — the final review pass was clean." in \
+        rl.render(repo, "impl", repo)
+
+
+def test_cli_check_exit_codes(repo):
+    def run():
+        return subprocess.run(
+            [sys.executable, str(TOOL), "--root", str(repo), "check",
+             "--phase", "impl", "--repo-root", str(repo)],
+            capture_output=True, text=True)
+    p = run()
+    assert p.returncode == 1 and "never ran" in p.stderr
+    rec(repo, report())
+    p = run()
+    assert p.returncode == 0, p.stderr
+    assert "review loop ok" in p.stdout

@@ -382,6 +382,175 @@ def status(root=".", phase="impl", repo_root=".", feat=None) -> dict:
             "open_blocking": open_, "dismissed": ph["dismissed"]}
 
 
+def _staleness(root, phase: str, ph: dict, head="HEAD",
+               repo_root=".") -> tuple[bool | None, str]:
+    """(stale, why). stale is None when it could not be determined - which
+    check() treats as a failure, never as a pass."""
+    last = _last_pass(ph)
+    if last is None:
+        return None, f"no {phase} review pass is recorded"
+    if phase == "spec":
+        if spec_hash(root) != last["reviewed"]:
+            return True, (f"the spec changed after pass {last['pass']} "
+                          f"reviewed it")
+        return False, ""
+    reviewed = last["reviewed"]
+    a, b = _commit(reviewed, repo_root), _commit(head, repo_root)
+    if not a or not b:
+        missing = reviewed if not a else head
+        return None, (f"cannot resolve {missing!r} here - the reviewed commit "
+                      f"is not in this clone's history, so what was reviewed "
+                      f"cannot be compared with what would be handed off")
+    rc, out = _git(["diff", "--name-only", a, b, "--", ".", NOT_CODE],
+                   repo_root)
+    if rc != 0:
+        return None, f"git diff {a[:12]}..{b[:12]} failed"
+    changed = [ln for ln in out.splitlines() if ln.strip()]
+    if changed:
+        return True, (f"{len(changed)} path(s) outside .specdev/ changed "
+                      f"after pass {last['pass']} reviewed {a[:12]}: "
+                      f"{', '.join(changed[:5])}"
+                      f"{' ...' if len(changed) > 5 else ''}")
+    return False, ""
+
+
+def new_run(root=".", phase="impl", head="HEAD", repo_root=".") -> dict:
+    """Start a fresh run - for re-review after the reviewed state changed
+    (a human's edits on an open PR, an org-ADR fix after a capped run).
+    Refused when nothing changed: a new run never buys more passes for the
+    same state."""
+    _phase(phase)
+    doc = load(root)
+    if doc is None:
+        raise LedgerError("no review ledger - record pass 1 instead")
+    ph = doc["phases"][phase]
+    run = _current_run(ph)
+    if not run or not run["passes"]:
+        raise LedgerError(f"the current {phase} run has no passes yet - "
+                          f"record one instead")
+    stale, why = _staleness(root, phase, ph, head, repo_root)
+    if stale is None:
+        raise LedgerError(why)
+    if not stale:
+        raise LedgerError(
+            f"nothing changed since pass {run['passes'][-1]['pass']} was "
+            f"reviewed. A new run is for re-review after the reviewed state "
+            f"changes; it never buys more passes for the same "
+            f"{'spec' if phase == 'spec' else 'code'}.")
+    fresh = {"started_at": _now(), "passes": []}
+    ph["runs"].append(fresh)
+    save(doc, root)
+    return fresh
+
+
+def _handoff(root, phase: str) -> tuple[str, str]:
+    rel, heading = HANDOFF[phase]
+    p = Path(root) / rel
+    text = p.read_text(encoding="utf-8-sig") if p.exists() else ""
+    return f"{p.as_posix()} '## {heading}'", (_section(text, heading) or "")
+
+
+def _listed(finding_id: str, text: str) -> bool:
+    """`finding_id` as a whole id: I1-1 is not listed by I1-12 or I11-1."""
+    return bool(re.search(
+        rf"(?<![A-Za-z0-9]){re.escape(finding_id)}(?![0-9])", text))
+
+
+def check(root=".", phase="impl", feat=None, head="HEAD",
+          repo_root=".") -> list[str]:
+    """Why the review loop is NOT complete for this phase. Empty = complete.
+
+    Fails when the loop never ran, when what would be handed off differs from
+    what the last pass reviewed, when the loop stopped short of the cap with
+    blocking findings open, or when a capped run's open findings were not
+    handed to the human."""
+    _phase(phase)
+    try:
+        cap = max_iterations(root, repo_root)
+        doc = load(root)
+    except LedgerError as e:
+        return [str(e)]
+    if doc is None:
+        return [f"no review ledger at {ledger_path(root).as_posix()} - the "
+                f"{phase} review loop never ran"]
+    feat = feat or spec_feat(root)
+    if feat and doc.get("feat") != feat:
+        return [f"the review ledger is for {doc.get('feat')}, not {feat} - "
+                f"the {phase} review loop has not run for this feature"]
+    ph = doc["phases"][phase]
+    run = _current_run(ph)
+    if not run or not run["passes"]:
+        return [f"no {phase} review pass is recorded in the current run - "
+                f"the {phase} review loop never ran"]
+    problems = []
+    try:
+        stale, why = _staleness(root, phase, ph, head, repo_root)
+    except LedgerError as e:
+        stale, why = None, str(e)
+    if stale is None:
+        problems.append(why)
+    elif stale:
+        problems.append(f"{why}. The last review no longer covers what would "
+                        f"be handed off - run another pass (or 'new-run' if "
+                        f"the current run hit its cap).")
+    open_ = open_blocking(ph)
+    n = len(run["passes"])
+    if open_ and n < cap:
+        problems.append(
+            f"the {phase} review loop stopped after {n} of {cap} passes with "
+            f"{len(open_)} blocking finding(s) open "
+            f"({', '.join(f['id'] for f in open_)}) - fix them and run the "
+            f"next pass")
+    elif open_:
+        where, text = _handoff(root, phase)
+        missing = [f["id"] for f in open_ if not _listed(f["id"], text)]
+        if missing:
+            problems.append(
+                f"the review cap ({cap}) was reached with blocking findings "
+                f"open, but {', '.join(missing)} "
+                f"{'is' if len(missing) == 1 else 'are'} not listed in "
+                f"{where} - an unresolved finding is handed to the human, "
+                f"never dropped")
+    return problems
+
+
+def render(root=".", phase="impl", repo_root=".", feat=None) -> str:
+    """The PR body's '## Review loop' and '## Unresolved review findings'
+    sections, from the ledger - so the hand-off is generated, not
+    transcribed."""
+    st = status(root, phase, repo_root, feat)
+    doc = _ledger_for(root, feat)
+    ph = doc["phases"][phase] if doc else {"runs": [], "dismissed": []}
+    run = _current_run(ph)
+    lines = ["## Review loop", ""]
+    if not run or not run["passes"]:
+        lines.append("_The review loop has not run._")
+    else:
+        lines.append(f"{len(run['passes'])} of {st['cap']} review pass(es) "
+                     f"in the current run; final state: **{st['state']}**.")
+        lines += ["", "| Pass | Reviewed | Blocking | Minor |",
+                  "|---|---|---|---|"]
+        for p in run["passes"]:
+            blocking = sum(f["severity"] == "blocking" for f in p["findings"])
+            minor = sum(f["severity"] == "minor" for f in p["findings"])
+            shown = p["reviewed"].removeprefix("sha256:")[:12]
+            lines.append(f"| {p['pass']} | `{shown}` | {blocking} | {minor} |")
+        if ph["dismissed"]:
+            lines += ["", "**Dismissed (not acted on, with the reason):**", ""]
+            lines += [f"- `{d['id']}` {d['summary']} — {d['reason']}"
+                      for d in ph["dismissed"]]
+    lines += ["", "## Unresolved review findings", ""]
+    if st["open_blocking"]:
+        for f in st["open_blocking"]:
+            lines.append(f"- `{f['id']}` ({f['kind']}) {f['where']} — "
+                         f"{f['summary']}"
+                         + (f" Scenario: {f['scenario']}"
+                            if f["scenario"] else ""))
+    else:
+        lines.append("None — the final review pass was clean.")
+    return "\n".join(lines) + "\n"
+
+
 def _read_reports(paths) -> list:
     reports = []
     for p in paths:
@@ -437,6 +606,13 @@ def _parser() -> argparse.ArgumentParser:
                       "findings")
     p.add_argument("--feat", default=None)
     p.add_argument("--json", action="store_true")
+    add("new-run", "start a fresh run after the reviewed state changed")
+    p = add("render", "the PR body's Review loop + Unresolved sections")
+    p.add_argument("--feat", default=None)
+    p = add("check", "assert the loop is complete (the gate)")
+    p.add_argument("--feat", default=None)
+    p.add_argument("--head", default="HEAD",
+                   help="the commit that would be handed off (impl)")
     return ap
 
 
@@ -462,6 +638,28 @@ def main() -> int:
         if args.cmd == "status":
             st = status(args.root, args.phase, args.repo_root, args.feat)
             print(json.dumps(st, indent=2) if args.json else _status_text(st))
+            return 0
+        if args.cmd == "new-run":
+            new_run(args.root, args.phase, repo_root=args.repo_root)
+            st = status(args.root, args.phase, args.repo_root)
+            print(f"started {args.phase} run {st['run']} - "
+                  f"{st['cap']} passes available")
+            return 0
+        if args.cmd == "render":
+            sys.stdout.write(render(args.root, args.phase, args.repo_root,
+                                    args.feat))
+            return 0
+        if args.cmd == "check":
+            problems = check(args.root, args.phase, args.feat, args.head,
+                             args.repo_root)
+            for p in problems:
+                print(f"ERROR: {p}", file=sys.stderr)
+            if problems:
+                return 1
+            st = status(args.root, args.phase, args.repo_root, args.feat)
+            print(f"{args.phase} review loop ok - {st['state']} after "
+                  f"{st['passes_in_run']} of {st['cap']} passes in the "
+                  f"current run")
             return 0
     except LedgerError as e:
         print(f"ERROR: {e}", file=sys.stderr)
