@@ -99,7 +99,6 @@ except Exception:
     pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import review_ledger  # noqa: E402  (vendored sibling module)
 
 BUILD_REL = ".specdev/BUILD.md"
 PR_BODY_REL = ".specdev/PR_BODY.md"
@@ -511,6 +510,7 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
     warnings += branch["warnings"]
 
     if mode == "prod" and branch.get("sha"):
+        import review_ledger  # noqa: PLC0415  (vendored sibling; prod only)
         # The pre-PR review loop is part of the prod terminal state: without
         # it, nothing read the code before the PR but the tests its own
         # builder wrote. Checked against the BRANCH TIP - the thing a human

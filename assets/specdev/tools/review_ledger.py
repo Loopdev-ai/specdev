@@ -27,6 +27,7 @@ own JSON, and what was reviewed is stamped here rather than reported.
 
 Usage (--root precedes the subcommand, as in the sibling tools):
     review_ledger.py --root <unit> record  --phase impl --findings-json F [...]
+                     [--reviewed SHA]
     review_ledger.py --root <unit> dismiss --phase impl --id I2-1 --reason TEXT
     review_ledger.py --root <unit> new-run --phase impl
     review_ledger.py --root <unit> status  --phase impl [--json]
@@ -37,6 +38,7 @@ Every subcommand takes --repo-root (ci.json fallback and git working tree).
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
@@ -146,7 +148,7 @@ def max_iterations(root=".", repo_root=".") -> int:
     if val is run_manifest._MISSING:
         raise LedgerError(f"ci.json has no {MAX_KEY}")
     if (isinstance(val, bool) or not isinstance(val, (int, float))
-            or int(val) != val or int(val) < 1):
+            or not math.isfinite(val) or int(val) != val or int(val) < 1):
         raise LedgerError(f"{MAX_KEY} must be an integer >= 1, got {val!r} "
                           f"- 0 does not disable the review loop")
     return int(val)
@@ -205,6 +207,16 @@ def _commit(rev: str, repo_root=".") -> str | None:
     rc, out = _git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
                    repo_root)
     return out.strip() if rc == 0 and out.strip() else None
+
+
+def _code_changes(a: str, b: str, repo_root=".") -> list[str] | None:
+    """Paths outside .specdev/ that differ between commits a and b, or None
+    when git cannot say."""
+    rc, out = _git(["diff", "--name-only", a, b, "--", ".", NOT_CODE],
+                   repo_root)
+    if rc != 0:
+        return None
+    return [ln for ln in out.splitlines() if ln.strip()]
 
 
 def dirty_code(repo_root=".") -> list[str]:
@@ -275,9 +287,18 @@ def open_blocking(ph: dict) -> list[dict]:
 
 
 def record(root=".", phase="impl", feat=None, reports=(), repo_root=".",
-           head="HEAD") -> dict:
-    """Append the next pass to the current run. Returns the pass entry."""
+           head="HEAD", reviewed=None) -> dict:
+    """Append the next pass to the current run. Returns the pass entry.
+
+    `reviewed` (impl): the commit HEAD pointed at when the reviewers were
+    dispatched. Reviewers have Bash and run tests; whatever that changed in
+    tracked files was seen by no reviewer, so it must be discarded - never
+    committed to get past the dirty-tree check - and a pass is stamped with
+    the commit the reviewers actually read, not whatever HEAD is by now."""
     _phase(phase)
+    if reviewed is not None and phase == "spec":
+        raise LedgerError("--reviewed applies to the impl phase only; the "
+                          "spec phase stamps the spec's hash")
     feat = feat or spec_feat(root)
     if not feat or not FEAT_RE.match(feat):
         raise LedgerError(f"a FEAT-### id is required (none given and none in "
@@ -293,12 +314,34 @@ def record(root=".", phase="impl", feat=None, reports=(), repo_root=".",
         if dirty:
             raise LedgerError(
                 f"uncommitted changes outside .specdev/ ({', '.join(dirty[:5])}"
-                f"{' ...' if len(dirty) > 5 else ''}). Reviewers only review "
-                f"committed code - commit, then record the pass.")
-        reviewed = _commit(head, repo_root)
-        if not reviewed:
+                f"{' ...' if len(dirty) > 5 else ''}). A pass records the "
+                f"code the reviewers saw: if a reviewer's tests or tools "
+                f"changed these files, discard those changes (git checkout "
+                f"-- <paths>). Never commit them to get past this check - "
+                f"that would stamp code no reviewer read.")
+        stamp = _commit(head, repo_root)
+        if not stamp:
             raise LedgerError(f"cannot resolve {head!r} to a commit in "
                               f"{Path(repo_root).as_posix()}")
+        if reviewed is not None:
+            r = _commit(reviewed, repo_root)
+            if not r:
+                raise LedgerError(f"cannot resolve --reviewed {reviewed!r} "
+                                  f"to a commit in "
+                                  f"{Path(repo_root).as_posix()}")
+            if r != stamp:
+                changed = _code_changes(r, stamp, repo_root)
+                if changed is None or changed:
+                    paths = (", ".join(changed[:5])
+                             + (" ..." if len(changed) > 5 else "")
+                             if changed else "git could not diff them")
+                    raise LedgerError(
+                        f"code changed between dispatch ({r[:12]}) and "
+                        f"record ({stamp[:12]}): {paths}. The reviewers saw "
+                        f"{r[:12]}: discard their side effects, or commit "
+                        f"the changes and re-run the pass over them.")
+            stamp = r
+        reviewed = stamp
     else:
         reviewed = spec_hash(root)
     run = _current_run(ph)
@@ -368,8 +411,18 @@ def status(root=".", phase="impl", repo_root=".", feat=None) -> dict:
     run = _current_run(ph)
     n = len(run["passes"]) if run else 0
     open_ = open_blocking(ph)
+    stale, why = False, ""
+    if n > 0:
+        # The resume point must not say "clean" about code or a spec that
+        # changed after the last pass; only check() used to notice.
+        try:
+            stale, why = _staleness(root, phase, ph, "HEAD", repo_root)
+        except LedgerError as e:
+            stale, why = None, str(e)
     if n == 0:
         state = "not-started"
+    elif stale is True or stale is None:
+        state = "stale" if n < cap else "stale-at-cap"
     elif not open_:
         state = "clean"
     elif n >= cap:
@@ -379,6 +432,7 @@ def status(root=".", phase="impl", repo_root=".", feat=None) -> dict:
     return {"phase": phase, "feat": doc.get("feat") if doc else None,
             "cap": cap, "run": len(ph["runs"]), "passes_in_run": n,
             "next_pass_in_run": n + 1 if n < cap else None, "state": state,
+            "stale_reason": why if state.startswith("stale") else "",
             "open_blocking": open_, "dismissed": ph["dismissed"]}
 
 
@@ -401,11 +455,9 @@ def _staleness(root, phase: str, ph: dict, head="HEAD",
         return None, (f"cannot resolve {missing!r} here - the reviewed commit "
                       f"is not in this clone's history, so what was reviewed "
                       f"cannot be compared with what would be handed off")
-    rc, out = _git(["diff", "--name-only", a, b, "--", ".", NOT_CODE],
-                   repo_root)
-    if rc != 0:
+    changed = _code_changes(a, b, repo_root)
+    if changed is None:
         return None, f"git diff {a[:12]}..{b[:12]} failed"
-    changed = [ln for ln in out.splitlines() if ln.strip()]
     if changed:
         return True, (f"{len(changed)} path(s) outside .specdev/ changed "
                       f"after pass {last['pass']} reviewed {a[:12]}: "
@@ -463,7 +515,19 @@ def check(root=".", phase="impl", feat=None, head="HEAD",
     Fails when the loop never ran, when what would be handed off differs from
     what the last pass reviewed, when the loop stopped short of the cap with
     blocking findings open, or when a capped run's open findings were not
-    handed to the human."""
+    handed to the human. Fails CLOSED: it now runs inside the build's
+    terminal-state step, where a traceback would drop every problem from
+    verify.json, so an unexpected error becomes a problem, never a pass."""
+    try:
+        return _check(root, phase, feat, head, repo_root)
+    except LedgerError as e:
+        return [str(e)]
+    except Exception as e:  # noqa: BLE001
+        return [f"the review ledger could not be checked ({type(e).__name__}: "
+                f"{e}) - failing closed"]
+
+
+def _check(root, phase, feat, head, repo_root) -> list[str]:
     _phase(phase)
     try:
         cap = max_iterations(root, repo_root)
@@ -546,6 +610,10 @@ def render(root=".", phase="impl", repo_root=".", feat=None) -> str:
                          f"{f['summary']}"
                          + (f" Scenario: {f['scenario']}"
                             if f["scenario"] else ""))
+    elif run and run["passes"] and any(
+            f["severity"] == "blocking" for f in run["passes"][-1]["findings"]):
+        lines.append("None — every blocking finding in the final pass was "
+                     "dismissed (reasons above).")
     else:
         lines.append("None — the final review pass was clean.")
     return "\n".join(lines) + "\n"
@@ -569,6 +637,14 @@ def _status_text(st: dict) -> str:
              f"{st['passes_in_run']} of {st['cap']} passes in the current run"]
     if st["state"] in ("not-started", "needs-fixes"):
         lines.append(f"next: pass {st['next_pass_in_run']} of {st['cap']}")
+    elif st["state"] == "stale":
+        lines.append(f"next: pass {st['next_pass_in_run']} of {st['cap']} - "
+                     f"the reviewed state changed ({st['stale_reason']})")
+    elif st["state"] == "stale-at-cap":
+        lines.append(f"the run is at its cap and the reviewed state changed "
+                     f"({st['stale_reason']}): run 'review_ledger.py --root "
+                     f"<unit> new-run --phase {st['phase']}', then record "
+                     f"pass 1 of the new run")
     for f in st["open_blocking"]:
         lines.append(f"OPEN {f['id']} [{f['kind']}] {f['where']} - "
                      f"{f['summary']}")
@@ -596,6 +672,9 @@ def _parser() -> argparse.ArgumentParser:
     p = add("record", "record one review pass")
     p.add_argument("--feat", default=None,
                    help="FEAT-### (default: the spec's Feature ID)")
+    p.add_argument("--reviewed", default=None, metavar="SHA",
+                   help="the commit HEAD pointed at when the reviewers were "
+                        "dispatched (impl); refuses if code changed since")
     p.add_argument("--findings-json", action="append", required=True,
                    help="one reviewer's closing JSON block; '-' reads stdin; "
                         "repeat once per reviewer")
@@ -621,7 +700,8 @@ def main() -> int:
     try:
         if args.cmd == "record":
             entry = record(args.root, args.phase, args.feat,
-                           _read_reports(args.findings_json), args.repo_root)
+                           _read_reports(args.findings_json), args.repo_root,
+                           reviewed=args.reviewed)
             blocking = [f for f in entry["findings"]
                         if f["severity"] == "blocking"]
             print(f"recorded {args.phase} pass {entry['pass']}: "

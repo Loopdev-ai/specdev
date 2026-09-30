@@ -775,3 +775,119 @@ def test_init_vendors_the_reviewers():
 def test_lint_command_covers_the_review_ledger():
     cfg = json.loads((ROOT / ".sdlc" / "config.json").read_text("utf-8"))
     assert "review_ledger.py" in cfg["commands"]["lint"]
+
+
+# ---- Final review fixes ----------------------------------------------------
+
+def _head(repo):
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_record_with_reviewed_equal_to_head_stamps_it(repo):
+    sha = _head(repo)
+    entry = rl.record(repo, "impl", "FEAT-007", [report()], repo_root=repo,
+                      reviewed=sha)
+    assert entry["reviewed"] == sha
+
+
+def test_record_refuses_code_changed_since_dispatch(repo):
+    old = _head(repo)
+    fix_and_commit(repo)
+    with pytest.raises(rl.LedgerError, match="code changed between dispatch"):
+        rl.record(repo, "impl", "FEAT-007", [report()], repo_root=repo,
+                  reviewed=old)
+    assert rl.load(repo) is None
+
+
+def test_record_stamps_the_reviewed_sha_when_only_bookkeeping_moved(repo):
+    old = _head(repo)
+    (repo / ".specdev" / "BUILD.md").write_text("wave 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "bookkeeping")
+    assert _head(repo) != old
+    entry = rl.record(repo, "impl", "FEAT-007", [report()], repo_root=repo,
+                      reviewed=old)
+    assert entry["reviewed"] == old
+
+
+def test_reviewed_is_an_impl_only_option(repo):
+    with pytest.raises(rl.LedgerError, match="impl phase only"):
+        rl.record(repo, "spec", "FEAT-007", [report()], repo_root=repo,
+                  reviewed=_head(repo))
+
+
+def test_reworded_dirty_refusal_says_to_discard(repo):
+    (repo / "widget.py").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(rl.LedgerError) as e:
+        rec(repo, report())
+    assert "commit" in str(e.value) and "discard" in str(e.value)
+
+
+def test_status_reports_code_changed_after_the_last_pass(repo):
+    rec(repo, report())
+    fix_and_commit(repo)
+    st = rl.status(repo, "impl", repo)
+    assert st["state"] == "stale" and st["next_pass_in_run"] == 2
+    assert "widget.py" in st["stale_reason"]
+    assert "reviewed state changed" in rl._status_text(st)
+
+
+def test_status_reports_stale_at_cap(repo):
+    set_cap(repo, 1)
+    rec(repo, report())
+    fix_and_commit(repo)
+    st = rl.status(repo, "impl", repo)
+    assert st["state"] == "stale-at-cap"
+    assert "new-run --phase impl" in rl._status_text(st)
+
+
+def test_status_reports_a_spec_edited_after_the_last_pass(repo):
+    rec(repo, report(), phase="spec")
+    p = repo / ".specdev" / "spec.md"
+    p.write_text(SPEC.replace("first 20 rows", "first 25 rows"),
+                 encoding="utf-8")
+    assert rl.status(repo, "spec", repo)["state"] == "stale"
+
+
+def test_status_stays_clean_when_only_bookkeeping_changed(repo):
+    rec(repo, report())
+    (repo / ".specdev" / "BUILD.md").write_text("wave 1\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "bookkeeping")
+    st = rl.status(repo, "impl", repo)
+    assert st["state"] == "clean" and st["stale_reason"] == ""
+
+
+def test_refs_does_not_need_review_ledger(repo, tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for f in TOOLS.glob("*.py"):
+        if f.name != "review_ledger.py":
+            (tools / f.name).write_bytes(f.read_bytes())
+    p = subprocess.run(
+        [sys.executable, str(tools / "build_outcome.py"), "--root", str(repo),
+         "refs", "--unit", ".", "--feat", "FEAT-001"],
+        capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "impl=" in p.stdout
+
+
+def test_check_fails_closed_on_a_malformed_ledger(repo):
+    doc = rl._empty("FEAT-007")
+    doc["phases"]["impl"] = {"runs": [{"passes": [{}]}], "dismissed": []}
+    rl.save(doc, repo)
+    probs = check(repo)
+    assert probs and isinstance(probs, list)
+
+
+def test_a_non_finite_cap_is_refused(repo):
+    set_cap(repo, float("inf"))
+    with pytest.raises(rl.LedgerError, match="integer >= 1"):
+        rl.max_iterations(repo, repo)
+
+
+def test_render_says_dismissed_not_clean_when_findings_were_dismissed(repo):
+    rec(repo, report(bug()))
+    rl.dismiss(repo, "impl", "I1-1", "contradicts REQ-001 Out of Scope")
+    out = rl.render(repo, "impl", repo)
+    assert "was dismissed" in out and "was clean" not in out
