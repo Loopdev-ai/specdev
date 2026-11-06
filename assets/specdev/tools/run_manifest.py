@@ -112,6 +112,14 @@ _FALLBACK_DEFAULTS = {
     # (review_ledger.py). A quality gate, not a breaker limit, so it is not
     # in BREAKER_ENV either - and 0 does not disable it.
     "max_review_iterations": 10,
+    # CI Stop hook (build_outcome.py stop-hook): how many times one job may
+    # keep a coordinator going past an early end of turn. 0 turns it off; the
+    # cross-attempt continuation is still the backstop either way.
+    "max_stop_blocks": 5,
+    # The model the vendored reviewer agents run on. "inherit" = the
+    # session's. Any other value is written into .claude/agents/*-reviewer.md
+    # by /specdev:init, and only when this repo's ci.json sets it explicitly.
+    "reviewer_model": "inherit",
 }
 
 # ci.json key -> the environment variable circuit_breaker.py reads it from.

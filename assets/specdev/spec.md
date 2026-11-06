@@ -65,3 +65,12 @@ test can assert (the matrix flags any REQ with no linked test).
 ## Open Questions
 
 - <unresolved items blocking approval>
+
+**Assumed:**
+
+> Readings the review loop assumed instead of interrupting you, one per
+> line with its finding id — e.g. `S2-1: an empty search returns [] with
+> 200`. Confirm or correct them at Spec PR review. This section is outside
+> the reviewed hash, so recording here never invalidates a review.
+
+- <none>

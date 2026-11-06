@@ -35,6 +35,13 @@ Do this:
 5. Fill the spec: the `## Original Request`, `FEAT-###`, `Status: draft`,
    sequential `REQ-###` IDs each with a concrete, testable **Acceptance**
    line, and a real **Out of Scope** list.
+5b. **Ask every question now, once.** Dispatch one fresh `spec-reviewer` in
+   **interrogate mode** (say so in its prompt) over the draft. It returns
+   only the questions whose answers would change a REQ, an Acceptance line or
+   Out of Scope. Put them all to the user in **one** message, fold the
+   answers into the spec and into `## Original Request` → *Clarified while
+   brainstorming*. This is not a review pass: do not record it in the
+   ledger.
 6. Run `python .specdev/tools/validate_spec.py --strict` and fix what it flags.
 7. **Pre-PR review loop (spec phase)** — skip only when
    `python .specdev/tools/profile.py show --unit <unit> --key spec_pr` prints
@@ -45,12 +52,21 @@ Do this:
    - dispatch a **fresh `spec-reviewer`** each pass with the unit root and the
      dismissed list;
    - record the pass: `review_ledger.py --root <unit> record --phase spec
-     --findings-json <file>`;
+     --from-hook` (the review hook saved the reviewer's report; without the
+     hook, `--findings-json <file>`);
    - on blocking findings, revise the spec and re-run `validate_spec.py
-     --strict`; batch the `needs_human` findings into one question to the
-     user per pass; dismiss a deferral (`review_ledger.py --root <unit>
-     dismiss --phase spec --id <id> --reason "deferred by the user"`) and list it under
-     `## Open Questions`;
+     --strict`;
+   - **assume and record** each `needs_human` finding that carries a
+     `default` (or is `minor`): apply the default, dismiss it
+     (`review_ledger.py --root <unit> dismiss --phase spec --id <id>
+     --reason "assumed: <the reading>"`) and list it under `**Assumed:**` in
+     `## Open Questions` — the user reviews assumptions at the Spec PR, not
+     mid-loop;
+   - batch only the remaining `needs_human` findings (blocking, no `default`)
+     into one question to the user per pass; dismiss a deferral
+     (`review_ledger.py --root <unit> dismiss --phase spec --id <id>
+     --reason "deferred by the user"`) and list it under `## Open
+     Questions`;
    - stop on a clean pass, or at `max_review_iterations` — then list every
      open finding id under `## Open Questions`.
    - any later edit to `spec.md` — an ADR you draft next, an `adr-checker` fix,
@@ -61,7 +77,8 @@ Do this:
    `review_ledger.py --root <unit> check --phase spec` must pass —
    `spec-validate.yml` runs the same check on the Spec PR.
 8. Do **not** open the PR automatically — tell the user the spec is ready
-   (and which findings, if any, are unresolved), that the next step is to push
+   (which findings, if any, are unresolved, and which readings were
+   assumed), that the next step is to push
    and open a Spec PR (Gate 1), and remind them not to start the build until
    that PR is merged.
 

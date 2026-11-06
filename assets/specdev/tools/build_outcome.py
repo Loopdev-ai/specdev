@@ -527,6 +527,8 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
                                             head=branch["sha"],
                                             repo_root=repo_dir)
 
+    review_stats = _review_stats(root, feat)
+
     # Supplementary only. A PR is neither necessary nor sufficient here.
     prs, rejected = implementation_prs(feat, unit=unit, base=base, repo=repo,
                                        since=since, author=authors)
@@ -561,7 +563,139 @@ def verify(root=".", feat="", mode="prod", unit=".", base="main",
         "rejected_prs": rejected,
         "warnings": warnings,
         "problems": problems,
+        "review_stats": review_stats,
     }
+
+
+def _review_stats(root=".", feat="") -> dict | None:
+    """The review loop's cost and yield for the outcome record (one row per
+    build, uploaded with verify.json). Measurement only: it never adds a
+    problem, and a ledger that cannot be read yields None, not a failure."""
+    try:
+        import review_ledger  # noqa: PLC0415  (vendored sibling)
+        st = review_ledger.stats(root, feat=feat or None)
+    except Exception:  # noqa: BLE001
+        return None
+    return st if st.get("feat") else None
+
+
+# ---- Stop hook: hold a CI coordinator to the terminal state ---------------
+#
+# U17 made continuation mechanical BETWEEN attempts: a coordinator that ends
+# its turn early is followed by a fresh `claude-code-action` invocation that
+# re-reads BUILD.md from cold. A Stop hook does the same thing WITHIN the
+# attempt, before the turn ends, and says exactly what is missing rather than
+# repeating the generic continuation prompt. The cross-attempt loop stays as
+# the backstop for crashes, turn exhaustion and timeouts.
+#
+# Same safety rule as continue-gate: never keep an agent going twice without
+# a new commit in between - an agent that achieved nothing does not get
+# another lap. CI only (SPECDEV_STOP_HOOK=1): interactively, a person ending
+# the turn is a decision, not a failure.
+
+STOP_HOOK_ENV = "SPECDEV_STOP_HOOK"
+
+
+def _section_filled(text: str, heading: str) -> bool:
+    """A '## <heading>' section with real content: not blank, not '>'
+    explanation, not a line still carrying a <placeholder>."""
+    m = re.search(rf"^##\s+{re.escape(heading)}\s*$(.*?)(?=^##\s+\S|\Z)",
+                  text, re.M | re.S)
+    if not m:
+        return False
+    for line in m.group(1).splitlines():
+        t = line.strip()
+        if t and not t.startswith(">") and not re.search(r"<[^>\n]+>", t):
+            return True
+    return False
+
+
+def deliberate_stop(root=".") -> bool:
+    """BUILD.md records a deliberate stop: '## Stopped' says what blocked the
+    build. The skill's sanctioned way to end short of the terminal state."""
+    p = checkpoint_path(root)
+    try:
+        text = p.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+    return _section_filled(text, "Stopped")
+
+
+def local_terminal_problems(root=".", feat="", mode="prod", base="main",
+                            repo_dir=".") -> list[str]:
+    """The terminal state as the working tree shows it DURING the run.
+
+    verify() reads the pushed implementation branch, which the workflow only
+    pushes after the agent's turn - so mid-run it always fails. This is the
+    same assertion against HEAD: commits beyond the base, a real checkpoint
+    and PR body, poc Findings, and (prod) the review ledger over HEAD."""
+    problems = checkpoint_problems(root) + pr_body_problems(root)
+    if mode == "poc":
+        problems += findings_problems(root)
+    head = _resolve("HEAD", repo_dir)
+    base_sha = ""
+    for spelling in (f"refs/remotes/origin/{base}", f"refs/heads/{base}", base):
+        base_sha = _resolve(spelling, repo_dir)
+        if base_sha:
+            break
+    if not head:
+        problems.append("HEAD does not resolve to a commit")
+    elif base_sha:
+        rc, out = _git(["rev-list", "--count", f"{base_sha}..{head}"], repo_dir)
+        if rc == 0 and int(out.strip() or 0) == 0:
+            problems.append(f"nothing is committed beyond '{base}' - commit "
+                            f"every wave as it goes green")
+    if mode == "prod" and head:
+        try:
+            import review_ledger  # noqa: PLC0415
+        except ImportError as e:
+            problems.append(f"the review ledger tool could not be imported "
+                            f"({e})")
+        else:
+            problems += review_ledger.check(root, "impl", feat=feat,
+                                            head=head, repo_root=repo_dir)
+    return problems
+
+
+def stop_decision(root=".", feat="", mode="prod", base="main", repo_dir=".",
+                  state_path: Path | None = None, max_blocks=5,
+                  env=None) -> dict | None:
+    """The Stop hook's verdict: a {"decision": "block", ...} dict to keep the
+    coordinator going, or None to let it stop."""
+    env = os.environ if env is None else env
+    if env.get(STOP_HOOK_ENV) != "1" or max_blocks <= 0:
+        return None
+    if deliberate_stop(root):
+        return None
+    problems = local_terminal_problems(root, feat, mode, base, repo_dir)
+    if not problems:
+        return None
+    state = {"blocks": 0, "last_head": ""}
+    if state_path and state_path.exists():
+        try:
+            state.update(json.loads(state_path.read_text("utf-8")))
+        except (OSError, json.JSONDecodeError):
+            pass
+    head = _resolve("HEAD", repo_dir)
+    if state["blocks"] >= max_blocks:
+        return None
+    if state["blocks"] > 0 and head == state.get("last_head"):
+        # Kept going last time and committed nothing since: another lap would
+        # start from the same place with no new information.
+        return None
+    state = {"blocks": state["blocks"] + 1, "last_head": head}
+    if state_path:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    shown = "; ".join(problems[:6]) + (" ..." if len(problems) > 6 else "")
+    return {"decision": "block",
+            "reason": (f"The build has not reached its terminal state "
+                       f"(stop-hook {state['blocks']} of {max_blocks}): "
+                       f"{shown}. Continue from {BUILD_REL} and "
+                       f"`review_ledger.py status --phase impl`. If you "
+                       f"genuinely cannot finish, write what blocked you "
+                       f"under '## Stopped' in {BUILD_REL}, commit it, and "
+                       f"stop.")}
 
 
 def continuation_gate(rec: dict, attempt: int, max_attempts, spent, cap,
@@ -663,6 +797,14 @@ def _md_report(rec: dict, breaker: dict | None) -> str:
             lines.append(f"**Implementation branch:** `{br['ref']}` — _not "
                          f"pushed_")
         lines.append("")
+
+    rs = ((rec.get("review_stats") or {}).get("phases") or {}).get("impl")
+    if rs and rs.get("passes"):
+        lines += [f"**Review loop (impl):** {rs['passes']} pass(es) "
+                  f"{rs['passes_per_run']}, blocking per pass "
+                  f"{rs['blocking_per_pass']}, {rs['dismissed']} dismissed "
+                  f"({rs['not_reproducible']} not reproducible), final pass "
+                  f"{'clean' if rs['final_pass_clean'] else 'NOT clean'}", ""]
 
     prs = rec.get("implementation_prs") or []
     filt = rec.get("provenance_filters") or {}
@@ -823,6 +965,22 @@ def main() -> int:
     pg.add_argument("--head-before", default="")
     pg.add_argument("--head-now", default="")
 
+    ps = sub.add_parser("stop-hook", help="Stop hook (CI): keep the "
+                        "coordinator going while the terminal state is not "
+                        "reached. Reads the hook payload on stdin; FEAT, "
+                        "MODE, UNIT and BASE_BRANCH default from the env.")
+    ps.add_argument("--feat", default=None)
+    ps.add_argument("--mode", default=None, choices=("prod", "poc"))
+    ps.add_argument("--base", default=None)
+    ps.add_argument("--repo-dir", default=".")
+    ps.add_argument("--state", default=None,
+                    help="block-count state file (default: "
+                         "$SPECDEV_STOP_STATE, else $RUNNER_TEMP/"
+                         "specdev-stop-state.json)")
+    ps.add_argument("--max-blocks", default=None,
+                    help="default: $SPECDEV_MAX_STOP_BLOCKS, else ci.json "
+                         "max_stop_blocks")
+
     pr = sub.add_parser("report")
     pr.add_argument("--feat", required=True)
     pr.add_argument("--mode", required=True, choices=("prod", "poc"))
@@ -874,6 +1032,38 @@ def main() -> int:
                   "deploy treats this as a successful build.", file=sys.stderr)
             return 1
         print(f"terminal state reached - {rec['required_terminal_state']}")
+        return 0
+
+    if args.cmd == "stop-hook":
+        # Fails OPEN on any internal error: the circuit breaker bounds spend
+        # and verify() is still the gate; this hook only saves a restart.
+        try:
+            sys.stdin.read()  # the payload; nothing in it changes the verdict
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            env = os.environ
+            root = args.root if args.root != "." else env.get("UNIT", ".")
+            feat = args.feat or env.get("FEAT", "")
+            mode = args.mode or env.get("MODE", "prod")
+            base = args.base or env.get("BASE_BRANCH", "main")
+            state = args.state or env.get("SPECDEV_STOP_STATE") or (
+                str(Path(env["RUNNER_TEMP"]) / "specdev-stop-state.json")
+                if env.get("RUNNER_TEMP") else None)
+            mb = args.max_blocks or env.get("SPECDEV_MAX_STOP_BLOCKS")
+            if mb is None:
+                import run_manifest  # noqa: PLC0415
+                mb = run_manifest.ci_get("max_stop_blocks", root,
+                                         repo_root=args.repo_dir)
+            decision = stop_decision(root, feat, mode, base, args.repo_dir,
+                                     Path(state) if state else None,
+                                     int(mb), env)
+        except Exception as e:  # noqa: BLE001
+            print(f"stop-hook: internal error, letting the agent stop "
+                  f"({type(e).__name__}: {e})", file=sys.stderr)
+            return 0
+        if decision:
+            print(json.dumps(decision))
         return 0
 
     if args.cmd == "continue-gate":

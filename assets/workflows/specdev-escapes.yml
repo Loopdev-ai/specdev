@@ -1,0 +1,71 @@
+name: specdev-escapes
+
+# MEASUREMENT, NOT A GATE. Counts what reviewers still find on an
+# Implementation PR after the pre-PR review loop declared it ready: review
+# comments by bots (Copilot, `@claude review`, ...) and by people, per PR.
+# That number is what the original complaint was about ("Copilot keeps
+# finding lots of bugs"), so it is the yardstick for every change to the
+# review loop - see review_ledger.py `stats` for the loop's own side.
+#
+# Read-only on purpose: it never posts, labels or fails. The counts go to the
+# run's step summary and, as JSON, to an artifact you can collect across PRs.
+# It runs only for PRs from the build's own branches (specdev/impl/**).
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: specdev-escapes-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  count:
+    if: startsWith(github.event.pull_request.head.ref, 'specdev/impl/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Count review findings on this Implementation PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${REPO}/pulls/${PR}/comments" \
+            --jq '.[] | {login: .user.login, type: .user.type}' \
+            > "${RUNNER_TEMP}/comments.jsonl"
+          gh api --paginate "repos/${REPO}/pulls/${PR}/reviews" \
+            --jq '.[] | select((.body // "") != "") | {login: .user.login, type: .user.type}' \
+            > "${RUNNER_TEMP}/reviews.jsonl"
+          jq -s --arg pr "$PR" --arg head "$HEAD_REF" '
+            {pr: ($pr|tonumber), head: $head,
+             inline_comments: length,
+             by_bot: (map(select(.type == "Bot")) | length),
+             by_human: (map(select(.type != "Bot")) | length),
+             by_author: (group_by(.login) | map({(.[0].login): length}) | add // {})}
+          ' "${RUNNER_TEMP}/comments.jsonl" > "${RUNNER_TEMP}/escapes.json"
+          REVIEWS=$(jq -s 'length' "${RUNNER_TEMP}/reviews.jsonl")
+          jq --argjson r "$REVIEWS" '. + {reviews_with_body: $r}' \
+            "${RUNNER_TEMP}/escapes.json" > "${RUNNER_TEMP}/escapes.tmp"
+          mv "${RUNNER_TEMP}/escapes.tmp" "${RUNNER_TEMP}/escapes.json"
+          {
+            echo "## Review findings after the pre-PR loop — #${PR}"
+            echo
+            echo "Inline review comments on \`${HEAD_REF}\`: by bots **$(jq .by_bot "${RUNNER_TEMP}/escapes.json")**, by people **$(jq .by_human "${RUNNER_TEMP}/escapes.json")**; reviews with a body: ${REVIEWS}."
+            echo
+            echo "| Author | Inline comments |"
+            echo "|---|---|"
+            jq -r '.by_author | to_entries[] | "| `\(.key)` | \(.value) |"' "${RUNNER_TEMP}/escapes.json"
+            echo
+            echo "_Measurement only. Compare with \`review_ledger.py stats --phase impl\` for what the loop itself found._"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the counts
+        uses: actions/upload-artifact@v4
+        with:
+          name: specdev-escapes-pr-${{ github.event.pull_request.number }}
+          path: ${{ runner.temp }}/escapes.json
+          overwrite: true
