@@ -20,7 +20,9 @@ This hook runs as each subagent stops. For the three reviewers only
     let go (a hook must never trap an agent), and the coordinator sees a
     missing report and re-dispatches;
   * valid -> saved to <hook_dir>/<phase>/<agent>--<agent_id>.json, where
-    `review_ledger.py record --from-hook` picks it up.
+    `review_ledger.py record --from-hook` picks it up. An interrogate-mode
+    report (it carries "coverage") goes to <hook_dir>/interrogate/ instead:
+    it is the up-front questions, never a review pass.
 
 Every other agent passes through untouched. An internal error FAILS OPEN
 (exit 0, a note on stderr): this hook improves the loop's plumbing; the
@@ -135,7 +137,10 @@ def handle(payload: dict, directory: Path | None = None,
                            "review_ledger.py: " + "; ".join(problems[:8])
                            + ". Fix the report and end with exactly one "
                              "fenced ```json block. Do not redo the review.")}
-    out = d / phase
+    # An interrogate report (spec-reviewer's up-front questions) is kept
+    # apart: `record --from-hook` must never take it for a review pass.
+    out = d / ("interrogate" if review_ledger.is_interrogate(report)
+               else phase)
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{agent}--{agent_id}.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8")

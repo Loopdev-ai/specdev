@@ -35,14 +35,30 @@ Do this:
 5. Fill the spec: the `## Original Request`, `FEAT-###`, `Status: draft`,
    sequential `REQ-###` IDs each with a concrete, testable **Acceptance**
    line, and a real **Out of Scope** list.
+5a. **Fill the component map.** Write `.specdev/components.md` so the Spec
+   PR carries how the work divides: for a new product, propose components
+   from the REQs; when extending, start from the `spec-explorer` map and
+   mark each `new` / `modified` / `untouched`. Every REQ needs an owner,
+   every owning component a **Contract / Interface** (the entry point its
+   REQs are reached through), and every **Depends on** entry must be another
+   component or be marked `(external)`. The build schedules its waves from
+   this table and does not stop to ask for it.
 5b. **Ask every question now, once.** Dispatch one fresh `spec-reviewer` in
-   **interrogate mode** (say so in its prompt) over the draft. It returns
-   only the questions whose answers would change a REQ, an Acceptance line or
-   Out of Scope. Put them all to the user in **one** message, fold the
-   answers into the spec and into `## Original Request` → *Clarified while
-   brainstorming*. This is not a review pass: do not record it in the
-   ledger.
-6. Run `python .specdev/tools/validate_spec.py --strict` and fix what it flags.
+   **interrogate mode** (say so in its prompt) over the draft. It rates ten
+   ambiguity categories and returns at most 5 questions, ranked scope >
+   security/privacy > UX > technical, each with a recommended answer
+   (`default`); the review hook rejects a report that breaks that shape and
+   saves a valid one under the hook directory's `interrogate/` (never
+   recorded as a review pass). Put the questions to the user in **one**
+   message, each with **Recommended:** <its default>, and say that "yes"
+   accepts every recommendation. Record each answer in `## Original Request`
+   → *Clarified while brainstorming* as `<question> → <answer>`, add a
+   `**Coverage:**` line listing any category still `partial` or `missing`,
+   and fold the answers into the REQs.
+6. Run `python .specdev/tools/validate_spec.py --strict --components` and fix
+   every ERROR and WARN. Fix the `NOTE` lines too (vague wording in an
+   Acceptance line) unless you have a reason to keep one; pass any you keep
+   to the first `spec-reviewer` as already known.
 7. **Pre-PR review loop (spec phase)** — skip only when
    `python .specdev/tools/profile.py show --unit <unit> --key spec_pr` prints
    `false` (a poc unit has no Spec PR). Follow the specdev skill's *Pre-PR
@@ -54,8 +70,8 @@ Do this:
    - record the pass: `review_ledger.py --root <unit> record --phase spec
      --from-hook` (the review hook saved the reviewer's report; without the
      hook, `--findings-json <file>`);
-   - on blocking findings, revise the spec and re-run `validate_spec.py
-     --strict`;
+   - on blocking findings, revise the spec (and `components.md` when the
+     REQs change) and re-run `validate_spec.py --strict --components`;
    - **assume and record** each `needs_human` finding that carries a
      `default` (or is `minor`): apply the default, dismiss it
      (`review_ledger.py --root <unit> dismiss --phase spec --id <id>

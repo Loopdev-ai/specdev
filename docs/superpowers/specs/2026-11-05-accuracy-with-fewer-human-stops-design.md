@@ -1,8 +1,8 @@
 # Design: Higher accuracy with fewer human stops
 
 **Date:** 2026-11-05
-**Status:** Phases 0 and 1 implemented; Phase 1b (lessons from Spec Kit, §8)
-proposed; Phases 2–5 wait for Phase 0 data. For review (Alex, Chad)
+**Status:** Phases 0, 1 and 1b (lessons from Spec Kit, §8.1–8.4)
+implemented; Phases 2–5 wait for Phase 0 data. For review (Alex, Chad)
 **Origin:** "Evaluate specdev, how can we make it more automated so there is
 higher accuracy but less human in the loop? Perhaps there have been something
 changes to Claude in the past few months." Grounded against
@@ -428,8 +428,15 @@ and the defaults stay inside the findings JSON instead of reaching the user.
 - Answers are recorded as `question → answer` under the spec's
   `## Original Request` → *Clarified while brainstorming*, the format the
   template already uses.
-- `review_ledger.py stats` gains the coverage counts, so Phase 0 shows which
-  categories keep coming back as questions.
+- The categories still `partial` or `missing` go on a `**Coverage:**` line
+  in the same block, so the Spec PR reviewer sees what was left open. (An
+  interrogate report is never recorded in the ledger, so `stats` does not
+  count it.)
+- **Mechanical:** an interrogate report is recognised by its `coverage`
+  object. The review hook rejects one that does not rate all ten
+  categories, asks more than 5 questions, or has a question without a
+  `default`; it saves a valid one under `interrogate/`, apart from review
+  passes; and `review_ledger.py record` refuses it.
 
 #### 8.3 A list of things never worth asking (H2)
 
@@ -463,7 +470,7 @@ to an `xhigh`-effort `spec-reviewer` pass.
   any it keeps to `spec-reviewer` as already known, so that pass is spent on
   what only judgment can find.
 
-#### 8.5 Technical unknowns are researched, not escalated (H6) — needs a decision
+#### 8.5 Technical unknowns are researched, not escalated (H6)
 
 In Spec Kit's `plan`, each unknown becomes a research task for an agent, and
 the result is recorded as Decision / Rationale / Alternatives. In specdev a
@@ -478,10 +485,10 @@ whatever its nature.
   `## Decisions` section of `BUILD.md` as Decision / Rationale /
   Alternatives, is listed in `PR_BODY.md`, and is given to the reviewers.
 - **Intent:** still a person, through `## Stopped` (§3).
-- **Decision needed:** may a build make an *architectural* choice on its own?
-  The proposal is no. A choice that would need an ADR (the `adr` skill's
-  scope tags decide) goes to `## Stopped`. Everything below that bar is
-  researched and recorded.
+- **Decided (Alex, 2026-11-06): architectural choices stay human-gated.** A
+  choice that would need an ADR (the `adr` skill's scope tags decide) is
+  never made by the build. It goes to `## Stopped`, written up for a person.
+  Only choices below that bar are researched and recorded.
 
 #### 8.6 Waves follow priority, so an early stop still delivers a whole slice (H9, H7) — needs a decision
 
@@ -516,7 +523,7 @@ Phase 0 numbers before the next one starts.
 | 2 | §4 reproduced findings | cause 3 | Medium. Needs the worktree-checkout behaviour pinned by a test against the CI's Claude Code version. |
 | 3 | §5 acceptance-author + lock | cause 1; H9 | Medium-high. It changes the build's shape (wave 0) and the terminal state. It ships behind `ci.json` `acceptance_tests: true` (default `false` for one release, then `true`). |
 | 4 | §6 per-wave intent check, scoped passes | causes 2, 4 | Medium. It changes `check` rule 3. `schema_version` 2 for `review.json`, and v1 ledgers are still read. |
-| 5 | §8.5 research before escalating, §8.6 priority-ordered waves and optional partial delivery | H6, H9, H7 | Medium. Both wait on the decisions named in §8.5 and §8.6. Partial delivery changes the terminal state, so it ships behind `partial_delivery: false`. |
+| 5 | §8.5 research before escalating, §8.6 priority-ordered waves and optional partial delivery | H6, H9, H7 | Medium. §8.5's decision is made (architectural choices stay human-gated); §8.6's is open. Partial delivery changes the terminal state, so it ships behind `partial_delivery: false`. |
 
 Phase 1b does not depend on Phase 0 data. It removes a stop (H11) and cuts
 questions rather than tuning the review loop, so it can ship as soon as it
@@ -611,10 +618,11 @@ workflows, skill and agents together" note is extended to name them.
   spec without `components.md` still passes on other PRs. `new-feature.md`
   fills `components.md`, and `build.md`'s precondition proposes components
   instead of stopping.
-- **§8.2:** `spec-reviewer` names the category list, the 5-question cap, the
-  ranking and a required `default` in interrogate mode. `stats` counts
-  coverage per category. `new-feature.md` presents defaults as
-  *Recommended:* in one batch.
+- **§8.2:** `report_problems` rejects an interrogate report with a missing
+  category, a bad rating, more than 5 questions, or a question that is not
+  `needs_human` or has no `default`. The hook saves a valid one under
+  `interrogate/`, `record` refuses it, and `record --from-hook` never picks
+  it up. `new-feature.md` presents defaults as *Recommended:* in one batch.
 - **§8.3:** `spec-reviewer` carries the never-ask list and the
   ADR / Original Request exception.
 - **§8.4:** `validate_spec.py` warns on a vague Acceptance line, does not

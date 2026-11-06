@@ -570,7 +570,14 @@ def test_every_example_block_parses_and_the_ledger_accepts_it(name, repo):
     assert blocks, f"{name} shows no example JSON block"
     phase = "spec" if name == "spec-reviewer" else "impl"
     for b in blocks:
-        rec(repo, json.loads(b), phase=phase)
+        report = json.loads(b)
+        if rl.is_interrogate(report):
+            # The up-front questions: valid for the hook, never a pass.
+            assert rl.report_problems(report, strict=True) == []
+            with pytest.raises(rl.LedgerError, match="interrogate"):
+                rec(repo, report, phase=phase)
+            continue
+        rec(repo, report, phase=phase)
 
 
 def test_code_reviewer_demands_a_location_and_a_failure_scenario():

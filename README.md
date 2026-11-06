@@ -130,7 +130,11 @@ branch, whose history is the trend. Run `python .specdev/tools/loop_stats.py
 --ref origin/main` locally for the same table.
 
 **It stops for you less.** Spec questions are asked once, up front (a
-`spec-reviewer` in *interrogate mode* over the first draft); in the loop, a
+`spec-reviewer` in *interrogate mode* over the first draft: at most 5,
+ranked, each with a recommended answer you can accept with "yes"; common
+defaults such as retention or pagination are never asked, only recorded as
+assumptions). The Spec PR carries a complete component map, checked by
+`validate_spec.py --components`, so a build never stops for one. In the loop, a
 question the reviewer can answer with a defensible default is **assumed and
 recorded** under the spec's *Open Questions → Assumed*, for you to confirm at
 Spec PR review. Deployment facts are asked once at `/specdev:init`; a build
