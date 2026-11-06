@@ -89,6 +89,22 @@ def unit_of(path: str) -> str:
     return head or "."
 
 
+def parse_when(value: str):
+    """A git %cI date as an aware datetime, or None.
+
+    Newer git prints UTC as a trailing 'Z', which datetime.fromisoformat only
+    accepts from Python 3.11. On 3.10 every commit date failed to parse, and
+    every ledger was silently skipped - so normalise it first, and let the
+    caller warn about anything still unparseable rather than drop it."""
+    v = (value or "").strip()
+    if v.endswith(("Z", "z")):
+        v = v[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(v)
+    except ValueError:
+        return None
+
+
 def ledger_paths(repo_dir=".", refs=("HEAD",)) -> list[str]:
     """Every review.json path ever committed on these refs."""
     rc, out = _git(["log", *refs, "--format=", "--name-only", "--",
@@ -122,9 +138,10 @@ def final_ledgers(repo_dir=".", refs=("HEAD",)):
             feat = doc.get("feat")
             if not feat:
                 continue
-            try:
-                at = datetime.fromisoformat(when.strip())
-            except ValueError:
+            at = parse_when(when)
+            if at is None:
+                warnings.append(f"{sha[:12]}:{path}: unparseable commit date "
+                                f"{when.strip()!r} - skipped")
                 continue
             key = (unit_of(path), feat)
             if key not in found or at > found[key]["at"]:

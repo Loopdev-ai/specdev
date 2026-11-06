@@ -200,6 +200,27 @@ def test_cli_writes_csv_json_and_markdown(repo, tmp_path):
     assert (out / "s.md").read_text() == p.stdout
 
 
+@pytest.mark.parametrize("value", ["2026-11-06T17:38:50Z",
+                                   "2026-11-06T17:38:50z",
+                                   "2026-11-06T17:38:50+00:00",
+                                   " 2026-11-06T12:38:50-05:00\n"])
+def test_commit_dates_parse_on_every_supported_python(value):
+    """CI's git prints UTC as 'Z', which fromisoformat rejects on Python
+    3.10 - every ledger was then silently skipped."""
+    at = ls.parse_when(value)
+    assert at is not None and at.utcoffset() is not None
+    assert at == ls.parse_when("2026-11-06T17:38:50+00:00")
+
+
+def test_an_unparseable_date_is_a_warning_not_a_silent_drop(repo,
+                                                            monkeypatch):
+    commit_ledger(repo, ledger("FEAT-001", [[]]))
+    monkeypatch.setattr(ls, "parse_when", lambda v: None)
+    rows, warnings = ls.build_rows(repo, ("HEAD",))
+    assert rows == []
+    assert any("unparseable commit date" in w for w in warnings)
+
+
 def test_unit_and_ref_naming_matches_build_outcome():
     bo = load_mod(TOOLS / "build_outcome.py", "build_outcome_ls")
     for unit in (".", "", "svc/api", "./web/"):
