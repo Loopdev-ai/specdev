@@ -1,7 +1,8 @@
 # Design: Higher accuracy with fewer human stops
 
 **Date:** 2026-11-05
-**Status:** Phases 0 and 1 implemented; Phases 2–4 wait for Phase 0 data. For review (Alex, Chad)
+**Status:** Phases 0 and 1 implemented; Phase 1b (lessons from Spec Kit, §8)
+proposed; Phases 2–5 wait for Phase 0 data. For review (Alex, Chad)
 **Origin:** "Evaluate specdev, how can we make it more automated so there is
 higher accuracy but less human in the loop? Perhaps there have been something
 changes to Claude in the past few months." Grounded against
@@ -9,6 +10,11 @@ changes to Claude in the past few months." Grounded against
 of v2.1.311 (2026-10-26). The features this design relies on were re-checked
 against the published docs on 2026-11-06 (changelog head: v2.1.318,
 2026-11-04). See *Platform facts relied on* for each one.
+
+§8 adds what Spec Kit does that helps autonomy. It was compared on
+2026-11-06 against Spec Kit's command templates (`templates/commands/*.md`
+on `github/spec-kit@main`, after its 1.0 release). Its docs site was not
+reachable from the session, so anything documented only there was not seen.
 
 ## Problem
 
@@ -65,10 +71,12 @@ of it:
 | H8 | Open the Implementation PR, review, merge | Gate 2 | **Yes.** This is deliberate (see `specdev-build.yml` header). |
 | H9 | Unresolved findings handed off at the cap | Gate 2 | Should be rare. Today this is the accuracy leak surfacing. |
 | H10 | Copilot findings on the open PR, fixed by hand | post-PR | No. This is the original complaint. |
+| H11 | `components.md` is empty when the build starts ("stop and ask the user to define components first") | `/specdev:build` precondition | No. Nothing fills or checks it before the Spec PR for a new product, so in CI this is a stop nobody can answer. Found in the Spec Kit comparison (§8.1). |
 
 H1, H3, H4 and H8 are the human gates the pipeline is built around, and this
-design keeps them. The target is the rest: remove H5 and H7, fold H2 into H4,
-and make H6, H9 and H10 rarer by fixing causes 1–6 above.
+design keeps them. The target is the rest: remove H5, H7 and H11, fold H2
+into H4, shorten H1, and make H6, H9 and H10 rarer by fixing causes 1–6
+above.
 
 ## Constraints
 
@@ -344,6 +352,157 @@ is a reviewer rule, not a validator rule, so merged specs are unaffected.
   nobody can be asked anyway, so this makes interactive builds behave like CI
   ones.
 
+### 8. Lessons from Spec Kit (H1, H2, H6, H9, H11)
+
+Spec Kit's core commands are `constitution`, `specify`, `clarify`, `plan`,
+`tasks`, `analyze`, `checklist`, `implement` and, since 1.0, `converge`. Most
+of what it does, specdev already does more strictly, which is what *Don't
+copy* below is about. Six of its habits address stops this design has not
+yet removed. §8.1–8.4 are small and mechanical (Phase 1b). §8.5–8.6 change
+how a build runs and need a decision first (Phase 5).
+
+Three of its patterns also back phases already planned:
+
+- **`converge`** (implement, compare the code with the spec, append the gaps
+  as tasks, repeat until "Converged") is the shape of our impl loop. Its gap
+  types `missing`, `partial`, `contradicts` and `unrequested` match
+  `intent-reviewer`'s checks.
+- **The bug extension** (assess, fix, then verify the original symptom, with
+  a verdict of `verified`, `partial` or `failed`) is §4's reproduce-first rule.
+- **`plan`'s `quickstart.md`** (runnable end-to-end scenarios) and its
+  per-story interface contracts are §5's acceptance tests in another form.
+
+#### 8.1 The component map is settled before the Spec PR (H11, H6)
+
+Spec Kit's `analyze` reports every requirement with no task and every task
+with no requirement. In specdev, nothing checks `components.md` before the
+build, and for a new product nothing fills it in. `/specdev:build` then stops
+on an empty table, which in CI nobody can answer.
+
+- `/specdev:new-feature` fills `components.md` after the REQs: proposed from
+  the spec for a new product, from the `spec-explorer` map when extending.
+  The Spec PR carries it, so the contract the human approves includes how
+  the work is divided.
+- A new check, `validate_spec.py --components`, requires:
+  - every REQ to appear in some component's **Owns (REQs)**, and every REQ
+    listed there to exist in the spec;
+  - every **Depends on** entry to name a component in the table, or to be
+    marked external (the template already allows
+    `<component / external>`; the check needs the marking to tell an
+    external system from a typo);
+  - the dependencies between components to have no cycles;
+  - every component row to have a non-empty, non-placeholder
+    **Contract / Interface**: the entry point its REQs are reached through,
+    which §5's acceptance tests need.
+- `spec-validate.yml` runs it **only for `spec/**` heads**, the same rule as
+  the spec review-ledger check. Already-merged specs without a
+  `components.md` therefore never fail.
+- The build precondition runs the same check. If the table is still empty
+  (a spec merged before this change), the coordinator proposes the
+  components from the spec, records them in `BUILD.md` and lists them in
+  `PR_BODY.md` as a deviation for the reviewer, rather than stopping.
+- `spec-reviewer` check 6 (ownership) stays as the judgment layer. The tool
+  makes its mechanical half certain.
+
+#### 8.2 Up-front questions are capped, ranked and come with answers (H1, H2)
+
+Spec Kit's `clarify` scans ten fixed ambiguity categories and marks each
+Clear, Partial or Missing. It never asks more than 5 questions, and each
+comes with a recommended answer the user can accept by saying "yes". Its
+`specify` allows at most 3 open questions and ranks them by impact: scope,
+then security and privacy, then user experience, then technical detail.
+§7's interrogate mode has none of this: no cap, no categories, no ranking,
+and the defaults stay inside the findings JSON instead of reaching the user.
+
+- Interrogate mode walks a fixed category list, adapted from Spec Kit's:
+  scope and behaviour; data; interaction flow; non-functional qualities;
+  integrations; edge cases and failures; constraints and trade-offs;
+  terminology; what "done" looks like; leftover placeholders. Its report
+  adds a `coverage` object with each category marked `clear`, `partial` or
+  `missing`.
+- **At most 5 questions**, ranked scope > security/privacy > UX > technical.
+  Everything below the cut becomes an assumption (§7) instead of a question.
+- **Every question carries a `default`**, shown to the user as
+  *Recommended:*. Replying "yes" accepts all of them. Spec Kit asks one
+  question at a time. Specdev keeps one batch, because one stop beats five.
+- Answers are recorded as `question → answer` under the spec's
+  `## Original Request` → *Clarified while brainstorming*, the format the
+  template already uses.
+- `review_ledger.py stats` gains the coverage counts, so Phase 0 shows which
+  categories keep coming back as questions.
+
+#### 8.3 A list of things never worth asking (H2)
+
+Spec Kit's `specify` tells the agent not to ask about common defaults: data
+retention, standard performance targets, ordinary error handling, standard
+authentication. It makes an informed guess and records it as an assumption.
+
+- `spec-reviewer` gets a **never-ask list**: data retention, standard
+  performance targets, ordinary error messages, the stack's usual
+  authentication, logging, pagination defaults. On these it raises an
+  assumption with a `default`, never a `needs_human` question. It still
+  raises a question when the Original Request, an accepted ADR or an
+  applicable org ADR speaks to the topic and the spec contradicts it.
+- The assumptions land under *Open Questions → Assumed* as in §7. The user
+  still sees every one at Spec PR review.
+
+#### 8.4 A free vague-wording check before the costly reviewer (H2; cause 6)
+
+Spec Kit's `analyze` flags vague terms that have no measurable criterion
+("fast", "robust", "intuitive"). Its `specify` reruns its own quality
+checklist up to 3 times before warning the user. Specdev sends all of that
+to an `xhigh`-effort `spec-reviewer` pass.
+
+- `validate_spec.py` gains a **warning** for an Acceptance line that uses a
+  term from a short vague-word list (fast, quick, robust, intuitive,
+  user-friendly, scalable, efficient, seamless, easy, appropriate,
+  reasonable, …) with no number, unit or concrete example on the line.
+- It is a warning, never an error, under `--strict` too, for the reason in
+  the Constraints: an error would fail already-merged specs.
+- The coordinator fixes the warnings before the first review pass and hands
+  any it keeps to `spec-reviewer` as already known, so that pass is spent on
+  what only judgment can find.
+
+#### 8.5 Technical unknowns are researched, not escalated (H6) — needs a decision
+
+In Spec Kit's `plan`, each unknown becomes a research task for an agent, and
+the result is recorded as Decision / Rationale / Alternatives. In specdev a
+builder that hits a gap reports `blocked`, and the gap goes to a person
+whatever its nature.
+
+- A blocked builder says which kind of gap it hit: `intent` (what the user
+  wants) or `technical` (how to build it).
+- **Technical:** the coordinator dispatches a read-only research subagent,
+  limited to the repository, its dependencies' metadata and vendored docs
+  (CI denies `WebFetch` and `WebSearch`). The decision goes in a new
+  `## Decisions` section of `BUILD.md` as Decision / Rationale /
+  Alternatives, is listed in `PR_BODY.md`, and is given to the reviewers.
+- **Intent:** still a person, through `## Stopped` (§3).
+- **Decision needed:** may a build make an *architectural* choice on its own?
+  The proposal is no. A choice that would need an ADR (the `adr` skill's
+  scope tags decide) goes to `## Stopped`. Everything below that bar is
+  researched and recorded.
+
+#### 8.6 Waves follow priority, so an early stop still delivers a whole slice (H9, H7) — needs a decision
+
+Spec Kit's `tasks` builds by user story in priority order (P1, P2, P3), each
+an independently testable increment, MVP first. Specdev's REQs already carry
+`Priority: must | should | could`, but nothing reads it: waves follow only
+the dependency graph.
+
+- **Wave order:** among the components a wave could start, those owning
+  `must` REQs go first. Dependencies still win. This is free, and on its own
+  it changes only the order.
+- **Optional partial delivery** (`ci.json` `partial_delivery`, default
+  `false`): when a run stops at the breaker or the review cap, the terminal
+  state accepts a branch where every `must` REQ is built, has a passing
+  test, and was reviewed. Every `should`/`could` REQ not delivered is listed
+  in `PR_BODY.md` as deferred. The human then merges a smaller, complete
+  change instead of restarting the build.
+- **Decision needed:** whether a "musts done, rest deferred" branch may ever
+  count as a finished build. It is a scope decision for the people who
+  approve the Spec PR, which is why it defaults off.
+
 ## Rollout
 
 Each phase is its own PR, has its own tests, and is judged against the
@@ -353,11 +512,17 @@ Phase 0 numbers before the next one starts.
 |---|---|---|---|
 | 0 | §0 `stats`, outcome record, escapes workflow | — (baseline) | None. Read-only. |
 | 1 | §1 hook validation, §2 effort, §3 Stop hook, §7 front-load, assume-and-record, deploy facts at init | H2, H5, H7; cause 5, 6 | Low. The hooks fail open on internal error (log and allow), except §1's schema check, which is the point. |
+| 1b | §8.1 component map before the Spec PR, §8.2 capped and ranked questions with recommended answers, §8.3 never-ask list, §8.4 vague-wording warning | H11; shortens H1; fewer H2 and H6 | Low. The components check runs only on `spec/**` heads and the vague-wording check only warns, so merged specs are unaffected. |
 | 2 | §4 reproduced findings | cause 3 | Medium. Needs the worktree-checkout behaviour pinned by a test against the CI's Claude Code version. |
 | 3 | §5 acceptance-author + lock | cause 1; H9 | Medium-high. It changes the build's shape (wave 0) and the terminal state. It ships behind `ci.json` `acceptance_tests: true` (default `false` for one release, then `true`). |
 | 4 | §6 per-wave intent check, scoped passes | causes 2, 4 | Medium. It changes `check` rule 3. `schema_version` 2 for `review.json`, and v1 ledgers are still read. |
+| 5 | §8.5 research before escalating, §8.6 priority-ordered waves and optional partial delivery | H6, H9, H7 | Medium. Both wait on the decisions named in §8.5 and §8.6. Partial delivery changes the terminal state, so it ships behind `partial_delivery: false`. |
 
-**Upgrade-together** applies as before. Phases 1, 3 and 4 change tools,
+Phase 1b does not depend on Phase 0 data. It removes a stop (H11) and cuts
+questions rather than tuning the review loop, so it can ship as soon as it
+is reviewed.
+
+**Upgrade-together** applies as before. Phases 1, 1b, 3, 4 and 5 change tools,
 agents, skill and workflow in step, and the README's "upgrade tools,
 workflows, skill and agents together" note is extended to name them.
 
@@ -379,6 +544,25 @@ workflows, skill and agents together" note is extended to name them.
 - **`@claude review` or Copilot as an in-loop reviewer.** They are post-PR by
   construction (approach C). They remain the human's second opinion, and
   Phase 0 counts what they still find.
+- **From Spec Kit, deliberately not copied:**
+  - *Advisory analysis.* Spec Kit's `analyze` only recommends fixing even
+    CRITICAL findings and never blocks. Specdev's checks are gates.
+  - *Asking a person over unchecked checklists.* Spec Kit's `implement`
+    stops and asks whenever a checklist has unchecked items. That is a
+    human stop of the kind this design removes.
+  - *Optional tests.* Spec Kit's `tasks` writes test tasks only when asked.
+    Specdev's builders are test-first and `--check-gaps` requires a test
+    per REQ.
+  - *Hooks as instructions.* Spec Kit's "mandatory" hooks are text telling
+    the agent to run them ("must actually be invoked, not just announced").
+    That relies on the model complying, which is what specdev's real hooks
+    and gates replace.
+  - *One question at a time.* Spec Kit's `clarify` asks up to 5 questions
+    one by one. §8.2 keeps the cap and the recommended answers but asks in
+    one batch: one stop, not five.
+  - *An uncapped converge loop.* `converge` has no iteration limit or
+    record of what was reviewed. Specdev's ledger, cap and staleness check
+    stay.
 
 ## Out of scope
 
@@ -398,8 +582,8 @@ workflows, skill and agents together" note is extended to name them.
   `agent_type` passes through; a valid block is written and its path printed;
   invalid JSON or a blocking finding with no `scenario` is blocked; a third
   block for the same `agent_id` allows the stop; an internal error fails
-  open. `record --from-hook-dir` refuses when a dispatched reviewer type has
-  no file. The shared schema function is used by both the hook and `record`.
+  open. `record --from-hook` refuses when a reviewer of the phase has no
+  saved report, or has two. The shared schema function is used by both the hook and `record`.
 - **§2:** the agent-file tests assert the declared `effort`, and assert that
   `reviewer_model` is written only when set explicitly.
 - **§3:** `stop-hook` blocks when `verify` fails with a new commit since the
@@ -420,3 +604,20 @@ workflows, skill and agents together" note is extended to name them.
 - **§7:** `new-feature.md` names interrogate mode and assume-and-record. The
   spec hash ignores the `**Assumed:**` block (it is inside Open Questions).
   `init.md` runs `deploy.py preflight`.
+- **§8.1:** `validate_spec.py --components` fails on a REQ with no owner, an
+  unknown unmarked dependency, a cycle and an empty Contract / Interface, and
+  passes a complete
+  table. `spec-validate.yml` runs it only for `spec/**` heads, so a merged
+  spec without `components.md` still passes on other PRs. `new-feature.md`
+  fills `components.md`, and `build.md`'s precondition proposes components
+  instead of stopping.
+- **§8.2:** `spec-reviewer` names the category list, the 5-question cap, the
+  ranking and a required `default` in interrogate mode. `stats` counts
+  coverage per category. `new-feature.md` presents defaults as
+  *Recommended:* in one batch.
+- **§8.3:** `spec-reviewer` carries the never-ask list and the
+  ADR / Original Request exception.
+- **§8.4:** `validate_spec.py` warns on a vague Acceptance line, does not
+  warn when the same line carries a number or unit, and never turns it into
+  an error under `--strict`.
+- **§8.5–8.6:** written once the decisions are made.
