@@ -393,6 +393,25 @@ Never end a turn short of the terminal state without that record. The CI
 checkpoint push makes stopping cheap, which is what makes stopping acceptable —
 but it can only push what you committed.
 
+**Running out of budget brings a person in, with the case.** When a CI build
+stops for budget — the breaker's cost, wall-clock or tool-call limit, the
+continuation attempts or cap used up, the Stop hook's budget spent — short of
+the terminal state, `assess_budget.py` gathers the facts and a read-only
+**`budget-assessor`** (never you: the agent that spent the budget does not
+argue for more) recommends `continue`, `must-only` or `stop`. The facts, the
+recommendation and the exact resume command go to `<unit>/.specdev/ASSESSMENT.md`
+on the checkpoint ref and to the run summary. **A person decides**; nothing
+resumes on its own.
+
+**When you are that resume** (the prompt says so, and `ASSESSMENT.md` is in
+the tree): you start from the pushed implementation branch with the budget
+the person approved. With scope `must-only`, every `should`/`could` REQ with
+no linked test is already marked `- **Deferred:** <reason>` in `spec.md` —
+do not build those; list each under `PR_BODY.md` → `## Deferred
+requirements` (`build_outcome.py verify` asserts it). Never mark a REQ
+deferred yourself, and never a `must` REQ: deferral is the person's decision,
+and only `assess_budget.py defer-unbuilt` writes it.
+
 ## Guardrails
 
 - Never start the build before the Spec PR is merged.
@@ -432,6 +451,7 @@ python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shor
 python .specdev/tools/review_ledger.py status --phase impl   # pre-PR review loop: next pass, open + dismissed findings
 python .specdev/tools/review_ledger.py check --phase impl    # the review-loop gate (spec: --phase spec)
 python .specdev/tools/review_ledger.py stats                 # what the loop cost and found, per phase
+python .specdev/tools/assess_budget.py --root <u> facts --feat F  # after a budget stop: the facts a person decides from
 python .specdev/tools/loop_stats.py --ref origin/main        # the same across every feature, from git history
 ```
 

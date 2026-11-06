@@ -13,5 +13,7 @@
   "continuation_cap_usd": 25,
   "max_review_iterations": 10,
   "max_stop_blocks": 5,
-  "reviewer_model": "inherit"
+  "reviewer_model": "inherit",
+  "assess_budget_stops": true,
+  "assessment_budget_usd": 1
 }

@@ -125,6 +125,48 @@ def collect_reqs(sources: list[Path]) -> dict[str, str]:
     return reqs
 
 
+# A REQ deferred by a person's decision - a must-only resume they approved
+# after a budget assessment (assess_budget.py defer-unbuilt). Marked in the
+# REQ's own block so the deferral is in the spec, visible in the PR diff, and
+# never a silent gap. Only should/could REQs are ever deferred.
+_REQ_BLOCK = re.compile(r"^###\s+(REQ-\d+)\b.*?(?=^###\s|^##\s|\Z)", re.M | re.S)
+_DEFERRED = re.compile(r"^\s*-\s*\*\*Deferred:\*\*\s*(\S.*)$", re.M)
+_PRIORITY = re.compile(r"^\s*-\s*\*\*Priority:\*\*\s*(must|should|could)\b",
+                       re.M | re.I)
+
+
+def req_blocks(text: str) -> dict[str, str]:
+    """REQ id -> the text of its '### REQ-###' block."""
+    return {m.group(1): m.group(0) for m in _REQ_BLOCK.finditer(text)}
+
+
+def req_priority(block: str) -> str:
+    """'must' | 'should' | 'could'. A REQ with no readable priority is
+    treated as 'must': it can never be deferred by default."""
+    m = _PRIORITY.search(block)
+    return m.group(1).lower() if m else "must"
+
+
+def deferred_reqs(text: str) -> dict[str, str]:
+    """REQ id -> the reason it was deferred, for every deferred REQ."""
+    out = {}
+    for rid, block in req_blocks(text).items():
+        m = _DEFERRED.search(block)
+        if m:
+            out[rid] = m.group(1).strip()
+    return out
+
+
+def collect_deferred(sources: list[Path]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for f in sources:
+        try:
+            out.update(deferred_reqs(f.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    return out
+
+
 def parse_adrs(adr_dir: Path) -> dict[str, set[str]]:
     by_req: dict[str, set[str]] = {}
     if not adr_dir.exists():
@@ -195,15 +237,23 @@ def run_one(args) -> int:
     adr_by_req = parse_adrs(root / ".specdev" / "adr")
     tests_by_req = find_tests(root)
     commits_by_req = find_commits()
-    gaps = sorted(rid for rid in reqs if rid not in tests_by_req)
+    deferred = collect_deferred(sources)
+    untested = sorted(rid for rid in reqs if rid not in tests_by_req)
+    gaps = [r for r in untested if r not in deferred]
+    deferred_untested = [r for r in untested if r in deferred]
 
     if args.check_gaps:
+        for d in deferred_untested:
+            print(f"Deferred (not a gap): {d} {reqs[d]} - {deferred[d]}")
         if gaps:
             print("Traceability gap — requirements with no linked test:")
             for g in gaps:
                 print(f"  {g} {reqs[g]}")
             return 1
-        print(f"OK: all {len(reqs)} requirements have at least one linked test.")
+        print(f"OK: all {len(reqs) - len(deferred_untested)} requirements "
+              f"in scope have at least one linked test"
+              + (f" ({len(deferred_untested)} deferred)."
+                 if deferred_untested else "."))
         return 0
 
     fm = re.search(r"\*\*Feature ID:\*\*\s*(\S+)", text)
@@ -229,10 +279,13 @@ def run_one(args) -> int:
             f"{cell(tests_by_req.get(rid))} | {cell(commits_by_req.get(rid))} | "
             f"{pr} | {release} | {qa_staging} | {qa_prod} |"
         )
-    if gaps:
+    if gaps or deferred_untested:
         lines.append("\n## Gaps\n")
         for g in gaps:
             lines.append(f"- ⚠ {g} ({reqs[g] or 'untitled'}) has no linked test")
+        for d in deferred_untested:
+            lines.append(f"- ⏸ {d} ({reqs[d] or 'untitled'}) deferred: "
+                         f"{deferred[d]}")
 
     out = root / args.out
     out.parent.mkdir(parents=True, exist_ok=True)

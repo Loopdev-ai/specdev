@@ -205,6 +205,25 @@ properties keep an unattended run honest:
   the exact unmet clause, up to `max_stop_blocks` (default 5) per job. A
   filled-in `## Stopped` section in `BUILD.md` is a deliberate stop and lets
   it go; `max_stop_blocks: 0` turns the hook off.
+- **Out of budget brings a person in, with the case for continuing.** When a
+  build stops for budget (the breaker's cost, wall-clock or tool-call limit;
+  the continuation attempts or cap; the Stop hook's budget) short of its
+  terminal state, `assess_budget.py` gathers the facts — progress by
+  priority, whether the review loop is converging, spend per attempt, a
+  rough cost to finish — and a read-only `budget-assessor` agent, never the
+  coordinator that spent the money, recommends `continue`, `must-only` or
+  `stop` with an extra budget. All of it lands in `<unit>/.specdev/ASSESSMENT.md`
+  on the checkpoint ref and in the run summary, with the exact resume
+  command. **A person decides**: resuming is a `workflow_dispatch` with
+  `resume_budget_usd` (that job's budget) and `scope` (`all` or
+  `must-only`). It continues from the pushed implementation branch.
+  `must-only` marks every untested `should`/`could` REQ `Deferred` in the
+  spec — visible in the PR diff, listed in the PR body (asserted), and
+  reported by `--check-gaps` as deferred rather than as a gap — and never a
+  `must`. Doing nothing leaves the build stopped. Denial and failure trips
+  are not assessed: more money does not fix a broken run. Turn it off with
+  `assess_budget_stops: false`; the assessor's own spend is capped by
+  `assessment_budget_usd` (default 1).
 - **The checkpoint leaves the runner.** `BUILD.md` and `run.json` are pushed to
   `specdev/checkpoint/<unit>/<FEAT-###>` on success, failure, timeout and
   circuit-break alike; the runner's working tree is destroyed at teardown, so
@@ -619,6 +638,7 @@ agents/
   spec-reviewer.md       pre-PR spec review against the original request
   code-reviewer.md       pre-PR defect review of the implementation diff
   intent-reviewer.md     pre-PR check: every REQ delivered and asserted
+  budget-assessor.md     after a budget stop: continue / must-only / stop, for a person
 hooks/
   hooks.json             SubagentStop -> review_hook.py for interactive sessions (CI wires its own)
 skills/
@@ -636,6 +656,7 @@ assets/
     tools/review_ledger.py pre-PR review loop ledger; asserted by verify + spec-validate; `stats`
     tools/review_hook.py SubagentStop hook: validates + saves each reviewer's report
     tools/loop_stats.py  review-loop stats across every feature, from git history + escapes
+    tools/assess_budget.py budget stops: facts, the assessor's verdict, ASSESSMENT.md, must-only deferral
   workflows/             → copied to .github/workflows/ in target repos
     deploy-unit.yml      reusable staging→QA→prod chain for ONE unit; deploy.yml matrixes it
     specdev-sweep.yml    nightly unfiltered all-unit ADR-staleness sweep

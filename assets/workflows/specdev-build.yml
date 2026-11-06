@@ -56,6 +56,20 @@ on:
         description: 'governed unit (default: resolved from the branch)'
         required: false
         type: string
+      # A RESUME after a budget stop, approved by the person running this
+      # dispatch, from <unit>/.specdev/ASSESSMENT.md (on the checkpoint ref).
+      # Empty = an ordinary dispatch. Set = resume from the pushed
+      # implementation branch with this much budget for the job.
+      resume_budget_usd:
+        description: 'approved extra budget (USD) to resume a build that stopped for budget; empty for a normal run'
+        required: false
+        type: string
+      scope:
+        description: 'resume scope: all, or must-only (defers every untested should/could REQ, visibly in the spec)'
+        required: false
+        type: choice
+        default: all
+        options: [all, must-only]
 
 permissions:
   contents: write
@@ -186,6 +200,10 @@ jobs:
       # which is CI-only - interactively, ending a turn is a person's call.
       SPECDEV_CI_HOOKS: '1'
       SPECDEV_STOP_HOOK: '1'
+      # Set only on a resume a person approved after a budget assessment.
+      RESUME_BUDGET: ${{ inputs.resume_budget_usd }}
+      RESUME_SCOPE: ${{ inputs.scope }}
+      RESUME_NOTE: ${{ inputs.resume_budget_usd != '' && format('THIS RUN RESUMES A BUILD THAT STOPPED FOR BUDGET. {0} read <unit>/.specdev/ASSESSMENT.md and approved USD {1} more, scope {2}. {3}', github.actor, inputs.resume_budget_usd, inputs.scope, inputs.scope == 'must-only' && 'Every should/could REQ with no linked test is now marked Deferred in spec.md - do not build those, and list each under PR_BODY.md ## Deferred requirements.' || 'Finish the full scope.') || '' }}
       # NOT a dotfile: actions/upload-artifact's globber skips hidden files,
       # so `.specdev-breaker.json` never reached the artifact and
       # if-no-files-found: warn stayed silent because the other two paths
@@ -222,6 +240,11 @@ jobs:
 
         If you cannot reach the terminal state, write what is done, what is
         outstanding and what blocked you into BUILD.md, COMMIT it, and stop.
+
+        If this job resumes a build a person approved after a budget
+        assessment, <unit>/.specdev/ASSESSMENT.md says what they approved;
+        any REQ marked Deferred in spec.md is out of scope - list it under
+        PR_BODY.md ## Deferred requirements.
     outputs:
       terminal_ok: ${{ steps.verify.outputs.ok }}
       checkpoint_ref: ${{ steps.checkpoint.outputs.ref }}
@@ -240,6 +263,26 @@ jobs:
           echo "::error title=Missing secret::specdev-build needs the ANTHROPIC_API_KEY repo or org secret."
           echo "Add it under Settings -> Secrets and variables -> Actions."
           exit 1
+      # A resume a person approved after a budget assessment continues from
+      # the IMPLEMENTATION branch the stopped build pushed - its code and its
+      # committed review ledger, together - never from the default branch.
+      # Before the start SHA is captured, so the post-build scope check
+      # measures only this run's changes.
+      - name: Resume from the implementation branch (approved budget)
+        if: env.RESUME_BUDGET != ''
+        run: |
+          set -euo pipefail
+          if ! python -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$RESUME_BUDGET" 2>/dev/null; then
+            echo "::error title=Bad resume budget::resume_budget_usd must be a positive number, got '$RESUME_BUDGET'."
+            exit 1
+          fi
+          IMPL=$(python .specdev/tools/build_outcome.py refs --unit "$UNIT" --feat "$FEAT" | sed -n 's/^impl=//p')
+          if ! git fetch origin "refs/heads/${IMPL}:refs/remotes/origin/${IMPL}"; then
+            echo "::error title=Nothing to resume::No implementation branch ${IMPL} - start a normal build instead."
+            exit 1
+          fi
+          git checkout -q -B specdev-resume "origin/${IMPL}"
+          echo "::notice title=Resuming::${GITHUB_ACTOR} approved USD ${RESUME_BUDGET}, scope ${RESUME_SCOPE:-all}, from ${IMPL}."
       # The run's own start SHA. Captured here rather than read from the event
       # payload because `pull_request.base.sha` and `event.before` are both
       # empty on workflow_dispatch — which silently turned the scope guard into
@@ -292,6 +335,10 @@ jobs:
             PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
             # BUILD.md is the checkpoint body and is restored wholesale.
             git checkout "origin/${REF}" -- "${PREFIX}.specdev/BUILD.md" 2>/dev/null || true
+            # The budget assessment a person resumed from, for the coordinator.
+            if [ -n "${RESUME_BUDGET}" ]; then
+              git checkout "origin/${REF}" -- "${PREFIX}.specdev/ASSESSMENT.md" 2>/dev/null || true
+            fi
             # run.json is NOT. Restoring it wholesale silently overrode THIS
             # dispatch's feat/mode with the previous attempt's, leaving
             # run.json's consumers (mode_of, the deploy guard) disagreeing with
@@ -307,6 +354,24 @@ jobs:
             echo "resumed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No checkpoint at ${REF} — this is a fresh build."
+          fi
+      # must-only resume: the person chose to finish the musts. Every
+      # should/could REQ with no linked test is marked Deferred in the spec
+      # and committed - visible in the Implementation PR's diff, and listed
+      # in its body (build_outcome verify asserts that). A `must` REQ is
+      # never deferred.
+      - name: Defer untested should/could REQs (must-only resume)
+        if: env.RESUME_BUDGET != '' && env.RESUME_SCOPE == 'must-only'
+        run: |
+          set -euo pipefail
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          REASON="must-only resume approved by ${GITHUB_ACTOR} after a budget assessment (${RUN_URL})"
+          python .specdev/tools/assess_budget.py --root "$UNIT" defer-unbuilt \
+            --reason "$REASON"
+          PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
+          git add -- "${PREFIX}.specdev/spec.md"
+          if ! git diff --cached --quiet; then
+            git commit -q -m "chore(specdev): defer untested should/could REQs of ${FEAT} (must-only resume approved by ${GITHUB_ACTOR})"
           fi
       # The circuit breaker runs INSIDE the agent loop as a hook, because a
       # post-run check cannot refund a run that has already spent the money.
@@ -328,6 +393,11 @@ jobs:
             > "${{ runner.temp }}/breaker.env"
           cat "${{ runner.temp }}/breaker.env" >> "$GITHUB_ENV"
           echo "SPECDEV_BREAKER_STATE=${BREAKER_STATE}" >> "$GITHUB_ENV"
+          # Budget assessment on a budget stop (assess_budget.py).
+          ASSESS=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get assess_budget_stops --repo-root .)
+          ABUDGET=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get assessment_budget_usd --repo-root .)
+          echo "ASSESS_BUDGET_STOPS=${ASSESS}" >> "$GITHUB_ENV"
+          echo "ASSESSMENT_BUDGET_USD=${ABUDGET}" >> "$GITHUB_ENV"
           # Continuation budget (U17). Resolved the same way and just as
           # loudly — an unresolvable key fails this step rather than arming a
           # library constant.
@@ -339,6 +409,15 @@ jobs:
           STOPS=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get max_stop_blocks --repo-root .)
           echo "SPECDEV_MAX_STOP_BLOCKS=${STOPS}" >> "$GITHUB_ENV"
           echo "SPECDEV_STOP_STATE=${{ runner.temp }}/specdev-stop-state.json" >> "$GITHUB_ENV"
+          # A resume a person approved: their figure is this job's budget -
+          # the breaker's cost ceiling and the continuation start gate both.
+          # The later GITHUB_ENV line wins over the one breaker-env wrote.
+          if [ -n "${RESUME_BUDGET}" ]; then
+            CAP="${RESUME_BUDGET}"
+            echo "SPECDEV_MAX_COST_USD=${RESUME_BUDGET}" >> "$GITHUB_ENV"
+            echo "- Resume approved by \`${GITHUB_ACTOR}\`: budget \`${RESUME_BUDGET}\` USD, scope \`${RESUME_SCOPE:-all}\`." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "CONTINUATION_CAP_USD=${CAP}" >> "$GITHUB_ENV"
           echo "- Continuation: up to \`${ATTEMPTS}\` attempts, start-gated at \`\$${CAP}\` (the cap bounds whether the NEXT attempt begins, not what it spends)." \
             >> "$GITHUB_STEP_SUMMARY"
@@ -401,6 +480,8 @@ jobs:
             Feature: ${{ needs.setup.outputs.feat }}
             Mode:    ${{ needs.setup.outputs.mode }}
             Unit:    ${{ needs.setup.outputs.unit }}
+
+            ${{ env.RESUME_NOTE }}
 
             You are building ONE governed unit. Every .specdev/ artifact path in
             your work is relative to that unit root — <unit>/.specdev/spec.md,
@@ -610,6 +691,88 @@ jobs:
               echo "::warning title=Push failed::Could not push ${IMPL_REF}."
             fi
           fi
+
+      # ── BUDGET ASSESSMENT ────────────────────────────────────────────────
+      #
+      # A build that stops for BUDGET (breaker cost / wall clock / tool calls,
+      # continuation attempts or cap used up, Stop hook budget spent) short of
+      # its terminal state used to be just a failed build, re-dispatched blind.
+      # Now the facts are gathered mechanically, a read-only budget-assessor -
+      # never the coordinator that spent the money - recommends continue,
+      # must-only or stop, and ASSESSMENT.md (committed with the checkpoint)
+      # gives a person the case and the exact resume command. A PERSON
+      # decides: nothing here resumes anything, and doing nothing leaves the
+      # build stopped. Denial/failure trips are not budget stops and are not
+      # assessed - more money would not fix a broken run.
+      - id: assess_facts
+        name: Was this a budget stop? (facts for the assessment)
+        if: always() && env.ASSESS_BUDGET_STOPS != 'False' && env.ASSESS_BUDGET_STOPS != 'false'
+        run: |
+          set -uo pipefail
+          N=1
+          [ "${{ steps.agent2.outcome }}" != "skipped" ] && [ -n "${{ steps.agent2.outcome }}" ] && N=2
+          [ "${{ steps.agent3.outcome }}" != "skipped" ] && [ -n "${{ steps.agent3.outcome }}" ] && N=3
+          PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
+          python .specdev/tools/assess_budget.py --root "$UNIT" facts \
+            --feat "$FEAT" --mode "$MODE" --base "origin/${BASE_BRANCH}" \
+            --unit "$UNIT" --breaker-json "$BREAKER_STATE" \
+            --attempts-used "$N" --max-attempts "${MAX_ATTEMPTS:-0}" \
+            --spent "${{ steps.agent1.outputs.total_cost_usd }},${{ steps.agent2.outputs.total_cost_usd }},${{ steps.agent3.outputs.total_cost_usd }}" \
+            --cap "${CONTINUATION_CAP_USD:-0}" \
+            --stop-state "${SPECDEV_STOP_STATE:-}" \
+            --max-stop-blocks "${SPECDEV_MAX_STOP_BLOCKS:-0}" \
+            --out "${PREFIX}.specdev/ASSESSMENT.facts.json" \
+            --github-output >> "$GITHUB_OUTPUT" || echo "assess=false" >> "$GITHUB_OUTPUT"
+      # Its own small budget, read-only tools, and NOT the breaker settings:
+      # the breaker has usually tripped, and would deny every call.
+      - id: assessor
+        name: Budget assessor (read-only; recommends, never resumes)
+        if: always() && steps.assess_facts.outputs.assess == 'true' && env.HAS_ANTHROPIC_KEY == 'yes'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are the SpecDev BUDGET ASSESSOR. Read .claude/agents/budget-assessor.md
+            and follow it exactly. You recommend; a person decides.
+
+            Feature: ${{ needs.setup.outputs.feat }}
+            Unit:    ${{ needs.setup.outputs.unit }}
+            Facts:   <unit>/.specdev/ASSESSMENT.facts.json
+
+            End your reply with exactly one fenced JSON block, as that file
+            describes. Do not edit, write or commit anything.
+          claude_args: >-
+            --max-turns 25
+            --max-budget-usd ${{ env.ASSESSMENT_BUDGET_USD }}
+            --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git diff:*)"
+            --disallowedTools "Write,Edit,NotebookEdit,Agent,Task,WebFetch,WebSearch"
+      - id: assessment
+        name: Write the budget assessment for a person
+        if: always() && steps.assess_facts.outputs.assess == 'true'
+        env:
+          EXEC_FILE: ${{ steps.assessor.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          PREFIX=""; [ "$UNIT" != "." ] && PREFIX="${UNIT}/"
+          ERRS_FILE="${{ runner.temp }}/assessment-errors.txt"
+          echo "the assessor did not run" > "$ERRS_FILE"
+          if [ -n "${EXEC_FILE}" ] && [ -f "${EXEC_FILE}" ]; then
+            python .specdev/tools/assess_budget.py extract \
+              --execution-file "${EXEC_FILE}" \
+              --out "${{ runner.temp }}/assessment.json" \
+              --errors-out "$ERRS_FILE" || true
+          fi
+          # A missing or invalid assessment renders as "no recommendation",
+          # with the facts complete - the person can still decide.
+          python .specdev/tools/assess_budget.py --root "$UNIT" render \
+            --facts "${PREFIX}.specdev/ASSESSMENT.facts.json" \
+            --assessment "${{ runner.temp }}/assessment.json" \
+            --assessment-errors-file "$ERRS_FILE" \
+            --repo "${GITHUB_REPOSITORY}" --workflow-ref "${BASE_BRANCH}" \
+            --out "${PREFIX}.specdev/ASSESSMENT.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Stopped for budget - a person decides::See ${PREFIX}.specdev/ASSESSMENT.md on ${CHECKPOINT_REF} (also in this run's summary) for the recommendation and the resume command."
 
       - id: checkpoint
         name: Push the checkpoint

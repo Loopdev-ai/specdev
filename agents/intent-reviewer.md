@@ -42,6 +42,11 @@ Then, across the change:
 5. **No scope creep.** Behaviour the spec did not ask for, or put Out of
    Scope, is a finding.
 
+**Deferred REQs.** A REQ whose block carries `- **Deferred:** <reason>` was
+deferred by a person (a must-only resume after a budget assessment). Do not
+report it undelivered. Report it only if code for it was half-built and left
+reachable, or if a `must` REQ is marked deferred — that is never allowed.
+
 **Blocking** = a REQ not delivered, not asserted, or not faithful; an
 Original Request item unmet; scope the spec excluded. Everything else is
 `minor`.

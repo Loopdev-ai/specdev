@@ -1,8 +1,9 @@
 # Design: Higher accuracy with fewer human stops
 
 **Date:** 2026-11-05
-**Status:** Phases 0, 1 and 1b (lessons from Spec Kit, §8.1–8.4)
-implemented; Phases 2–5 wait for Phase 0 data. For review (Alex, Chad)
+**Status:** Phases 0, 1, 1b (§8.1–8.4) and 5a (§8.6, budget assessment)
+implemented; Phases 2–4 wait for Phase 0 data, and 5b (§8.5) is decided but
+not built. For review (Alex, Chad)
 **Origin:** "Evaluate specdev, how can we make it more automated so there is
 higher accuracy but less human in the loop? Perhaps there have been something
 changes to Claude in the past few months." Grounded against
@@ -352,14 +353,15 @@ is a reviewer rule, not a validator rule, so merged specs are unaffected.
   nobody can be asked anyway, so this makes interactive builds behave like CI
   ones.
 
-### 8. Lessons from Spec Kit (H1, H2, H6, H9, H11)
+### 8. Lessons from Spec Kit (H1, H2, H6, H7, H9, H11)
 
 Spec Kit's core commands are `constitution`, `specify`, `clarify`, `plan`,
 `tasks`, `analyze`, `checklist`, `implement` and, since 1.0, `converge`. Most
 of what it does, specdev already does more strictly, which is what *Don't
 copy* below is about. Six of its habits address stops this design has not
 yet removed. §8.1–8.4 are small and mechanical (Phase 1b). §8.5–8.6 change
-how a build runs and need a decision first (Phase 5).
+how a build runs. Both decisions are made: §8.6 is built (Phase 5a) and
+§8.5 is not yet (Phase 5b).
 
 Three of its patterns also back phases already planned:
 
@@ -490,25 +492,83 @@ whatever its nature.
   never made by the build. It goes to `## Stopped`, written up for a person.
   Only choices below that bar are researched and recorded.
 
-#### 8.6 Waves follow priority, so an early stop still delivers a whole slice (H9, H7) — needs a decision
+#### 8.6 Out of budget brings a person in, with an assessment (H7, H9)
 
-Spec Kit's `tasks` builds by user story in priority order (P1, P2, P3), each
-an independently testable increment, MVP first. Specdev's REQs already carry
-`Priority: must | should | could`, but nothing reads it: waves follow only
-the dependency graph.
+**Decided (Alex, 2026-11-06), replacing the earlier "optional partial
+delivery" proposal.** A build that runs out of budget should neither just
+fail nor quietly count a partial branch as finished. It brings a person in,
+and an agent first analyses whether continuing is worth it, so the person
+decides with context.
 
-- **Wave order:** among the components a wave could start, those owning
-  `must` REQs go first. Dependencies still win. This is free, and on its own
-  it changes only the order.
-- **Optional partial delivery** (`ci.json` `partial_delivery`, default
-  `false`): when a run stops at the breaker or the review cap, the terminal
-  state accepts a branch where every `must` REQ is built, has a passing
-  test, and was reviewed. Every `should`/`could` REQ not delivered is listed
-  in `PR_BODY.md` as deferred. The human then merges a smaller, complete
-  change instead of restarting the build.
-- **Decision needed:** whether a "musts done, rest deferred" branch may ever
-  count as a finished build. It is a scope decision for the people who
-  approve the Spec PR, which is why it defaults off.
+Spec Kit's influence is the priority order: its `tasks` builds by user
+story in priority order, MVP first. Specdev's REQs already carry
+`Priority: must | should | could`, and that is what makes "finish the musts
+only" a choice a person can make with one click.
+
+- **What counts as a budget stop.** Short of the terminal state, and any of:
+  - the breaker tripped on cost, wall clock or tool calls;
+  - every continuation attempt was used, or the continuation cap was reached;
+  - the Stop hook used up `max_stop_blocks`.
+
+  Denial and consecutive-failure trips are not budget stops: more money does
+  not fix a broken run. A filled-in `## Stopped` section is not one either,
+  because a person is already needed.
+- **Facts, mechanically** (`assess_budget.py facts`):
+  - why it stopped;
+  - each REQ's priority, whether a test is linked to it, and whether it is
+    deferred;
+  - the review loop's blocking findings per pass, classified `converging`,
+    `stalled`, `diverging` or `clean`;
+  - spend per attempt;
+  - a crude cost-to-finish extrapolation, labelled as crude;
+  - what is still missing for the terminal state.
+- **The `budget-assessor` agent** judges those facts and recommends
+  `continue`, `must-only` or `stop`, with an extra budget, a summary, its
+  reasoning, what is left and the risks.
+  - It is read-only (`Read`, `Grep`, `Glob`, and `git log/show/diff`) and
+    runs on its own small budget (`assessment_budget_usd`, default 1).
+  - It runs without the breaker settings, which would deny every call once
+    the breaker has tripped.
+  - It is never the coordinator: the agent that spent the budget does not
+    argue for more.
+  - It recommends `stop` when what is left needs a person, such as an
+    architectural choice (§8.5).
+  - `assess_budget.py extract` validates its verdict. An invalid or missing
+    verdict still produces the full facts, marked "no recommendation".
+- **Where the person sees it:** `<unit>/.specdev/ASSESSMENT.md`, committed
+  with the checkpoint, and the run's summary. Both show the recommendation,
+  the facts, and the exact resume command for each choice. The job still
+  fails its terminal-state check, so GitHub notifies whoever owns the run.
+- **How the person answers:** a `workflow_dispatch` of `specdev-build.yml`
+  with `resume_budget_usd` and `scope` (`all` or `must-only`).
+  - The resume checks out the **pushed implementation branch**, never the
+    default branch, so its code and committed review ledger are consistent.
+  - The approved figure becomes that job's breaker cost ceiling and its
+    continuation cap.
+  - The coordinator's prompt says who approved what. This channel was chosen
+    over a GitHub Environment approval, which is yes/no with a preset amount
+    and may need a paid plan for private repos.
+- **`must-only`** runs `assess_budget.py defer-unbuilt` before the
+  coordinator starts, and commits the result as `specdev-bot`.
+  - It marks every `should`/`could` REQ with no linked test
+    `- **Deferred:** <who approved, which run>` in its own block of
+    `spec.md`, so the deferral shows in the PR diff.
+  - A REQ with no readable priority counts as `must`. A `must` is never
+    deferred.
+  - `gen_traceability.py --check-gaps` reports deferred REQs as deferred,
+    not as gaps, so Gate 2 passes.
+  - `build_outcome.py verify` requires each deferred REQ to be listed under
+    `PR_BODY.md` → `## Deferred requirements`.
+  - `intent-reviewer` does not report a deferred REQ as undelivered.
+- **Guarantees:** nothing resumes on its own. Doing nothing leaves the build
+  stopped, as before. The assessor recommends and never decides. Descoping
+  is a person's choice for one build, never a default.
+- **Not yet:** the review loop reaching its pass cap does not trigger an
+  assessment. That case already reaches a person at PR review. Waves are not
+  yet reordered by priority either; that is still an option, but resuming
+  with `must-only` works without it.
+- **Config:** `assess_budget_stops` (default `true`) and
+  `assessment_budget_usd` (default 1).
 
 ## Rollout
 
@@ -523,7 +583,8 @@ Phase 0 numbers before the next one starts.
 | 2 | §4 reproduced findings | cause 3 | Medium. Needs the worktree-checkout behaviour pinned by a test against the CI's Claude Code version. |
 | 3 | §5 acceptance-author + lock | cause 1; H9 | Medium-high. It changes the build's shape (wave 0) and the terminal state. It ships behind `ci.json` `acceptance_tests: true` (default `false` for one release, then `true`). |
 | 4 | §6 per-wave intent check, scoped passes | causes 2, 4 | Medium. It changes `check` rule 3. `schema_version` 2 for `review.json`, and v1 ledgers are still read. |
-| 5 | §8.5 research before escalating, §8.6 priority-ordered waves and optional partial delivery | H6, H9, H7 | Medium. §8.5's decision is made (architectural choices stay human-gated); §8.6's is open. Partial delivery changes the terminal state, so it ships behind `partial_delivery: false`. |
+| 5a | §8.6 budget assessment and approved resume | H7, H9 | Medium. Built. It never resumes on its own, and `must-only` changes the terminal state only through a deferral a person approved, visible in the spec and asserted in the PR body. |
+| 5b | §8.5 research before escalating | H6 | Medium. Decided: architectural choices stay human-gated. Not yet built. |
 
 Phase 1b does not depend on Phase 0 data. It removes a stop (H11) and cuts
 questions rather than tuning the review loop, so it can ship as soon as it
@@ -628,4 +689,16 @@ workflows, skill and agents together" note is extended to name them.
 - **§8.4:** `validate_spec.py` warns on a vague Acceptance line, does not
   warn when the same line carries a number or unit, and never turns it into
   an error under `--strict`.
-- **§8.5–8.6:** written once the decisions are made.
+- **§8.6:** budget vs. non-budget stops (cost/wall/tool-call trips,
+  attempts, cap and Stop-hook budget versus denial trips, a reached terminal
+  state and a deliberate stop); convergence classification; the assessor
+  verdict extracted from an execution file (JSON and JSON-lines, result
+  message or last assistant text) and rejected when invalid; `render` with
+  and without a verdict and with the resume commands; `defer-unbuilt`
+  deferring only untested `should`/`could` REQs, never a `must` or a REQ
+  with no priority, and idempotently; `--check-gaps` passing with deferred
+  REQs and still failing on a real gap; `verify` failing when a deferred
+  REQ is missing from the PR body; the workflow's inputs, resume checkout,
+  budget override, deferral step, and assessor step (read-only tools, no
+  breaker settings, its own budget).
+- **§8.5:** written when it is built.
