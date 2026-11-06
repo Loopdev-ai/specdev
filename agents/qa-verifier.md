@@ -3,6 +3,7 @@ name: qa-verifier
 description: Runs the SpecDev local QA suite (the same checks Gate 2 enforces) and returns a green/red verdict with only the failures that matter. Dispatched by the specdev build loop after EVERY dependency wave (not just before the PR), so QA happens every build step and stays independent of the agent that wrote the code — keeping verbose test/scan output out of the orchestrator's context.
 tools: Bash, Read, Grep, Glob
 model: inherit
+effort: high
 ---
 
 You run the project's quality gates locally and report the verdict tersely. You

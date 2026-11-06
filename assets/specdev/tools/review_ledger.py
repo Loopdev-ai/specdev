@@ -33,7 +33,13 @@ Usage (--root precedes the subcommand, as in the sibling tools):
     review_ledger.py --root <unit> status  --phase impl [--json]
     review_ledger.py --root <unit> render  --phase impl
     review_ledger.py --root <unit> check   --phase impl [--feat FEAT-###]
+    review_ledger.py --root <unit> stats   [--phase impl] [--json]
+    review_ledger.py --root <unit> record  --phase impl --from-hook [...]
 Every subcommand takes --repo-root (ci.json fallback and git working tree).
+
+`--from-hook` records the reports review_hook.py (a SubagentStop hook)
+validated and saved as each reviewer finished, so nothing is transcribed by
+hand. They live under hook_dir(): inside the git directory, never tracked.
 """
 import argparse
 import hashlib
@@ -80,6 +86,13 @@ ID_PREFIX = {"spec": "S", "impl": "I"}
 SEVERITIES = ("blocking", "minor")
 KINDS = ("bug", "security", "intent", "test", "spec")
 MAX_KEY = "max_review_iterations"
+
+# Which reviewer serves which phase. review_hook.py validates only these
+# agents' reports, and `record --from-hook` expects one report from each
+# reviewer of the phase.
+REVIEWERS = {"spec": ("spec-reviewer",),
+             "impl": ("code-reviewer", "intent-reviewer")}
+HOOK_DIR_ENV = "SPECDEV_REVIEW_DIR"
 FEAT_RE = re.compile(r"^FEAT-\d{3,}$")
 
 # Reviewed code is everything EXCEPT SpecDev's own bookkeeping. The ledger,
@@ -237,29 +250,76 @@ def _findings_of(report) -> list:
                       'list of them')
 
 
-def _normalize(raw, n: int, pass_no: int, phase: str) -> dict:
+def finding_problems(raw, n: int) -> list[str]:
+    """Why one finding cannot be recorded. Empty = it can.
+
+    The one definition of a well-formed finding, shared by record() and by
+    review_hook.py - which checks a reviewer's report as the reviewer stops,
+    so a malformed report is sent back to the reviewer to fix instead of
+    surfacing later as a refusal the coordinator has to work around."""
     if not isinstance(raw, dict):
-        raise LedgerError(f"finding {n} is not an object")
+        return [f"finding {n} is not an object"]
+    problems = []
     sev = str(raw.get("severity", "")).strip().lower()
     if sev not in SEVERITIES:
-        raise LedgerError(f"finding {n}: severity must be one of "
-                          f"{SEVERITIES}, got {raw.get('severity')!r}")
+        problems.append(f"finding {n}: severity must be one of {SEVERITIES}, "
+                        f"got {raw.get('severity')!r}")
     kind = str(raw.get("kind", "")).strip().lower()
     if kind not in KINDS:
-        raise LedgerError(f"finding {n}: kind must be one of {KINDS}, got "
-                          f"{raw.get('kind')!r}")
-    summary = str(raw.get("summary", "")).strip()
-    where = str(raw.get("where", "")).strip()
-    if not summary:
-        raise LedgerError(f"finding {n}: summary is required")
-    if sev == "blocking" and not where:
-        raise LedgerError(f"finding {n}: a blocking finding must say where "
-                          f"(file:line, REQ-###, or a section)")
-    return {"id": f"{ID_PREFIX[phase]}{pass_no}-{n}", "severity": sev,
-            "kind": kind, "where": where, "summary": summary,
-            "scenario": str(raw.get("scenario", "")).strip(),
-            "fix": str(raw.get("fix", "")).strip(),
-            "needs_human": bool(raw.get("needs_human", False))}
+        problems.append(f"finding {n}: kind must be one of {KINDS}, got "
+                        f"{raw.get('kind')!r}")
+    if not str(raw.get("summary", "")).strip():
+        problems.append(f"finding {n}: summary is required")
+    if sev == "blocking" and not str(raw.get("where", "")).strip():
+        problems.append(f"finding {n}: a blocking finding must say where "
+                        f"(file:line, REQ-###, or a section)")
+    if "default" in raw and not isinstance(raw.get("default"), (str, type(None))):
+        problems.append(f"finding {n}: default must be a string (the reading "
+                        f"to assume if nobody answers)")
+    return problems
+
+
+def report_problems(report, strict=False) -> list[str]:
+    """Why a reviewer report cannot be recorded. Empty = it can.
+
+    `strict` adds what the review hook demands beyond what record() refuses:
+    a concrete failure scenario on every blocking finding. The agents are
+    told to give one; the ledger stays lenient so a report recorded before
+    the hook existed still records."""
+    try:
+        raw = _findings_of(report)
+    except LedgerError as e:
+        return [str(e)]
+    problems = []
+    for i, f in enumerate(raw):
+        problems += finding_problems(f, i + 1)
+        if (strict and isinstance(f, dict)
+                and str(f.get("severity", "")).strip().lower() == "blocking"
+                and not str(f.get("scenario", "")).strip()):
+            problems.append(f"finding {i + 1}: a blocking finding needs a "
+                            f"concrete scenario (input X in state Y yields "
+                            f"Z; expected W) - without one it is a "
+                            f"suspicion: make it minor or drop it")
+    return problems
+
+
+def _normalize(raw, n: int, pass_no: int, phase: str) -> dict:
+    problems = finding_problems(raw, n)
+    if problems:
+        raise LedgerError(problems[0])
+    sev = str(raw.get("severity", "")).strip().lower()
+    entry = {"id": f"{ID_PREFIX[phase]}{pass_no}-{n}", "severity": sev,
+             "kind": str(raw.get("kind", "")).strip().lower(),
+             "where": str(raw.get("where", "")).strip(),
+             "summary": str(raw.get("summary", "")).strip(),
+             "scenario": str(raw.get("scenario", "")).strip(),
+             "fix": str(raw.get("fix", "")).strip(),
+             "needs_human": bool(raw.get("needs_human", False))}
+    default = str(raw.get("default") or "").strip()
+    if default:
+        # Assume-and-record: the reading to apply when nobody is asked.
+        entry["default"] = default
+    return entry
 
 
 def _current_run(ph: dict) -> dict | None:
@@ -621,6 +681,149 @@ def render(root=".", phase="impl", repo_root=".", feat=None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def hook_dir(repo_root=".") -> Path:
+    """Where review_hook.py saves validated reports, and where `record
+    --from-hook` reads them.
+
+    SPECDEV_REVIEW_DIR when set; otherwise `specdev-review/` inside the git
+    common directory. That is deterministic for the hook and the coordinator
+    alike (both run in the repository), shared by every worktree of it, and
+    never tracked - so a saved report can never be committed by accident."""
+    import os  # noqa: PLC0415
+    env = os.environ.get(HOOK_DIR_ENV, "").strip()
+    if env:
+        return Path(env)
+    rc, out = _git(["rev-parse", "--path-format=absolute",
+                    "--git-common-dir"], repo_root)
+    if rc != 0 or not out.strip():
+        raise LedgerError(f"{Path(repo_root).as_posix()} is not a git "
+                          f"repository, so there is no hook directory - set "
+                          f"{HOOK_DIR_ENV} or pass --findings-json")
+    return Path(out.strip()) / "specdev-review"
+
+
+def hook_reports(phase: str, repo_root=".",
+                 directory: Path | None = None) -> list[Path]:
+    """The pending reports for one pass: exactly one per reviewer of the
+    phase. Refuses a missing reviewer (the pass would silently record half a
+    review) and a duplicate (two dispatches of one reviewer - which of them
+    is this pass is a judgment the tool will not make)."""
+    _phase(phase)
+    d = (directory or hook_dir(repo_root)) / phase
+    files = sorted(d.glob("*.json")) if d.is_dir() else []
+    problems = []
+    chosen = []
+    for agent in REVIEWERS[phase]:
+        mine = [f for f in files if f.name.startswith(f"{agent}--")]
+        if not mine:
+            problems.append(f"no saved report from {agent} in "
+                            f"{d.as_posix()} - was it dispatched, and did "
+                            f"its report pass the review hook?")
+        elif len(mine) > 1:
+            problems.append(f"{len(mine)} saved reports from {agent} in "
+                            f"{d.as_posix()} ({', '.join(f.name for f in mine)})"
+                            f" - delete the ones that are not this pass's")
+        else:
+            chosen.append(mine[0])
+    if problems:
+        raise LedgerError("; ".join(problems))
+    return chosen
+
+
+def consume_hook_reports(paths) -> None:
+    """Move recorded reports out of the way so the next pass cannot reuse
+    them. Kept (under recorded/), not deleted: they are the raw evidence."""
+    for p in paths:
+        done = p.parent / "recorded"
+        done.mkdir(parents=True, exist_ok=True)
+        p.replace(done / p.name)
+
+
+def stats(root=".", phase=None, feat=None) -> dict:
+    """What the review loop cost and found, per phase, from the ledger.
+
+    Read-only. This is the yardstick for any change to the loop: passes to
+    clean or to the cap, what kinds of finding recur, how often findings were
+    dismissed or re-raised. Without it "the loop is expensive" and "accuracy
+    improved" are both opinions."""
+    doc = _ledger_for(root, feat)
+    phases = [_phase(phase)] if phase else list(PHASES)
+    out = {"feat": doc.get("feat") if doc else None, "phases": {}}
+    for ph_name in phases:
+        ph = doc["phases"][ph_name] if doc else {"runs": [], "dismissed": []}
+        passes = [p for r in ph["runs"] for p in r["passes"]]
+        findings = [f for p in passes for f in p["findings"]]
+        by_kind: dict = {}
+        for f in findings:
+            k = by_kind.setdefault(f["kind"], {"blocking": 0, "minor": 0})
+            k[f["severity"]] += 1
+        dismissed = ph["dismissed"]
+        reasons = [d["reason"].lower() for d in dismissed]
+        dismissed_summaries = {d["summary"].strip().lower()
+                               for d in dismissed}
+        # A re-raise: a later finding with a dismissed finding's summary.
+        # Summaries are reviewer prose, so this undercounts - it is a floor.
+        dismissed_at = {d["id"]: d["summary"].strip().lower()
+                        for d in dismissed}
+        reraised = 0
+        for p in passes:
+            for f in p["findings"]:
+                s = f["summary"].strip().lower()
+                if s in dismissed_summaries and f["id"] not in dismissed_at:
+                    reraised += 1
+        blocking = sum(f["severity"] == "blocking" for f in findings)
+        out["phases"][ph_name] = {
+            "runs": len(ph["runs"]),
+            "passes": len(passes),
+            "passes_per_run": [len(r["passes"]) for r in ph["runs"]],
+            "blocking_per_pass": [sum(f["severity"] == "blocking"
+                                      for f in p["findings"])
+                                  for p in passes],
+            "findings": {"blocking": blocking,
+                         "minor": len(findings) - blocking},
+            "by_kind": by_kind,
+            "needs_human": sum(f.get("needs_human", False)
+                               for f in findings),
+            "dismissed": len(dismissed),
+            "dismissal_rate": (round(len(dismissed) / blocking, 3)
+                               if blocking else 0.0),
+            "not_reproducible": sum("not-reproducible" in r
+                                    or "not reproducible" in r
+                                    for r in reasons),
+            "assumed": sum(r.startswith("assumed") for r in reasons),
+            "reraised_after_dismissal": reraised,
+            "final_pass_clean": bool(passes) and not any(
+                f["severity"] == "blocking"
+                and f["id"] not in dismissed_at
+                for f in passes[-1]["findings"]),
+        }
+    return out
+
+
+def _stats_text(st: dict) -> str:
+    lines = [f"review loop stats for {st['feat'] or '(no ledger yet)'}"]
+    for name, ph in st["phases"].items():
+        if not ph["passes"]:
+            lines.append(f"  {name}: no passes recorded")
+            continue
+        kinds = ", ".join(f"{k} {v['blocking']}b/{v['minor']}m"
+                          for k, v in sorted(ph["by_kind"].items()))
+        lines.append(
+            f"  {name}: {ph['passes']} pass(es) over {ph['runs']} run(s) "
+            f"{ph['passes_per_run']}; blocking per pass "
+            f"{ph['blocking_per_pass']}; final pass "
+            f"{'clean' if ph['final_pass_clean'] else 'NOT clean'}")
+        lines.append(
+            f"      findings {ph['findings']['blocking']} blocking / "
+            f"{ph['findings']['minor']} minor ({kinds or 'none'}); "
+            f"dismissed {ph['dismissed']} (rate {ph['dismissal_rate']}, "
+            f"not-reproducible {ph['not_reproducible']}, assumed "
+            f"{ph['assumed']}); re-raised after dismissal "
+            f"{ph['reraised_after_dismissal']}; needs_human "
+            f"{ph['needs_human']}")
+    return "\n".join(lines)
+
+
 def _read_reports(paths) -> list:
     reports = []
     for p in paths:
@@ -657,7 +860,10 @@ def _status_text(st: dict) -> str:
                      f"pass 1 of the new run")
     for f in st["open_blocking"]:
         lines.append(f"OPEN {f['id']} [{f['kind']}] {f['where']} - "
-                     f"{f['summary']}")
+                     f"{f['summary']}"
+                     + (" (needs the user" + (f"; default: {f['default']}"
+                                              if f.get("default") else "")
+                        + ")" if f.get("needs_human") else ""))
     if st["dismissed"]:
         lines.append("Already adjudicated - give these to every reviewer; "
                      "do not re-raise without new evidence:")
@@ -685,9 +891,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--reviewed", default=None, metavar="SHA",
                    help="the commit HEAD pointed at when the reviewers were "
                         "dispatched (impl); refuses if code changed since")
-    p.add_argument("--findings-json", action="append", required=True,
+    p.add_argument("--findings-json", action="append", default=None,
                    help="one reviewer's closing JSON block; '-' reads stdin; "
                         "repeat once per reviewer")
+    p.add_argument("--from-hook", action="store_true",
+                   help="record the reports review_hook.py saved for this "
+                        "phase (one per reviewer) instead of --findings-json")
+    p.add_argument("--hook-dir", default=None,
+                   help="where the hook saved them (default: hook_dir())")
     p = add("dismiss", "adjudicate a finding as not acted on, with the reason")
     p.add_argument("--id", required=True)
     p.add_argument("--reason", required=True)
@@ -698,6 +909,12 @@ def _parser() -> argparse.ArgumentParser:
     add("new-run", "start a fresh run after the reviewed state changed")
     p = add("render", "the PR body's Review loop + Unresolved sections")
     p.add_argument("--feat", default=None)
+    p = sub.add_parser("stats", help="what the loop cost and found, per "
+                                     "phase (read-only)")
+    p.add_argument("--phase", default=None, choices=PHASES)
+    p.add_argument("--feat", default=None)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--repo-root", default=".")
     p = add("check", "assert the loop is complete (the gate)")
     p.add_argument("--feat", default=None)
     p.add_argument("--head", default="HEAD",
@@ -709,9 +926,20 @@ def main() -> int:
     args = _parser().parse_args()
     try:
         if args.cmd == "record":
-            entry = record(args.root, args.phase, args.feat,
-                           _read_reports(args.findings_json), args.repo_root,
-                           reviewed=args.reviewed)
+            if bool(args.findings_json) == bool(args.from_hook):
+                raise LedgerError("give exactly one of --findings-json "
+                                  "(repeatable) or --from-hook")
+            saved = []
+            if args.from_hook:
+                saved = hook_reports(args.phase, args.repo_root,
+                                     Path(args.hook_dir) if args.hook_dir
+                                     else None)
+                reports = _read_reports([str(f) for f in saved])
+            else:
+                reports = _read_reports(args.findings_json)
+            entry = record(args.root, args.phase, args.feat, reports,
+                           args.repo_root, reviewed=args.reviewed)
+            consume_hook_reports(saved)
             blocking = [f for f in entry["findings"]
                         if f["severity"] == "blocking"]
             print(f"recorded {args.phase} pass {entry['pass']}: "
@@ -738,6 +966,10 @@ def main() -> int:
         if args.cmd == "render":
             sys.stdout.write(render(args.root, args.phase, args.repo_root,
                                     args.feat))
+            return 0
+        if args.cmd == "stats":
+            st = stats(args.root, args.phase, args.feat)
+            print(json.dumps(st, indent=2) if args.json else _stats_text(st))
             return 0
         if args.cmd == "check":
             problems = check(args.root, args.phase, args.feat, args.head,

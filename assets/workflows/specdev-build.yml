@@ -179,6 +179,13 @@ jobs:
       UNIT: ${{ needs.setup.outputs.unit }}
       FEAT: ${{ needs.setup.outputs.feat }}
       MODE: ${{ needs.setup.outputs.mode }}
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
+      # The hooks below are wired from this workflow's own settings file.
+      # SPECDEV_CI_HOOKS makes the plugin's copy of the review hook stand
+      # down (so it never runs twice); SPECDEV_STOP_HOOK arms the Stop hook,
+      # which is CI-only - interactively, ending a turn is a person's call.
+      SPECDEV_CI_HOOKS: '1'
+      SPECDEV_STOP_HOOK: '1'
       # NOT a dotfile: actions/upload-artifact's globber skips hidden files,
       # so `.specdev-breaker.json` never reached the artifact and
       # if-no-files-found: warn stayed silent because the other two paths
@@ -208,7 +215,9 @@ jobs:
         `review_ledger.py check --phase impl` passes. If the waves are done,
         continue the pre-PR review loop from
         `python .specdev/tools/review_ledger.py --root <unit> status --phase impl`,
-        which names the next pass; never restart it at pass 1. Do NOT open,
+        which names the next pass; never restart it at pass 1. Record each
+        pass with `record --phase impl --from-hook --reviewed <sha>`: the
+        review hook has already saved each reviewer's report. Do NOT open,
         review or merge a pull request in either mode - a human opens it.
 
         If you cannot reach the terminal state, write what is done, what is
@@ -325,6 +334,11 @@ jobs:
           ATTEMPTS=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get max_build_attempts --repo-root .)
           CAP=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get continuation_cap_usd --repo-root .)
           echo "MAX_ATTEMPTS=${ATTEMPTS}" >> "$GITHUB_ENV"
+          # In-attempt continuation: the Stop hook's budget, resolved as
+          # loudly as the others.
+          STOPS=$(python .specdev/tools/run_manifest.py --root "$UNIT" ci --get max_stop_blocks --repo-root .)
+          echo "SPECDEV_MAX_STOP_BLOCKS=${STOPS}" >> "$GITHUB_ENV"
+          echo "SPECDEV_STOP_STATE=${{ runner.temp }}/specdev-stop-state.json" >> "$GITHUB_ENV"
           echo "CONTINUATION_CAP_USD=${CAP}" >> "$GITHUB_ENV"
           echo "- Continuation: up to \`${ATTEMPTS}\` attempts, start-gated at \`\$${CAP}\` (the cap bounds whether the NEXT attempt begins, not what it spends)." \
             >> "$GITHUB_STEP_SUMMARY"
@@ -332,6 +346,14 @@ jobs:
           # with the path exported inline here.
           SPECDEV_BREAKER_STATE="${BREAKER_STATE}" \
             python .specdev/tools/circuit_breaker.py init
+          # Two more hooks ride in the same settings file:
+          #   SubagentStop -> review_hook.py: a reviewer cannot stop with a
+          #     report review_ledger.py would refuse, and a valid one is saved
+          #     for `record --from-hook` instead of being retyped.
+          #   Stop -> build_outcome.py stop-hook: while the terminal state is
+          #     unreached AND the agent keeps committing, the turn does not
+          #     end (up to max_stop_blocks). Same no-progress rule as
+          #     continue-gate; a '## Stopped' section in BUILD.md lets it go.
           cat > "${{ runner.temp }}/breaker-settings.json" <<'JSON'
           {
             "hooks": {
@@ -344,6 +366,17 @@ jobs:
                 { "matcher": "*", "hooks": [
                   { "type": "command",
                     "command": "python .specdev/tools/circuit_breaker.py" } ] }
+              ],
+              "SubagentStop": [
+                { "hooks": [
+                  { "type": "command",
+                    "command": "python .specdev/tools/review_hook.py" } ] }
+              ],
+              "Stop": [
+                { "hooks": [
+                  { "type": "command",
+                    "command": "python .specdev/tools/build_outcome.py stop-hook"
+                  } ] }
               ]
             }
           }
@@ -392,7 +425,12 @@ jobs:
                 a pass is clean or max_review_iterations is reached with the
                 open findings in PR_BODY.md -
                 `review_ledger.py check --phase impl` passes. Resume it from
-                `review_ledger.py --root <unit> status --phase impl`.
+                `review_ledger.py --root <unit> status --phase impl`, and
+                record each pass with `record --from-hook` - a hook saves
+                each reviewer's validated report as it finishes.
+            A Stop hook checks the terminal state when you end your turn and
+            sends you back to work while it is unmet. To stop deliberately,
+            write what blocked you under '## Stopped' in BUILD.md, commit it.
             Do NOT open, review or merge a pull request, in EITHER mode - a
             human opens it from that branch. `gh pr create`, `gh pr review` and
             `gh pr merge` are denied to you; that is deliberate, not an

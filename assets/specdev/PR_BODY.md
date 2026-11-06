@@ -50,6 +50,12 @@ build asserts that each open id is listed here. -->
 
 <!-- Anything resolved into deploy.profile.json during the build, or "none". -->
 
+### Deployment facts unresolved
+
+<!-- Every fact still `missing`/`REPLACE_ME` in deploy.profile.json, with what
+it is for, or "none". The build does not stop to ask for these; the
+`preflight` job blocks the merge until a human fills them in. -->
+
 ## Verification
 
 - [ ] `qa-verifier` green on the fully integrated result

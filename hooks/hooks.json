@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/assets/specdev/tools/review_hook.py\" --source plugin"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -39,6 +39,15 @@ Do this:
    spec-reviewer / code-reviewer / intent-reviewer subagents from the repo, so
    the coordinator can offload work — including the pre-PR review loop — and
    stay context-bounded.
+
+   **Reviewer model (optional).** Run `python .specdev/tools/run_manifest.py
+   ci --get reviewer_model --require-explicit`. Only if it succeeds and
+   prints something other than `inherit`, set `model:` in the three vendored
+   reviewers (`.claude/agents/spec-reviewer.md`, `code-reviewer.md`,
+   `intent-reviewer.md`) to that value — a reviewer on a different model
+   from the builder is an experiment an adopter opts into, never a default.
+   The agents already declare `effort:` (reviewers `xhigh`, builders and QA
+   `high`); leave it.
 3c. **Link to the org's architectural repo of record.** Ask the user for:
    - the governance repo (`owner/name` — the org's SpecDev repo holding
      `governance/adr/`), and the `ref` to track (`main`, or a tag to pin);
@@ -81,6 +90,14 @@ Do this:
    pick the simplest fit (not Kubernetes by default), record the decision via
    the **`/specdev:adr`** skill (scope tag `deployment`), then set
    `target` + `params` + `"locked": true`.
+
+   **Ask for the deployment facts now, once.** For every fact the profile
+   still marks `missing` or `REPLACE_ME`, and every placeholder URL, ask the
+   user in one batch, write the answers into `deploy.profile.json`, and run
+   `python .specdev/tools/deploy.py preflight --env staging` and
+   `--env production`. These are per-repo facts: builds no longer stop to
+   ask for them — a build lists any still missing in its PR body, and the
+   `preflight` job blocks the merge until they are filled.
 4b. **Single governed unit by default.** A freshly initialized repo is ONE
    governed unit rooted at the repo root — there is no `units.json` and none is
    needed. If the repo actually holds several projects at different maturities

@@ -47,6 +47,13 @@ restart at pass 1._
 
 - [ ]
 
+## Stopped
+
+> Fill this in ONLY to stop deliberately short of the terminal state: what
+> blocked the build and what a human must decide. In CI, a filled-in section
+> is what lets the coordinator stop - otherwise the Stop hook sends it back
+> to work while the terminal state is unreached and it is still committing.
+
 ## Deployment Facts
 
 _Source of truth is `deploy.profile.json`; this table documents the destination

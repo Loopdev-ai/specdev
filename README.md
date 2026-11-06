@@ -112,6 +112,25 @@ is recorded in `.specdev/review.json` by `review_ledger.py`, and the loop is
 check both fail if it never ran, stopped early, or reviewed code that has
 since changed.
 
+**The loop's plumbing is mechanical, and it is measured.** A `SubagentStop`
+hook (`review_hook.py`) checks each reviewer's closing JSON as the reviewer
+stops — a report the ledger would refuse goes back to that reviewer — and
+saves it for `review_ledger.py record --from-hook`, so no report is retyped.
+Reviewers run at `effort: xhigh`, builders and QA at `high`.
+`review_ledger.py stats` reports what the loop cost and found (passes per
+run, findings by kind, dismissals, re-raises); the build outcome record
+carries it, and `specdev-escapes.yml` counts what bot and human reviewers
+still find on the open Implementation PR. Those two numbers are how any
+change to the loop is judged.
+
+**It stops for you less.** Spec questions are asked once, up front (a
+`spec-reviewer` in *interrogate mode* over the first draft); in the loop, a
+question the reviewer can answer with a defensible default is **assumed and
+recorded** under the spec's *Open Questions → Assumed*, for you to confirm at
+Spec PR review. Deployment facts are asked once at `/specdev:init`; a build
+lists any still missing in its PR body instead of stopping, and the
+`preflight` job still blocks the merge on them.
+
 **Driving pattern (this is what makes the above actually happen):** drive
 multi-feature builds with **`/specdev:build`** — invoking the command is the
 authorization to spawn subagents, so the coordinator dispatches instead of
@@ -140,6 +159,7 @@ IMPL PR  ──gate2: post-dev-qa (required checks)──merge─▶
 | `deploy.yml` | push to `main` | build, tag, staging→QA→auto-prod→QA, rollback |
 | `post-deploy-qa.yml` | called by deploy | staging promotion gate + prod verification |
 | `traceability.yml` | after deploy | regenerate + commit the matrix |
+| `specdev-escapes.yml` | review on a `specdev/impl/**` PR | measurement only — counts bot and human review comments left after the pre-PR loop; never posts or fails |
 
 ### Headless builds (`specdev-build.yml`)
 
@@ -168,6 +188,12 @@ properties keep an unattended run honest:
   The cap is a **start gate**, not a ceiling: it bounds whether the next
   attempt begins, not what it spends, so real exposure is "cap plus one
   attempt".
+  Within an attempt, a `Stop` hook (`build_outcome.py stop-hook`) does the
+  same thing before the turn ends: while the terminal state is unmet and the
+  coordinator keeps committing, it sends the coordinator back to work with
+  the exact unmet clause, up to `max_stop_blocks` (default 5) per job. A
+  filled-in `## Stopped` section in `BUILD.md` is a deliberate stop and lets
+  it go; `max_stop_blocks: 0` turns the hook off.
 - **The checkpoint leaves the runner.** `BUILD.md` and `run.json` are pushed to
   `specdev/checkpoint/<unit>/<FEAT-###>` on success, failure, timeout and
   circuit-break alike; the runner's working tree is destroyed at teardown, so
@@ -222,7 +248,11 @@ and none of the ceilings above were raised for it. If long features trip
 `max_tool_calls`, `max_wall_minutes` or the `continuation_cap_usd` start
 gate, raise those (keeping `max_wall_minutes` under `max_session_minutes`) or
 lower `max_review_iterations` for the unit — that is your spend decision, not
-the kit's. A tripped run is never handed off half-reviewed: the ledger
+the kit's. Reviewers declare `effort: xhigh`, so each pass costs more than it
+did; the bet is fewer passes, and `review_ledger.py stats` is how you check.
+`reviewer_model` (default `inherit`) can put the reviewers on a different
+model from the builders; `/specdev:init` applies it only when your `ci.json`
+sets it explicitly. A tripped run is never handed off half-reviewed: the ledger
 records the last pass, and the terminal-state assertion fails honestly.
 
 **Upgrade tools, workflows, skill and agents together.** From this release a
@@ -578,6 +608,8 @@ agents/
   spec-reviewer.md       pre-PR spec review against the original request
   code-reviewer.md       pre-PR defect review of the implementation diff
   intent-reviewer.md     pre-PR check: every REQ delivered and asserted
+hooks/
+  hooks.json             SubagentStop -> review_hook.py for interactive sessions (CI wires its own)
 skills/
   specdev/SKILL.md       the workflow driver (strict coordinator)
   arch-config/SKILL.md   runtime hosting config capture/edit/delete
@@ -590,7 +622,8 @@ governance/
 assets/
   specdev/               → copied to .specdev/ in target repos (incl. org.json, architecture-config.json seed, tools/arch_config.py)
     tools/units.py       governed-unit registry: the only module that knows a repo can hold >1 unit
-    tools/review_ledger.py pre-PR review loop ledger; asserted by verify + spec-validate
+    tools/review_ledger.py pre-PR review loop ledger; asserted by verify + spec-validate; `stats`
+    tools/review_hook.py SubagentStop hook: validates + saves each reviewer's report
   workflows/             → copied to .github/workflows/ in target repos
     deploy-unit.yml      reusable staging→QA→prod chain for ONE unit; deploy.yml matrixes it
     specdev-sweep.yml    nightly unfiltered all-unit ADR-staleness sweep

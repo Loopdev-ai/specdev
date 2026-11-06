@@ -58,7 +58,10 @@ done". Keep going: form the next wave.
 **If you cannot get there** — a builder is blocked, a tool is denied, the
 circuit breaker trips, a contract needs a human — then stop deliberately and
 leave the reason behind: write what you completed, what is outstanding, and
-what blocked you into `BUILD.md`, **commit it**, and say so. That is the only
+what blocked you into `BUILD.md` (the blocker under `## Stopped`), **commit
+it**, and say so. In CI a Stop hook sends you back to work if you end your
+turn short of the terminal state while still making progress; a filled-in
+`## Stopped` section is what tells it the stop is deliberate. That is the only
 acceptable way to end short of the terminal state. CI pushes your committed
 checkpoint to `specdev/checkpoint/<unit>/<FEAT-###>` whatever the outcome, so
 stopping is cheap and a re-dispatch resumes from it — but only for what you
@@ -113,19 +116,24 @@ PR is the human's call in both cases — headless CI is no different.
 1. Dispatch `qa-verifier` once more over the fully integrated result as the
    pre-PR dry run. It must be green.
 2. Resolve/verify deployment facts if not already done: run `detect_deploy.py`,
-   fill any `missing`/`REPLACE_ME` facts in `deploy.profile.json` and
-   `BUILD.md` → *Deployment Facts*, then `deploy.py preflight --env staging` and
-   `--env production` until green (the `preflight` job blocks the merge
-   otherwise).
+   fill what you can discover into `deploy.profile.json` and `BUILD.md` →
+   *Deployment Facts*, then run `deploy.py preflight --env staging` and
+   `--env production`. **Do not stop to ask the user** for a fact you cannot
+   discover — `/specdev:init` asks for those once per repo. List each one
+   still missing under `PR_BODY.md` → *Deployment facts unresolved*; the
+   `preflight` job in `deploy.yml` blocks the merge until a human fills it.
 3. **Pre-PR review loop (prod mode) — the PR is held until it ends.** Follow
    the specdev skill's *Pre-PR review loop*. Start from the pass
    `python .specdev/tools/review_ledger.py --root <unit> status --phase impl`
    names, then per pass:
    - Capture `git rev-parse HEAD`, then dispatch a fresh **`code-reviewer`** and
      a fresh **`intent-reviewer`** in one message, with the unit root, the base branch and the dismissed list.
-   - Save each one's closing JSON block and record the pass:
-     `review_ledger.py --root <unit> record --phase impl --reviewed <that sha>
-     --findings-json <a> --findings-json <b>`.
+   - Record the pass: `review_ledger.py --root <unit> record --phase impl
+     --reviewed <that sha> --from-hook`. The review hook has already checked
+     and saved each reviewer's closing JSON block; never retype one. If
+     `record` says a reviewer's report is missing, re-dispatch that reviewer.
+     (No hook installed: save each block to a file and pass
+     `--findings-json <a> --findings-json <b>` instead.)
    - `clean` → go to step 4. `cap-reached` → stop fixing; the open findings
      are handed off in step 5. `stale` → fix or dismiss every finding `status` still lists as OPEN, then run the next pass; `stale-at-cap` →
      `review_ledger.py --root <unit> new-run --phase impl`, then the next pass.

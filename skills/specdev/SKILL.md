@@ -91,6 +91,10 @@ poc-built unit's maturity.
    Don't write the spec until the problem is unambiguous. Record the user's
    request **verbatim** — it becomes the spec's `## Original Request`, the
    one thing the reviewers judge intent against. Never paraphrase it.
+   Once a first draft exists, dispatch one `spec-reviewer` in **interrogate
+   mode** and put all of its questions to the user in one batch, while they
+   are still in the conversation — so the review loop that follows rarely
+   has to stop for them.
 3. **Spec (Gate 1 artifact).** **(`spec_bar: charter` → write `.specdev/CHARTER.md` instead; skip the rest of this step.)**
    Fill `.specdev/spec.md`: assign `FEAT-###`, one
    `REQ-###` per requirement, each with a testable **Acceptance** line, and a
@@ -191,12 +195,14 @@ poc-built unit's maturity.
    **Resolve & verify deployment facts (do this during the build, not at the
    end):** run `detect_deploy.py` — it discovers what it can offline (e.g. k8s
    deployment name/namespace/image from manifests, the Fly app + URL) and marks
-   the rest `missing`. For each `missing`/`REPLACE_ME` fact and each placeholder
-   URL, either discover it (platform CLI) or **ask the user and document it** in
-   the profile and in `BUILD.md` → *Deployment Facts* as it becomes known. Then
-   run `deploy.py preflight --env staging` and `--env production` until green.
-   The `preflight` job in `deploy.yml` enforces this — a merge cannot deploy
-   with an unresolved spec, so resolve it before opening the Impl PR.
+   the rest `missing`. These are per-repo facts: `/specdev:init` asks for them
+   once. During a build, discover what you can (platform CLI) and record it in
+   the profile and in `BUILD.md` → *Deployment Facts*; **do not stop the build
+   to ask** for the rest — list each still-`missing`/`REPLACE_ME` fact under
+   `PR_BODY.md` → *Deployment facts unresolved*. Then run `deploy.py preflight
+   --env staging` and `--env production`. The `preflight` job in `deploy.yml`
+   still blocks the merge on anything unresolved, so nothing deploys on a
+   guess; the human resolves it at PR review, a stop that happens anyway.
 9. **Traceability is automatic.** **(`traceability: false` → skip.)**
    `traceability.yml` regenerates the matrix and
    commits it beside `BUILD.md`. Never hand-edit `.specdev/traceability.md`.
@@ -288,10 +294,15 @@ Each pass:
    Give each the unit root and the **dismissed list** from `status`, labelled
    "already adjudicated — do not re-raise without new evidence". Never give a
    reviewer the builders' summaries.
-2. **Record the pass.** Save each reviewer's closing JSON block verbatim to a
-   file outside the repo (or pipe one on stdin as `-`) and run
-   `review_ledger.py --root <unit> record --phase <p> --findings-json <file>`
-   once per pass, repeating `--findings-json` per reviewer. The tool assigns
+2. **Record the pass.** A `SubagentStop` hook (`review_hook.py`) checks each
+   reviewer's closing JSON block as the reviewer stops — a report the ledger
+   would refuse is sent back to that reviewer to fix — and saves the valid
+   ones. Run `review_ledger.py --root <unit> record --phase <p> --from-hook`
+   once per pass: it records exactly one saved report per reviewer of the
+   phase and refuses if one is missing (re-dispatch that reviewer). Never
+   retype a report. Without the hook (an older install),
+   save each block verbatim to a file outside the repo and pass
+   `--findings-json <file>` per reviewer instead. The tool assigns
    the finding ids and stamps what was reviewed — never count or number
    findings yourself. Impl: if `record` reports uncommitted changes, they are the reviewers' side
    effects — discard them (`git checkout -- <paths>`), never commit them. Pass the
@@ -314,9 +325,14 @@ Each pass:
      finding that contradicts the spec or an accepted ADR, citing the
      section. Then `qa-verifier` green, then commit.
    - Spec: revise the spec yourself and re-run `validate_spec.py --strict`.
-     Batch the `needs_human` findings into **one** question to the user per
-     pass and fold the answers in. A deferral is dismissed ("deferred by the
-     user") and listed in `## Open Questions`.
+     **Assume and record** every `needs_human` finding that carries a
+     `default` (or is `minor`): apply the default to the spec, dismiss the
+     finding with reason `assumed: <the reading>`, and list it under
+     `**Assumed:**` in `## Open Questions` — the user reviews those at the
+     Spec PR, a stop that happens anyway. Only blocking `needs_human`
+     findings with no `default` are asked, batched into **one** question per
+     pass. A deferral is dismissed ("deferred by the user") and listed in
+     `## Open Questions`.
    Ask the user nothing else between passes — the loop is automatic.
 
 **Hand-off at the cap.** Impl: paste `review_ledger.py --root <unit> render
@@ -353,13 +369,19 @@ approve pull requests*, a single switch that also lets Actions approve its way
 past review, and a bot-authored PR gets none of the required checks in any
 case. `poc` deploys from the branch directly rather than merging.
 
+In CI a `Stop` hook (`build_outcome.py stop-hook`) checks this when you end
+your turn and sends you back to work while it is unmet and you are still
+committing progress — up to `max_stop_blocks` times (`ci.json`).
+
 Ending a turn short of that is a failed build, not a partial success —
 including ending cleanly, mid-wave, well inside the turn budget, with later
 waves untouched. If a wave's QA is still in flight, the build is not over.
 
 **If you cannot reach it** — blocked builder, denied tool, tripped breaker, a
 contract only a human can settle — stop deliberately: write what is done, what
-is outstanding and what blocked you into `BUILD.md`, commit it, and say so.
+is outstanding and what blocked you into `BUILD.md` — what blocked you under
+its `## Stopped` section, which is also what lets the CI Stop hook release
+you — commit it, and say so.
 Never end a turn short of the terminal state without that record. The CI
 checkpoint push makes stopping cheap, which is what makes stopping acceptable —
 but it can only push what you committed.
@@ -402,6 +424,7 @@ python .specdev/tools/adr.py lint                    # ADR quality gate (mode au
 python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shortlist check for one ADR
 python .specdev/tools/review_ledger.py status --phase impl   # pre-PR review loop: next pass, open + dismissed findings
 python .specdev/tools/review_ledger.py check --phase impl    # the review-loop gate (spec: --phase spec)
+python .specdev/tools/review_ledger.py stats                 # what the loop cost and found, per phase
 ```
 
 In a monorepo add `--root <unit>` to each (the tools stay at the repo root;

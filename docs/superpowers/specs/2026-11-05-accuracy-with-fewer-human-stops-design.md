@@ -1,7 +1,7 @@
 # Design: Higher accuracy with fewer human stops
 
 **Date:** 2026-11-05
-**Status:** Draft — for review (Alex, Chad)
+**Status:** Phases 0 and 1 implemented; Phases 2–4 wait for Phase 0 data. For review (Alex, Chad)
 **Origin:** "Evaluate specdev, how can we make it more automated so there is
 higher accuracy but less human in the loop? Perhaps there have been something
 changes to Claude in the past few months." Grounded against
@@ -157,15 +157,20 @@ A new `.specdev/tools/review_hook.py` runs as a `SubagentStop` hook:
   coordinator then sees a missing file and re-dispatches. A hook must never
   loop forever.
 - **Valid:** it writes the block to
-  `<state dir>/review/<phase>/<agent_type>-<agent_id>.json` and prints the
-  path as `additionalContext`. The coordinator passes that path to `record`.
-  Nothing is retyped.
+  `<hook dir>/<phase>/<agent>--<agent_id>.json` and lets the agent stop. The
+  hook directory is `specdev-review/` inside the git common directory
+  (`SPECDEV_REVIEW_DIR` overrides it). Both the hook and the coordinator can
+  find it, and it is never tracked. Nothing is retyped.
 
-`review_ledger.py record` also accepts `--from-hook-dir <dir>`, which records
-every file the hook wrote since the last pass and refuses if a dispatched
-reviewer type is missing. Wiring: the CI breaker settings JSON gains a
-`SubagentStop` entry, and the plugin ships the same entry in
-`hooks/hooks.json` for interactive sessions.
+`review_ledger.py record --from-hook [--hook-dir D]` records exactly one saved
+report per reviewer of the phase. It refuses when a reviewer's report is
+missing (half a review) or duplicated (two dispatches), and moves the
+recorded files to `recorded/` so a later pass cannot reuse them.
+`--findings-json` remains for installs without the hook. Wiring: the CI
+breaker settings JSON gains a `SubagentStop` entry, and the plugin ships the
+same entry in `hooks/hooks.json` for interactive sessions. The plugin's copy
+is called with `--source plugin` and does nothing when `SPECDEV_CI_HOOKS` is
+set, so CI never runs it twice.
 
 ### 2. Reviewers think harder than builders (cause 6)
 
@@ -197,9 +202,14 @@ A `Stop` hook can do the same thing *within* an attempt, before the turn ends:
   reason says what is missing, for example "impl review loop: pass 4 has 2
   open blocking findings", which is better guidance than the generic
   `CONTINUE_PROMPT`.
+- **It checks the working tree, not the pushed branch.** `verify` reads the
+  pushed implementation branch, which the workflow only pushes after the
+  turn ends. So the hook uses `local_terminal_problems`, the same clauses
+  checked against `HEAD`.
 - **Safety:** it never blocks twice without a new commit in between, the same
   rule `continue-gate` uses so a stuck agent cannot spin. It never blocks when
-  `BUILD.md` records a deliberate stop (*Blocked:* filled in). It blocks at
+  `BUILD.md` records a deliberate stop, meaning its new `## Stopped` section
+  is filled in. It blocks at
   most `max_stop_blocks` times (new `ci.json` key, default 5). The circuit
   breaker's `PreToolUse` hook still bounds spend; a tripped breaker always
   wins.
