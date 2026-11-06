@@ -92,14 +92,18 @@ poc-built unit's maturity.
    request **verbatim** — it becomes the spec's `## Original Request`, the
    one thing the reviewers judge intent against. Never paraphrase it.
    Once a first draft exists, dispatch one `spec-reviewer` in **interrogate
-   mode** and put all of its questions to the user in one batch, while they
-   are still in the conversation — so the review loop that follows rarely
-   has to stop for them.
+   mode**: at most 5 ranked questions, each with a recommended answer. Put
+   them to the user in one batch, while they are still in the conversation
+   ("yes" accepts every recommendation) — so the review loop that follows
+   rarely has to stop for them.
 3. **Spec (Gate 1 artifact).** **(`spec_bar: charter` → write `.specdev/CHARTER.md` instead; skip the rest of this step.)**
    Fill `.specdev/spec.md`: assign `FEAT-###`, one
    `REQ-###` per requirement, each with a testable **Acceptance** line, and a
-   concrete **Out of Scope**. Use `/specdev:new-feature` to start this on a
-   `spec/<feature>` branch.
+   concrete **Out of Scope**. Fill `.specdev/components.md` too — every REQ
+   owned, a **Contract / Interface** on each owning component, dependencies
+   named or marked `(external)`, no cycles: `validate_spec.py --components`
+   checks it, and `spec-validate.yml` runs that check on the Spec PR. Use
+   `/specdev:new-feature` to start this on a `spec/<feature>` branch.
 4. **Architecture.** **(`adrs: false` → skip; still dispatch `adr-checker`, which is floor.)**
    Record every decision by invoking the **`adr`** skill —
    it runs the decision interview, allocates the id, lints the result, and
@@ -147,6 +151,9 @@ poc-built unit's maturity.
    which drives the loop below. You act as a coordinator, not a builder (see
    *Context discipline* and *Parallel dispatch protocol*):
    - Scaffold to match `components.md`; log files in `.specdev/BUILD.md`.
+     If `validate_spec.py --components` fails at build start (a spec merged
+     before that check existed), propose the components yourself and record
+     it — never stop to ask.
    - **MANDATORY: you MUST NOT write component code in the main thread.** Every
      component is built by a **`component-builder`** subagent. The coordinator
      holds only the spec, the component DAG, and returned summaries. Building
@@ -425,6 +432,7 @@ python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shor
 python .specdev/tools/review_ledger.py status --phase impl   # pre-PR review loop: next pass, open + dismissed findings
 python .specdev/tools/review_ledger.py check --phase impl    # the review-loop gate (spec: --phase spec)
 python .specdev/tools/review_ledger.py stats                 # what the loop cost and found, per phase
+python .specdev/tools/loop_stats.py --ref origin/main        # the same across every feature, from git history
 ```
 
 In a monorepo add `--root <unit>` to each (the tools stay at the repo root;

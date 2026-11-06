@@ -93,6 +93,60 @@ MAX_KEY = "max_review_iterations"
 REVIEWERS = {"spec": ("spec-reviewer",),
              "impl": ("code-reviewer", "intent-reviewer")}
 HOOK_DIR_ENV = "SPECDEV_REVIEW_DIR"
+
+# Interrogate mode (spec-reviewer over a first draft, before the loop): a
+# coverage rating per ambiguity category, adapted from Spec Kit's `clarify`,
+# and at most INTERROGATE_MAX questions, each with a recommended answer. An
+# interrogate report is NOT a review pass and is never recorded as one.
+INTERROGATE_CATEGORIES = ("scope", "data", "interaction", "non_functional",
+                          "integrations", "edge_cases", "constraints",
+                          "terminology", "done", "placeholders")
+COVERAGE_VALUES = ("clear", "partial", "missing")
+INTERROGATE_MAX = 5
+
+
+def is_interrogate(report) -> bool:
+    return isinstance(report, dict) and "coverage" in report
+
+
+def interrogate_problems(report) -> list[str]:
+    """Why an interrogate report breaks its contract. Empty = it is fine."""
+    problems = []
+    cov = report.get("coverage")
+    if not isinstance(cov, dict):
+        return ["coverage must be an object: category -> clear | partial | "
+                "missing"]
+    missing = [c for c in INTERROGATE_CATEGORIES if c not in cov]
+    if missing:
+        problems.append(f"coverage is missing {', '.join(missing)} - rate "
+                        f"every category")
+    bad = [f"{k}={v!r}" for k, v in cov.items()
+           if k in INTERROGATE_CATEGORIES and v not in COVERAGE_VALUES]
+    if bad:
+        problems.append(f"coverage values must be one of {COVERAGE_VALUES}: "
+                        f"{', '.join(bad)}")
+    unknown = [k for k in cov if k not in INTERROGATE_CATEGORIES]
+    if unknown:
+        problems.append(f"unknown coverage categories: {', '.join(unknown)}")
+    findings = report.get("findings")
+    if not isinstance(findings, list):
+        return problems + ['an interrogate report needs "findings": [...]']
+    if len(findings) > INTERROGATE_MAX:
+        problems.append(f"{len(findings)} questions - ask at most "
+                        f"{INTERROGATE_MAX}, ranked scope > security/privacy "
+                        f"> UX > technical; turn the rest into assumptions "
+                        f"(a default) instead")
+    for i, f in enumerate(findings):
+        if not isinstance(f, dict):
+            continue
+        if not f.get("needs_human"):
+            problems.append(f"finding {i + 1}: interrogate mode reports only "
+                            f"questions for the user (needs_human: true)")
+        if not str(f.get("default") or "").strip():
+            problems.append(f"finding {i + 1}: every question needs a "
+                            f"recommended answer in default - the user can "
+                            f"then just say yes")
+    return problems
 FEAT_RE = re.compile(r"^FEAT-\d{3,}$")
 
 # Reviewed code is everything EXCEPT SpecDev's own bookkeeping. The ledger,
@@ -122,21 +176,27 @@ def _empty(feat: str) -> dict:
             "phases": {p: {"runs": [], "dismissed": []} for p in PHASES}}
 
 
-def load(root=".") -> dict | None:
-    p = ledger_path(root)
-    if not p.exists():
-        return None
+def parse_ledger(text: str, label: str = "review.json") -> dict:
+    """A ledger document from its JSON text. Shared by load() and by
+    loop_stats.py, which reads past versions out of git history."""
     try:
-        doc = json.loads(p.read_text(encoding="utf-8-sig"))
+        doc = json.loads(text)
     except json.JSONDecodeError as e:
-        raise LedgerError(f"{p.as_posix()} is not valid JSON: {e}") from e
+        raise LedgerError(f"{label} is not valid JSON: {e}") from e
     if not isinstance(doc, dict) or doc.get("schema_version") != SCHEMA_VERSION:
-        raise LedgerError(f"{p.as_posix()} is not a schema_version "
+        raise LedgerError(f"{label} is not a schema_version "
                           f"{SCHEMA_VERSION} review ledger")
     phases = doc.setdefault("phases", {})
     for ph in PHASES:
         phases.setdefault(ph, {"runs": [], "dismissed": []})
     return doc
+
+
+def load(root=".") -> dict | None:
+    p = ledger_path(root)
+    if not p.exists():
+        return None
+    return parse_ledger(p.read_text(encoding="utf-8-sig"), p.as_posix())
 
 
 def save(doc: dict, root=".") -> None:
@@ -290,7 +350,7 @@ def report_problems(report, strict=False) -> list[str]:
         raw = _findings_of(report)
     except LedgerError as e:
         return [str(e)]
-    problems = []
+    problems = interrogate_problems(report) if is_interrogate(report) else []
     for i, f in enumerate(raw):
         problems += finding_problems(f, i + 1)
         if (strict and isinstance(f, dict)
@@ -415,6 +475,10 @@ def record(root=".", phase="impl", feat=None, reports=(), repo_root=".",
             f"passes - the cap is reached. Hand the open findings off; "
             f"'new-run' is only for re-review after the reviewed state "
             f"changes.")
+    if any(is_interrogate(r) for r in reports):
+        raise LedgerError("an interrogate-mode report (it has 'coverage') is "
+                          "the up-front questions, not a review pass - do not "
+                          "record it; dispatch a normal spec-reviewer")
     pass_no = 1 + sum(len(r["passes"]) for r in ph["runs"])
     raw = [f for rep in reports for f in _findings_of(rep)]
     entry = {"pass": pass_no, "at": _now(), "reviewed": reviewed,
@@ -746,7 +810,11 @@ def stats(root=".", phase=None, feat=None) -> dict:
     clean or to the cap, what kinds of finding recur, how often findings were
     dismissed or re-raised. Without it "the loop is expensive" and "accuracy
     improved" are both opinions."""
-    doc = _ledger_for(root, feat)
+    return stats_of(_ledger_for(root, feat), phase)
+
+
+def stats_of(doc: dict | None, phase=None) -> dict:
+    """stats() for a ledger document already in hand."""
     phases = [_phase(phase)] if phase else list(PHASES)
     out = {"feat": doc.get("feat") if doc else None, "phases": {}}
     for ph_name in phases:

@@ -17,9 +17,14 @@ full test output, or code surveys into this thread.
 1. The Spec PR for this feature is **merged** (Gate 1 passed). If not, stop —
    the contract isn't locked.
 2. You are on a `feat/<feature>` branch off the merged spec. If not, create it.
-3. `.specdev/spec.md` holds this feature and `.specdev/components.md` has a
-   filled component table with a **Depends on** column. If the table is empty,
-   stop and ask the user to define components first.
+3. `.specdev/spec.md` holds this feature. Then run `python
+   .specdev/tools/validate_spec.py --root <unit> --components`: the Spec PR
+   gate already required a complete component map, so this normally passes.
+   If it does not (a spec merged before that gate existed), **do not stop to
+   ask**: propose the components from the spec, write them to
+   `components.md` until the check passes, record that in `BUILD.md`, and
+   list it in `PR_BODY.md` → *Notes for the reviewer* as a change made
+   during the build.
 
 ## Terminal state — the run is not over until you reach it
 

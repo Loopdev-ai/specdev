@@ -24,6 +24,9 @@
 
 - <question> → <answer>
 
+**Coverage:** <ambiguity categories still partial or missing after the
+up-front questions, or "all clear">
+
 ## Mode
 
 - [ ] New product

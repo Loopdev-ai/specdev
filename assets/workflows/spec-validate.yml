@@ -70,6 +70,16 @@ jobs:
           python .specdev/tools/validate_spec.py --strict \
             --root '${{ matrix.unit }}' \
             --profile '${{ fromJSON(needs.discover.outputs.profiles)[matrix.unit].spec_bar }}'
+      # The component map is part of the contract a Spec PR locks: every REQ
+      # owned, every dependency known or marked external, no cycles, a
+      # contract on every owning component. Without it the build starts on an
+      # empty table, which in CI nobody can fill. spec/** heads only, so specs
+      # merged before this check existed never fail it on unrelated PRs.
+      - name: Component map ready to build (Gate 1) — ${{ matrix.unit }}
+        if: startsWith(github.head_ref, 'spec/') && hashFiles(format('{0}/.specdev/spec.md', matrix.unit)) != '' && fromJSON(needs.discover.outputs.profiles)[matrix.unit].spec_bar != 'charter'
+        run: |
+          python .specdev/tools/validate_spec.py --root '${{ matrix.unit }}' \
+            --components
       # The pre-PR review loop is part of Gate 1 for a SPEC PR only. Keyed on
       # the head branch so it never fires on an Implementation PR (whose loop
       # the build's terminal state asserts) or on an adopter's unrelated PRs;
