@@ -275,6 +275,10 @@ def _cell(v):
     return "" if v is None else str(v)
 
 
+def _na(v):
+    return "n/a" if v is None else _cell(v)
+
+
 def render_md(rows, summ, refs, warnings) -> str:
     i, s, e = summ["impl"], summ["spec"], summ["escapes"]
     rate = i["final_clean_rate"]
@@ -287,17 +291,17 @@ def render_md(rows, summ, refs, warnings) -> str:
         f"feature(s).",
         "",
         f"- **Implementation loop:** {i['features']} feature(s); median "
-        f"{_cell(i['median_passes'])} pass(es), max {_cell(i['max_passes'])}"
+        f"{_na(i['median_passes'])} pass(es), max {_na(i['max_passes'])}"
         f"; final pass clean in {clean} of them. Blocking findings: "
         + ", ".join(f"{k} {v}" for k, v in i["blocking_by_kind"].items())
         + f"; dismissed {i['dismissed']} ({i['not_reproducible']} not "
           f"reproducible); re-raised after dismissal {i['reraised']}.",
         f"- **Spec loop:** {s['features']} feature(s); median "
-        f"{_cell(s['median_passes'])} pass(es); questions for the user "
+        f"{_na(s['median_passes'])} pass(es); questions for the user "
         f"{s['needs_human']}, of which assumed {s['assumed']}.",
         f"- **Escapes** (review comments on the open Implementation PR): "
-        f"{e['prs']} PR(s) with data; median {_cell(e['median_bot'])} by "
-        f"bots, {_cell(e['median_human'])} by people.",
+        f"{e['prs']} PR(s) with data; median {_na(e['median_bot'])} by "
+        f"bots, {_na(e['median_human'])} by people.",
         "",
         "| Unit | Feature | Spec passes | Impl passes | Impl blocking | "
         "Dismissed | Final clean | Escapes (bot/human) |",
