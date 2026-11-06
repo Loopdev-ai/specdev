@@ -121,7 +121,13 @@ Reviewers run at `effort: xhigh`, builders and QA at `high`.
 run, findings by kind, dismissals, re-raises); the build outcome record
 carries it, and `specdev-escapes.yml` counts what bot and human reviewers
 still find on the open Implementation PR. Those two numbers are how any
-change to the loop is judged.
+change to the loop is judged. `specdev-loop-stats.yml` gathers them weekly
+across every feature with `loop_stats.py` — loop numbers from the git
+history of every `review.json` (which does not expire), escape counts from
+the retained artifacts, carried forward once those expire — and commits the
+snapshot (`loop-stats.csv`, `.json`, `README.md`) to the `specdev/stats`
+branch, whose history is the trend. Run `python .specdev/tools/loop_stats.py
+--ref origin/main` locally for the same table.
 
 **It stops for you less.** Spec questions are asked once, up front (a
 `spec-reviewer` in *interrogate mode* over the first draft); in the loop, a
@@ -160,6 +166,7 @@ IMPL PR  ──gate2: post-dev-qa (required checks)──merge─▶
 | `post-deploy-qa.yml` | called by deploy | staging promotion gate + prod verification |
 | `traceability.yml` | after deploy | regenerate + commit the matrix |
 | `specdev-escapes.yml` | review on a `specdev/impl/**` PR | measurement only — counts bot and human review comments left after the pre-PR loop; never posts or fails |
+| `specdev-loop-stats.yml` | weekly + manual | measurement only — aggregates every feature's loop stats and escapes into the `specdev/stats` branch |
 
 ### Headless builds (`specdev-build.yml`)
 
@@ -624,6 +631,7 @@ assets/
     tools/units.py       governed-unit registry: the only module that knows a repo can hold >1 unit
     tools/review_ledger.py pre-PR review loop ledger; asserted by verify + spec-validate; `stats`
     tools/review_hook.py SubagentStop hook: validates + saves each reviewer's report
+    tools/loop_stats.py  review-loop stats across every feature, from git history + escapes
   workflows/             → copied to .github/workflows/ in target repos
     deploy-unit.yml      reusable staging→QA→prod chain for ONE unit; deploy.yml matrixes it
     specdev-sweep.yml    nightly unfiltered all-unit ADR-staleness sweep

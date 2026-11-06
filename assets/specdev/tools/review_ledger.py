@@ -122,21 +122,27 @@ def _empty(feat: str) -> dict:
             "phases": {p: {"runs": [], "dismissed": []} for p in PHASES}}
 
 
-def load(root=".") -> dict | None:
-    p = ledger_path(root)
-    if not p.exists():
-        return None
+def parse_ledger(text: str, label: str = "review.json") -> dict:
+    """A ledger document from its JSON text. Shared by load() and by
+    loop_stats.py, which reads past versions out of git history."""
     try:
-        doc = json.loads(p.read_text(encoding="utf-8-sig"))
+        doc = json.loads(text)
     except json.JSONDecodeError as e:
-        raise LedgerError(f"{p.as_posix()} is not valid JSON: {e}") from e
+        raise LedgerError(f"{label} is not valid JSON: {e}") from e
     if not isinstance(doc, dict) or doc.get("schema_version") != SCHEMA_VERSION:
-        raise LedgerError(f"{p.as_posix()} is not a schema_version "
+        raise LedgerError(f"{label} is not a schema_version "
                           f"{SCHEMA_VERSION} review ledger")
     phases = doc.setdefault("phases", {})
     for ph in PHASES:
         phases.setdefault(ph, {"runs": [], "dismissed": []})
     return doc
+
+
+def load(root=".") -> dict | None:
+    p = ledger_path(root)
+    if not p.exists():
+        return None
+    return parse_ledger(p.read_text(encoding="utf-8-sig"), p.as_posix())
 
 
 def save(doc: dict, root=".") -> None:
@@ -746,7 +752,11 @@ def stats(root=".", phase=None, feat=None) -> dict:
     clean or to the cap, what kinds of finding recur, how often findings were
     dismissed or re-raised. Without it "the loop is expensive" and "accuracy
     improved" are both opinions."""
-    doc = _ledger_for(root, feat)
+    return stats_of(_ledger_for(root, feat), phase)
+
+
+def stats_of(doc: dict | None, phase=None) -> dict:
+    """stats() for a ledger document already in hand."""
     phases = [_phase(phase)] if phase else list(PHASES)
     out = {"feat": doc.get("feat") if doc else None, "phases": {}}
     for ph_name in phases:

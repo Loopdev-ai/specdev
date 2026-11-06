@@ -1,0 +1,113 @@
+name: specdev-loop-stats
+
+# MEASUREMENT, NOT A GATE. A baseline for the pre-PR review loop across every
+# feature, kept somewhere that does not expire.
+#
+# The per-feature numbers are scattered and short-lived on their own: each
+# unit's review.json holds one feature at a time, and the build outcome and
+# escape counts are per-run artifacts GitHub deletes after their retention
+# period. This workflow gathers them weekly with loop_stats.py:
+#
+#   * loop numbers from git history - every committed version of every
+#     <unit>/.specdev/review.json on the default branch (never expires);
+#   * escape counts from the specdev-escapes-pr-* artifacts still retained;
+#   * escape counts for older PRs carried forward from the previous snapshot.
+#
+# The result is committed to the `specdev/stats` branch (loop-stats.csv,
+# loop-stats.json, README.md) - one commit per change, so the branch history
+# is the trend. It never touches the default branch, opens no PR, and no
+# workflow triggers on that branch. Runs also show the table in the step
+# summary and upload it as an artifact.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # push the specdev/stats branch only
+  actions: read     # list and download the escapes artifacts
+
+concurrency:
+  group: specdev-loop-stats
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    env:
+      STATS_REF: specdev/stats
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Download the retained escapes artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          OUT="${RUNNER_TEMP}/escapes"
+          mkdir -p "$OUT"
+          # Newest unexpired artifact per name (one name per PR).
+          gh api --paginate "repos/${REPO}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name | startswith("specdev-escapes-pr-"))
+                  | select(.expired | not) | [.name, (.id|tostring), .created_at] | @tsv' \
+            | sort -t$'\t' -k1,1 -k3,3r | awk -F'\t' '!seen[$1]++' \
+            | while IFS=$'\t' read -r name id _; do
+                if gh api "repos/${REPO}/actions/artifacts/${id}/zip" > "${RUNNER_TEMP}/a.zip" \
+                   && unzip -q -o "${RUNNER_TEMP}/a.zip" -d "${OUT}/${name}"; then
+                  :
+                else
+                  echo "::warning title=Escapes artifact skipped::${name} (${id}) could not be downloaded."
+                fi
+              done
+          echo "escapes files: $(find "$OUT" -name '*.json' | wc -l)"
+      - name: Previous snapshot (escape counts carry forward)
+        run: |
+          if git fetch -q origin "refs/heads/${STATS_REF}:refs/remotes/origin/${STATS_REF}" 2>/dev/null; then
+            git show "origin/${STATS_REF}:loop-stats.csv" > "${RUNNER_TEMP}/previous.csv" 2>/dev/null || true
+          fi
+          touch "${RUNNER_TEMP}/previous.csv"
+      - name: Aggregate
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/stats"
+          python .specdev/tools/loop_stats.py --repo-dir . \
+            --ref "origin/${DEFAULT_BRANCH}" \
+            --escapes-dir "${RUNNER_TEMP}/escapes" \
+            --previous "${RUNNER_TEMP}/previous.csv" \
+            --csv "${RUNNER_TEMP}/stats/loop-stats.csv" \
+            --json "${RUNNER_TEMP}/stats/loop-stats.json" \
+            --md "${RUNNER_TEMP}/stats/README.md" \
+            >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit the snapshot to the stats branch
+        run: |
+          set -euo pipefail
+          git config user.name  "specdev-bot"
+          git config user.email "specdev-bot@users.noreply.github.com"
+          D="${RUNNER_TEMP}/stats"
+          # Built with plumbing, so the checkout of the default branch is
+          # never modified and nothing else can end up in the commit.
+          TREE=$(printf '100644 blob %s\tREADME.md\n100644 blob %s\tloop-stats.csv\n100644 blob %s\tloop-stats.json\n' \
+            "$(git hash-object -w "$D/README.md")" \
+            "$(git hash-object -w "$D/loop-stats.csv")" \
+            "$(git hash-object -w "$D/loop-stats.json")" | git mktree)
+          PARENT=$(git rev-parse -q --verify "refs/remotes/origin/${STATS_REF}" || true)
+          if [ -n "$PARENT" ] && [ "$(git rev-parse "${PARENT}^{tree}")" = "$TREE" ]; then
+            echo "Nothing changed since the last snapshot."
+            exit 0
+          fi
+          COMMIT=$(git commit-tree "$TREE" ${PARENT:+-p "$PARENT"} \
+            -m "chore(specdev): review loop stats $(date -u +%Y-%m-%d)")
+          git push origin "${COMMIT}:refs/heads/${STATS_REF}"
+          echo "::notice title=Loop stats::Snapshot pushed to ${STATS_REF}."
+      - name: Keep the snapshot as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: specdev-loop-stats
+          path: ${{ runner.temp }}/stats/
+          overwrite: true

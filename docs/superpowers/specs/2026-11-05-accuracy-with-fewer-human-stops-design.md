@@ -125,8 +125,17 @@ everything else.
   re-raised after dismissal. This is pure read-out; the ledger already holds
   all of it.
 - `build_outcome.py` writes the `stats --json` summary into the outcome
-  record (`verify.json`) it already uploads. That gives one row per build
-  without anyone collecting them.
+  record (`verify.json`) it already uploads. That gives one row per CI
+  build, but in a per-run artifact that expires.
+- **Aggregation.** Neither of those is a baseline on its own: the ledger
+  holds one feature at a time, and the artifacts expire. `loop_stats.py`
+  reads every committed version of every `<unit>/.specdev/review.json` from
+  git history, keeps the newest per (unit, FEAT), joins the escape counts
+  from the retained `specdev-escapes-pr-*` artifacts on the PR's head branch,
+  and carries counts forward from the previous snapshot once an artifact has
+  expired. `specdev-loop-stats.yml` runs it weekly and commits the snapshot
+  to the `specdev/stats` branch with git plumbing, so the default branch's
+  checkout is never touched. That branch's history is the trend.
 - **Escapes.** A small, optional, read-only workflow, `specdev-escapes.yml`,
   runs on `pull_request_review` for PRs from `specdev/impl/**`. It counts
   review comments by bot authors (Copilot, `@claude review`) and by humans,

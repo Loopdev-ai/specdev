@@ -425,6 +425,7 @@ python .specdev/tools/adr.py conflicts --file <path> --json  # structural + shor
 python .specdev/tools/review_ledger.py status --phase impl   # pre-PR review loop: next pass, open + dismissed findings
 python .specdev/tools/review_ledger.py check --phase impl    # the review-loop gate (spec: --phase spec)
 python .specdev/tools/review_ledger.py stats                 # what the loop cost and found, per phase
+python .specdev/tools/loop_stats.py --ref origin/main        # the same across every feature, from git history
 ```
 
 In a monorepo add `--root <unit>` to each (the tools stay at the repo root;
