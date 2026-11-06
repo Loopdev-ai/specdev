@@ -46,6 +46,12 @@ found, and every dismissal with its reason. -->
 every blocking finding still open when the loop reached its cap, by id. The
 build asserts that each open id is listed here. -->
 
+## Deferred requirements
+
+<!-- "None", or - after a must-only resume a person approved from a budget
+assessment - every REQ the spec marks Deferred, with its reason. The build
+asserts that each deferred REQ is listed here. -->
+
 ## Deployment facts
 
 <!-- Anything resolved into deploy.profile.json during the build, or "none". -->

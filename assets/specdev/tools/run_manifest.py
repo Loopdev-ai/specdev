@@ -120,6 +120,12 @@ _FALLBACK_DEFAULTS = {
     # session's. Any other value is written into .claude/agents/*-reviewer.md
     # by /specdev:init, and only when this repo's ci.json sets it explicitly.
     "reviewer_model": "inherit",
+    # When a CI build stops for BUDGET short of its terminal state, run the
+    # read-only budget-assessor and write ASSESSMENT.md with its verdict and
+    # the resume command (assess_budget.py). A person decides; nothing
+    # resumes on its own. The assessor's own spend is capped separately.
+    "assess_budget_stops": True,
+    "assessment_budget_usd": 1,
 }
 
 # ci.json key -> the environment variable circuit_breaker.py reads it from.

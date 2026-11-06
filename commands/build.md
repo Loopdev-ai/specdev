@@ -72,6 +72,16 @@ checkpoint to `specdev/checkpoint/<unit>/<FEAT-###>` whatever the outcome, so
 stopping is cheap and a re-dispatch resumes from it — but only for what you
 actually committed.
 
+**Out of budget is not the end of the conversation.** In CI, a build that
+stops for budget short of the terminal state gets a budget assessment: the
+facts and a read-only `budget-assessor`'s recommendation (`continue`,
+`must-only` or `stop`) in `<unit>/.specdev/ASSESSMENT.md` on the checkpoint
+ref, with the exact resume command. A person decides and dispatches the
+resume with the budget they approve. If you are that resume, the prompt says
+so: start from where the pushed branch stands, and with scope `must-only`
+leave every REQ marked `Deferred` in `spec.md` unbuilt and list each under
+`PR_BODY.md` → `## Deferred requirements`. Never defer a REQ yourself.
+
 Interactively (this command, run by a human), the terminal state is the end of
 *After the final wave* below: green QA, a complete review loop, green org-ADR
 loop, `PR_BODY.md` filled in, `BUILD.md` at `qa`, and the user told the PR is

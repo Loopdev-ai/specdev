@@ -204,6 +204,34 @@ def pr_body_problems(root=".") -> list[str]:
     if found:
         return [f"{p.as_posix()} is still the stock template (contains "
                 f"{', '.join(repr(m) for m in found)})."]
+    return deferred_listing_problems(root, text)
+
+
+def deferred_listing_problems(root=".", body: str = "") -> list[str]:
+    """Every REQ the spec marks Deferred (a must-only resume a person
+    approved after a budget assessment) is named in the PR body's
+    '## Deferred requirements' section, so the reviewer sees exactly what
+    this PR does not deliver. Nothing to check when nothing is deferred."""
+    spec = Path(root) / ".specdev" / "spec.md"
+    try:
+        import gen_traceability  # noqa: PLC0415  (vendored sibling)
+        deferred = gen_traceability.deferred_reqs(
+            spec.read_text(encoding="utf-8"))
+    except (OSError, ImportError):
+        return []
+    if not deferred:
+        return []
+    m = re.search(r"^##\s+Deferred requirements\s*$(.*?)(?=^##\s+\S|\Z)",
+                  body, re.M | re.S)
+    section = m.group(1) if m else ""
+    missing = [r for r in sorted(deferred)
+               if not re.search(rf"(?<![A-Za-z0-9-]){re.escape(r)}(?!\d)",
+                                section)]
+    if missing:
+        return [f"{Path(root, PR_BODY_REL).as_posix()} does not list "
+                f"{', '.join(missing)} under '## Deferred requirements' - "
+                f"the spec defers them, and the reviewer must see what this "
+                f"PR does not deliver"]
     return []
 
 
